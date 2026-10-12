@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${TEST_DATABASE_URL:?Set the disposable PostgreSQL test database URL}"
-expected_commit=80a2a4ac7654f586b2b4b8d4c6ec7d2379616722
+expected_commit=280459c8d782658b3fb6098b27e9acba11af29d8
 test "$(git -C .collector rev-parse HEAD)" = "$expected_commit"
 uv sync --locked
 uv pip install -e .collector/telemetry-service

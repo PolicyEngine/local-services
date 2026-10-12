@@ -1,0 +1,1 @@
+Preserve validation-refused build outcomes and caller-supplied failure codes in the telemetry service. Allow shared-host cleanup to wait until graph publication finishes. Retain only rejected producers' records locally after permanent collector HTTP client errors, and test these behaviors against the installed package and collector.

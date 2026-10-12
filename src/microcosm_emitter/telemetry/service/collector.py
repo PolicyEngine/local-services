@@ -28,7 +28,19 @@ from microcosm_emitter.core.constants import (
     RUN_EVENTS_PATH_TEMPLATE,
     RUN_REGISTRATION_PATH,
 )
+from microcosm_emitter.telemetry.constants import (
+    LOCAL_ONLY_REJECTED_EVENTS,
+    REJECTED_EVENTS_MESSAGE,
+)
 from microcosm_emitter.telemetry.service.spool import EventSpool
+
+_RETRYABLE_CLIENT_ERRORS = frozenset(
+    {HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS}
+)
+
+
+def _permanent_client_error(status: int) -> bool:
+    return 400 <= int(status) < 500 and status not in _RETRYABLE_CLIENT_ERRORS
 
 
 def _registration_key(registration: Mapping[str, Any]) -> str:
@@ -100,6 +112,12 @@ class CollectorDelivery:
                     registration,
                     LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION,
                 )
+            elif _permanent_client_error(status):
+                self._make_local_only(
+                    registration,
+                    LOCAL_ONLY_REJECTED_EVENTS,
+                    message=REJECTED_EVENTS_MESSAGE.format(status=int(status)),
+                )
             else:
                 self._defer_retry()
         return made_progress
@@ -134,7 +152,10 @@ class CollectorDelivery:
             return True
         if status == HTTPStatus.UNAUTHORIZED:
             self.session.invalidate()
-        elif status in {HTTPStatus.FORBIDDEN, HTTPStatus.CONFLICT}:
+        elif status in {
+            HTTPStatus.FORBIDDEN,
+            HTTPStatus.CONFLICT,
+        } or _permanent_client_error(status):
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_REGISTRATION)
         else:
             self._defer_retry()
@@ -144,20 +165,22 @@ class CollectorDelivery:
         self,
         registration: Mapping[str, Any],
         reason: str,
+        *,
+        message: str = REJECTED_CREDENTIAL_MESSAGE,
     ) -> None:
         run_id = str(registration["run_id"])
         producer_id = str(registration["producer_id"])
         registration_key = _registration_key(registration)
         self.spool.make_local_only(run_id, producer_id, reason)
         if reason != LOCAL_ONLY_MISSING_CREDENTIAL:
-            self._warn_denied(registration_key)
+            self._warn_denied(registration_key, message)
 
     def _defer_retry(self) -> None:
         self._next_attempt_at = time.monotonic() + self._retry_seconds
         self._retry_seconds = min(MAX_RETRY_SECONDS, self._retry_seconds * 2)
 
-    def _warn_denied(self, registration_key: str) -> None:
+    def _warn_denied(self, registration_key: str, message: str) -> None:
         if registration_key in self._warned_denied:
             return
-        print(REJECTED_CREDENTIAL_MESSAGE, file=sys.stderr, flush=True)
+        print(message, file=sys.stderr, flush=True)
         self._warned_denied.add(registration_key)

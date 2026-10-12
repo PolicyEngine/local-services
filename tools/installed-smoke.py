@@ -126,10 +126,13 @@ def combined_smoke():
     (directory / "graph.orrery.json").write_text('{"synthetic":true}')
     try:
         emitter = LocalTelemetryEmitter(
-            run=run, transport=handle.client.for_module("telemetry")
+            run=run,
+            transport=handle.client.for_module("telemetry"),
+            handle=handle,
+            close_service_on_finish=False,
         )
         emitter.stage("hf_download")
-        emitter.complete()
+        emitter.block(phase="preflight", blocking_gate_ids=["check"])
         handle.client.ping()
         inventory = client.inventory(directory, {"graph.orrery.json": "graph"})
         assert inventory is not None
@@ -139,8 +142,55 @@ def combined_smoke():
         )
     finally:
         client.close()
-        handle.close()
+        emitter.close()
         assert handle.process.wait(timeout=20) == 0
+    from microcosm_emitter.telemetry.service.spool import EventSpool
+
+    spool = EventSpool(path)
+    try:
+        assert spool.batch(run.run_id, run.producer_id)[-1]["status"] == "blocked"
+    finally:
+        spool.close()
+
+
+def coded_failure_smoke():
+    from microcosm_emitter.telemetry.client import LocalTelemetryEmitter, TelemetryRun
+
+    run = TelemetryRun("failure-test", "UK", "installed")
+    path = Path.cwd() / "failure.sqlite3"
+    emitter = LocalTelemetryEmitter.start(
+        run=run,
+        spool_path=path,
+        development_collector_url="http://127.0.0.1:1",
+        startup_timeout_seconds=10,
+    )
+    assert emitter.available
+    try:
+        emitter.transition_stage("hf_download")
+        emitter.fail(
+            MemoryError("synthetic"),
+            failed_during="hf_download",
+            failure_class="oom",
+            error_code="BUILD_OUT_OF_MEMORY",
+        )
+        assert emitter._handle.process.wait(timeout=20) == 0
+    finally:
+        emitter.close()
+    from microcosm_emitter.telemetry.service.spool import EventSpool
+
+    spool = EventSpool(path)
+    try:
+        events = spool.batch(run.run_id, run.producer_id)
+        assert [(event["stage_id"], event["status"]) for event in events[-2:]] == [
+            ("hf_download", "failed"),
+            ("failed", "failed"),
+        ]
+        assert all(
+            event["details"]["error_code"] == "BUILD_OUT_OF_MEMORY"
+            for event in events[-2:]
+        )
+    finally:
+        spool.close()
 
 
 if __name__ == "__main__":
@@ -148,3 +198,4 @@ if __name__ == "__main__":
     telemetry_smoke()
     graph_only_smoke()
     combined_smoke()
+    coded_failure_smoke()

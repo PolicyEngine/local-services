@@ -22,6 +22,7 @@ from microcosm_emitter.telemetry.protocol import (
     TelemetryStatus,
 )
 from microcosm_emitter.telemetry.requests import (
+    COMMAND_BLOCK,
     COMMAND_CALIBRATION_PROGRESS,
     COMMAND_COMPLETE,
     COMMAND_EMIT,
@@ -75,10 +76,12 @@ class LocalTelemetryEmitter:
         run: TelemetryRun,
         transport: Transport | None,
         handle: ServiceHandle | None = None,
+        close_service_on_finish: bool = True,
     ) -> None:
         self.run = run
         self._transport = transport
         self._handle = handle
+        self._close_service_on_finish = close_service_on_finish
         self._closed = False
         self._warned = False
 
@@ -92,6 +95,7 @@ class LocalTelemetryEmitter:
         development_collector_url: str | None = None,
         heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
         startup_timeout_seconds: float = 3.0,
+        close_service_on_finish: bool = True,
     ) -> LocalTelemetryEmitter:
         """Start the installed service; return a disabled adapter on failure."""
         try:
@@ -113,8 +117,15 @@ class LocalTelemetryEmitter:
                 SERVICE_START_WARNING.format(error_type=type(error).__name__),
                 file=sys.stderr,
             )
-            return cls(run=run, transport=None)
-        return cls(run=run, transport=handle.client, handle=handle)
+            return cls(
+                run=run, transport=None, close_service_on_finish=close_service_on_finish
+            )
+        return cls(
+            run=run,
+            transport=handle.client,
+            handle=handle,
+            close_service_on_finish=close_service_on_finish,
+        )
 
     @property
     def available(self) -> bool:
@@ -215,6 +226,7 @@ class LocalTelemetryEmitter:
         *,
         failed_during: str | None = None,
         failure_class: str = DEFAULT_FAILURE_CLASS,
+        error_code: str | None = None,
     ) -> None:
         try:
             try:
@@ -228,15 +240,39 @@ class LocalTelemetryEmitter:
                 error_type=type(error).__name__,
                 failed_during=failed_during,
                 failure_class=failure_class,
+                **({"error_code": error_code} if error_code is not None else {}),
             )
         finally:
-            self.close()
+            if self._close_service_on_finish:
+                self.close()
+
+    def block(
+        self,
+        *,
+        phase: str,
+        blocking_gate_ids: list[str] | tuple[str, ...],
+        blocking_failure_count: int | None = None,
+        gate_statuses: Mapping[str, str] | None = None,
+    ) -> None:
+        """Ask the service to finish a run refused by its validation checks."""
+        try:
+            self._request(
+                COMMAND_BLOCK,
+                phase=phase,
+                blocking_gate_ids=blocking_gate_ids,
+                blocking_failure_count=blocking_failure_count,
+                gate_statuses=gate_statuses,
+            )
+        finally:
+            if self._close_service_on_finish:
+                self.close()
 
     def complete(self) -> None:
         try:
             self._request(COMMAND_COMPLETE)
         finally:
-            self.close()
+            if self._close_service_on_finish:
+                self.close()
 
     def close(self) -> None:
         """Request a bounded background drain without inventing a build outcome."""

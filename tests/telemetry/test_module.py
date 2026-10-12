@@ -330,3 +330,148 @@ def test_invalid_stage_identifier_preserves_queue_and_lifecycle(
     module.handle_message({"command": "complete"})
     assert [event["sequence"] for event in events(module)] == [1, 2, 3, 4]
     assert events(module)[-1]["status"] == "completed"
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_block_closes_active_stage_and_finishes_without_failure(module, active):
+    if active:
+        module.handle_message(
+            {"command": "transition_stage", "stage_id": "hf_download"}
+        )
+    module.handle_message(
+        {
+            "command": "block",
+            "phase": "preflight",
+            "blocking_gate_ids": ["uk_local_target_fit"],
+            "gate_statuses": {"uk_local_target_fit": "failed"},
+        }
+    )
+    recorded = events(module)
+    assert (
+        recorded[-1]["event_type"],
+        recorded[-1]["stage_id"],
+        recorded[-1]["status"],
+    ) == ("run", "blocked", "blocked")
+    assert recorded[-1]["details"] == {
+        "phase": "preflight",
+        "blocking_gate_ids": ["uk_local_target_fit"],
+        "blocking_failure_count": 1,
+        "gate_statuses": {"uk_local_target_fit": "failed"},
+    }
+    if active:
+        assert (recorded[-2]["stage_id"], recorded[-2]["status"]) == (
+            "hf_download",
+            "completed",
+        )
+    assert module.lifecycle.finished and module.lifecycle.transition_stage is None
+    module.parent_exited()
+    module.tick(time.monotonic() + 120)
+    module.handle_message({"command": "complete"})
+    assert events(module) == recorded
+
+
+def test_block_accepts_empty_ids_with_explicit_positive_count(module):
+    module.handle_message(
+        {
+            "command": "block",
+            "phase": "post_solve",
+            "blocking_gate_ids": [],
+            "blocking_failure_count": 3,
+        }
+    )
+    assert events(module)[-1]["details"] == {
+        "phase": "post_solve",
+        "blocking_gate_ids": [],
+        "blocking_failure_count": 3,
+    }
+
+
+@pytest.mark.parametrize(
+    "failure_class,error_code",
+    [
+        ("error", "BUILD_FAILED"),
+        ("interrupted", "BUILD_INTERRUPTED"),
+        ("terminated", "BUILD_TERMINATED"),
+        ("oom", "BUILD_OUT_OF_MEMORY"),
+    ],
+)
+def test_failure_code_persists_on_stage_and_run(module, failure_class, error_code):
+    module.handle_message({"command": "transition_stage", "stage_id": "compile"})
+    module.handle_message(
+        {
+            "command": "fail",
+            "error_type": "MemoryError",
+            "message": "Bearer hf_private_credentials",
+            "failure_class": failure_class,
+            "error_code": error_code,
+        }
+    )
+    assert [event["details"]["error_code"] for event in events(module)[-2:]] == [
+        error_code,
+        error_code,
+    ]
+    assert events(module)[-1]["details"]["failure_class"] == failure_class
+    assert events(module)[-1]["message"] == "[redacted]"
+
+
+def test_block_commit_failure_preserves_stage_and_sequence(module):
+    module.handle_message({"command": "transition_stage", "stage_id": "compile"})
+    recorded = events(module)
+
+    def fail_commit(session):
+        session.flush()
+        raise OSError("simulated block commit failure")
+
+    factory = module.spool._session_factory
+    sqlalchemy_event.listen(factory, "before_commit", fail_commit)
+    try:
+        with pytest.raises(OSError, match="block commit"):
+            module.handle_message(
+                {
+                    "command": "block",
+                    "phase": "preflight",
+                    "blocking_gate_ids": ["check"],
+                }
+            )
+    finally:
+        sqlalchemy_event.remove(factory, "before_commit", fail_commit)
+    assert events(module) == recorded and not module.lifecycle.finished
+    assert module.lifecycle.transition_stage == "compile"
+    module.handle_message(
+        {"command": "block", "phase": "preflight", "blocking_gate_ids": ["check"]}
+    )
+    assert [event["sequence"] for event in events(module)] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"phase": "bad phase"},
+        {"phase": "hf_private_credentials"},
+        {"blocking_failure_count": 0},
+        {"blocking_failure_count": True},
+        {"blocking_failure_count": "1"},
+        {"blocking_gate_ids": [""]},
+        {"blocking_gate_ids": ["x" * 201]},
+        {"blocking_gate_ids": [1]},
+        {"blocking_gate_ids": [], "blocking_failure_count": None},
+        {"gate_statuses": {f"check-{number}": "x" * 2000 for number in range(10)}},
+    ],
+)
+def test_invalid_block_cannot_poison_queue_or_lifecycle(module, details):
+    module.handle_message({"command": "transition_stage", "stage_id": "compile"})
+    recorded, state = events(module), module.lifecycle
+    request = {
+        "command": "block",
+        "phase": "preflight",
+        "blocking_gate_ids": ["check"],
+        **details,
+    }
+    with pytest.raises((ValueError, TypeError)):
+        module.handle_message(request)
+    assert events(module) == recorded and module.lifecycle == state
+
+
+def test_uncoded_failure_omits_optional_error_code(module):
+    module.handle_message({"command": "fail", "message": "failed"})
+    assert "error_code" not in events(module)[-1]["details"]

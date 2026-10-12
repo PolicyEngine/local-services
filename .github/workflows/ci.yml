@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: PolicyEngine/calibration-diagnostics
-          ref: 80a2a4ac7654f586b2b4b8d4c6ec7d2379616722
+          ref: 280459c8d782658b3fb6098b27e9acba11af29d8
           path: .collector
           persist-credentials: false
       - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6

@@ -190,3 +190,128 @@ def test_lost_ack_retries_same_event_after_restart_without_duplicates(
     assert [entry["event_id"] for entry in response.json()["events"]] == [
         event["event_id"]
     ]
+
+
+@pytest.mark.parametrize("unnamed", [False, True])
+def test_blocked_run_projects_check_metadata_without_failure(
+    tmp_path,
+    monkeypatch,
+    live_collector,
+    unnamed,
+):
+    address, reader = live_collector
+    monkeypatch.setenv("HF_TOKEN", "hf_test_member")
+    run_id = uuid.uuid4().hex
+    emitter = LocalTelemetryEmitter.start(
+        run=TelemetryRun(run_id, "UK", "contract"),
+        spool_path=tmp_path / "blocked.sqlite3",
+        development_collector_url=address,
+    )
+    assert emitter.available
+    check_ids = [] if unnamed else ["uk_local_target_fit"]
+    count = 3 if unnamed else 1
+    try:
+        emitter.transition_stage("hf_download")
+        emitter.block(
+            phase="preflight",
+            blocking_gate_ids=check_ids,
+            blocking_failure_count=count,
+            gate_statuses={
+                "uk_local_target_fit": "failed",
+                "HF_TOKEN": "hf_private_check",
+            },
+        )
+        assert emitter._handle.process.wait(timeout=10) == 0
+    finally:
+        emitter.close()
+    response = reader.get(f"/v1/runs/{run_id}")
+    assert response.status_code == 200, response.text
+    document = response.json()
+    assert document["progress"]["status"] == "blocked"
+    assert document["progress"]["current_stage"] == "blocked"
+    assert document["progress"]["failure"] is None
+    expected = {
+        "phase": "preflight",
+        "blocking_gate_ids": check_ids,
+        "blocking_failure_count": count,
+    }
+    assert document["progress"]["block"] == expected
+    assert document["run_manifest"]["block"] == expected
+    assert document["run_manifest"]["failure"] is None
+    assert [(event["stage_id"], event["status"]) for event in document["events"]] == [
+        ("created", "started"),
+        ("hf_download", "started"),
+        ("hf_download", "completed"),
+        ("blocked", "blocked"),
+    ]
+    assert document["events"][-1]["details"] == {
+        **expected,
+        "gate_statuses": {"uk_local_target_fit": "failed", "HF_TOKEN": "[redacted]"},
+    }
+    assert "hf_private_check" not in response.text
+
+
+@pytest.mark.parametrize(
+    "failure_class,error_code,error",
+    [
+        ("error", "BUILD_FAILED", RuntimeError("Bearer hf_private_error")),
+        (
+            "interrupted",
+            "BUILD_INTERRUPTED",
+            KeyboardInterrupt("Bearer hf_private_error"),
+        ),
+        ("terminated", "BUILD_TERMINATED", RuntimeError("Bearer hf_private_error")),
+        ("oom", "BUILD_OUT_OF_MEMORY", MemoryError("Bearer hf_private_error")),
+    ],
+)
+def test_supplied_failure_codes_survive_collector_storage_and_documents(
+    tmp_path,
+    monkeypatch,
+    live_collector,
+    failure_class,
+    error_code,
+    error,
+):
+    address, reader = live_collector
+    monkeypatch.setenv("HF_TOKEN", "hf_test_member")
+    run_id = uuid.uuid4().hex
+    emitter = LocalTelemetryEmitter.start(
+        run=TelemetryRun(run_id, "UK", "contract"),
+        spool_path=tmp_path / "failed.sqlite3",
+        development_collector_url=address,
+    )
+    assert emitter.available
+    try:
+        emitter.transition_stage("hf_download")
+        emitter.fail(
+            error,
+            failed_during="hf_download",
+            failure_class=failure_class,
+            error_code=error_code,
+        )
+        assert emitter._handle.process.wait(timeout=10) == 0
+    finally:
+        emitter.close()
+    response = reader.get(f"/v1/runs/{run_id}")
+    assert response.status_code == 200, response.text
+    document = response.json()
+    # Generic details retain credential redaction; the wire stage identity does not.
+    expected = {
+        "error_code": error_code,
+        "error_type": type(error).__name__,
+        "failure_class": failure_class,
+        "failed_during": "[redacted]",
+    }
+    assert document["progress"]["status"] == "failed"
+    assert document["progress"]["current_stage"] == "failed"
+    assert document["progress"]["block"] is None
+    assert document["run_manifest"]["failure"] == document["progress"]["failure"]
+    assert document["progress"]["failure"] == {**expected, "message": "[redacted]"}
+    assert [
+        (event["stage_id"], event["status"]) for event in document["events"][-2:]
+    ] == [
+        ("hf_download", "failed"),
+        ("failed", "failed"),
+    ]
+    assert all(event["details"] == expected for event in document["events"][-2:])
+    assert "hf_private_error" not in response.text
