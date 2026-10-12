@@ -8,9 +8,9 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from microcosm_emitter.core.database import create_spool_engine
+from microcosm_emitter.core.models import TelemetryEventRecord
 from microcosm_emitter.telemetry.service import spool as spool_module
-from microcosm_emitter.telemetry.service.database import create_spool_engine
-from microcosm_emitter.telemetry.service.models import TelemetryEventRecord
 from microcosm_emitter.telemetry.service.spool import EventSpool
 
 FIXTURES = Path(__file__).parent / "fixtures"

@@ -6,8 +6,8 @@ import pytest
 from alembic import command
 from sqlalchemy import inspect
 
-from microcosm_emitter.telemetry.service.database import create_spool_engine
-from microcosm_emitter.telemetry.service.migrations import (
+from microcosm_emitter.core.database import create_spool_engine
+from microcosm_emitter.core.migrations import (
     alembic_config,
     current_database_revision,
 )
@@ -37,7 +37,7 @@ def test_migrations_match_models_and_reopening_preserves_sequences(tmp_path):
     ] == [1, 2]
     assert spool.batch("fixture-run", "producer-a")[0] == first
     assert first["event_id"] != second["event_id"]
-    assert current_database_revision(path) == "20261007_01"
+    assert current_database_revision(path) == "20261008_02"
     with (
         spool._engine.begin() as connection,
         alembic_config(connection=connection) as config,
@@ -82,5 +82,6 @@ def test_multiple_producers_and_local_only_survive_reopening(tmp_path):
         "alembic_version",
         "telemetry_runs",
         "telemetry_events",
+        "graph_publication_jobs",
     }
     spool.close()

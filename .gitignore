@@ -7,4 +7,6 @@ dist/
 .coverage
 .collector/
 .test-artifacts/
-
+node_modules/
+reader-dist/
+typescript/orrery/dist/

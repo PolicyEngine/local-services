@@ -228,3 +228,35 @@ def test_fixture_cleans_up_when_initialization_fails(request, monkeypatch):
         request.getfixturevalue("running")
     assert len(modules) == 1
     assert modules[0].closed.is_set()
+
+
+def test_query_timeout_override_preserves_short_acknowledgement_timeout(running):
+    module, client, errors = running
+    original_timeout = client.timeout
+
+    def delayed_query(message):
+        time.sleep(original_timeout + 0.05)
+        return {"value": message["value"]}
+
+    module.query = delayed_query
+    assert client.request({"value": "graph"}, module="default", timeout=1) == {
+        "value": "graph"
+    }
+    assert client.timeout == original_timeout
+    client.send({"ready": True})
+    assert not errors
+
+
+def test_query_timeout_rejects_unacknowledged_response(running):
+    module, client, errors = running
+
+    def delayed_query(message):
+        time.sleep(0.1)
+        return {"receipt": {"status": "pending"}}
+
+    module.query = delayed_query
+    with pytest.raises(LocalServiceError, match="TimeoutError"):
+        client.request({}, module="default", timeout=0.01)
+    time.sleep(0.15)
+    client.ping()
+    assert not errors

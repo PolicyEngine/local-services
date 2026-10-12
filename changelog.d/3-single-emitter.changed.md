@@ -1,0 +1,1 @@
+Integrate completed-graph publication into the single microcosm-emitter package. Keep graph adapters limited to socket requests and preserve shared SQLAlchemy/Alembic persistence, telemetry lifecycle behavior and separate TypeScript readers.

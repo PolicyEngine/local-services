@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from microcosm_emitter.telemetry.protocol import (
+    BUILD_BLOCKED_MESSAGE,
     BUILD_COMPLETED_MESSAGE,
     BUILD_STARTED_MESSAGE,
     CALIBRATION_EVENT_KIND,
@@ -14,12 +15,15 @@ from microcosm_emitter.telemetry.protocol import (
     EVENT_TYPE_PROGRESS,
     EVENT_TYPE_RUN,
     EVENT_TYPE_STAGE,
+    MAX_TELEMETRY_CHECK_ID_CHARS,
     MAX_TELEMETRY_MESSAGE_CHARS,
     SEQUENTIAL_STATUS_MAP,
+    STAGE_BLOCKED,
     STAGE_CALIBRATING,
     STAGE_COMPLETE,
     STAGE_CREATED,
     STAGE_FAILED,
+    STATUS_BLOCKED,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_PROGRESS,
@@ -27,6 +31,7 @@ from microcosm_emitter.telemetry.protocol import (
     TELEMETRY_IDENTIFIER_PATTERN,
 )
 from microcosm_emitter.telemetry.requests import (
+    COMMAND_BLOCK,
     COMMAND_CALIBRATION_PROGRESS,
     COMMAND_COMPLETE,
     COMMAND_EMIT,
@@ -53,7 +58,7 @@ _EVENT_TYPES = frozenset(
     }
 )
 _STATUSES = frozenset(
-    {STATUS_STARTED, STATUS_PROGRESS, STATUS_COMPLETED, STATUS_FAILED}
+    {STATUS_STARTED, STATUS_PROGRESS, STATUS_COMPLETED, STATUS_FAILED, STATUS_BLOCKED}
 )
 
 
@@ -111,6 +116,28 @@ def _optional_stage_id(value: Any) -> str | None:
     return value
 
 
+def _validate_block_details(details: Mapping[str, Any]) -> None:
+    """Match the collector's required refusal metadata before persistence."""
+    phase = details.get("phase")
+    count = details.get("blocking_failure_count")
+    check_ids = details.get("blocking_gate_ids")
+    if (
+        not isinstance(phase, str)
+        or re.fullmatch(TELEMETRY_IDENTIFIER_PATTERN, phase) is None
+    ):
+        raise ValueError("blocked phase must be a safe identifier")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("blocking_failure_count must be an integer of at least 1")
+    if not isinstance(check_ids, list) or any(
+        not isinstance(check_id, str)
+        or not 1 <= len(check_id) <= MAX_TELEMETRY_CHECK_ID_CHARS
+        for check_id in check_ids
+    ):
+        raise ValueError(
+            "blocking_gate_ids must contain check identifiers of 1 to 200 characters"
+        )
+
+
 def _event(
     event_type: str,
     status: str,
@@ -123,6 +150,13 @@ def _event(
     if not isinstance(status, str) or status not in _STATUSES:
         raise ValueError("unsupported telemetry status")
     stage_id, message = _optional_stage_id(stage_id), _optional_text(message)
+    original_details = _mapping(details if details is not None else {})
+    if status == STATUS_BLOCKED:
+        _validate_block_details(original_details)
+    safe_details = sanitize_details(original_details)
+    if status == STATUS_BLOCKED:
+        # Redaction/size handling must not make a valid block undeliverable.
+        _validate_block_details(safe_details)
     return {
         "timestamp": utc_now(),
         "event_type": event_type,
@@ -131,7 +165,7 @@ def _event(
         "message": sanitize_text(message, limit=MAX_TELEMETRY_MESSAGE_CHARS)
         if message
         else None,
-        "details": sanitize_details(_mapping(details if details is not None else {})),
+        "details": safe_details,
     }
 
 
@@ -201,6 +235,8 @@ class _RequestProcessor:
                 )
         elif command == COMMAND_FAIL:
             self.fail(request)
+        elif command == COMMAND_BLOCK:
+            self.block(request)
         elif command == COMMAND_COMPLETE:
             self.close_stage()
             self.add(
@@ -221,7 +257,11 @@ class _RequestProcessor:
         details: Mapping[str, Any] | None = None,
     ) -> None:
         self.events.append(_event(event_type, status, stage_id, message, details))
-        if event_type == EVENT_TYPE_RUN and status in {STATUS_COMPLETED, STATUS_FAILED}:
+        if event_type == EVENT_TYPE_RUN and status in {
+            STATUS_COMPLETED,
+            STATUS_FAILED,
+            STATUS_BLOCKED,
+        }:
             self.state = replace(self.state, finished=True, transition_stage=None)
         elif stage_id is not None:
             self.state = replace(self.state, last_stage=stage_id)
@@ -275,6 +315,32 @@ class _RequestProcessor:
             ),
             "failed_during": failed_stage,
         }
+        error_code = _optional_text(request.get("error_code"))
+        if error_code is not None:
+            details["error_code"] = error_code
         message = _optional_text(request.get("message"))
         self.close_stage(STATUS_FAILED, message, details)
         self.add(EVENT_TYPE_RUN, STATUS_FAILED, STAGE_FAILED, message, details)
+
+    def block(self, request: Mapping[str, Any]) -> None:
+        check_ids = request.get("blocking_gate_ids")
+        if not isinstance(check_ids, list):
+            raise ValueError("blocking_gate_ids must be a list")
+        count = request.get("blocking_failure_count")
+        details = {
+            "phase": request.get("phase"),
+            "blocking_gate_ids": check_ids,
+            "blocking_failure_count": len(check_ids) if count is None else count,
+        }
+        statuses = request.get("gate_statuses")
+        if statuses is not None:
+            details["gate_statuses"] = _mapping(statuses)
+        _validate_block_details(details)
+        self.close_stage()
+        self.add(
+            EVENT_TYPE_RUN,
+            STATUS_BLOCKED,
+            STAGE_BLOCKED,
+            BUILD_BLOCKED_MESSAGE.format(phase=details["phase"]),
+            details,
+        )

@@ -4,16 +4,22 @@ import math
 import threading
 import time
 
-from microcosm_emitter.host.contracts import JsonObject, ModuleContext
-from microcosm_emitter.telemetry.protocol import UNEXPECTED_PROCESS_EXIT_MESSAGE
-from microcosm_emitter.telemetry.requests import COMMAND_FAIL
-from microcosm_emitter.telemetry.service.collector import CollectorDelivery
-from microcosm_emitter.telemetry.service.constants import (
+from microcosm_emitter.core.auth import (
+    _collector_origin,
+    _development_collector_url,
+    shared_session,
+)
+from microcosm_emitter.core.constants import (
     DEFAULT_HEARTBEAT_SECONDS,
     DRAIN_RETRY_SECONDS,
     FAILURE_CLASS_UNEXPECTED_PROCESS_EXIT,
     MINIMUM_HEARTBEAT_SECONDS,
+    PRODUCTION_COLLECTOR_URL,
 )
+from microcosm_emitter.host.contracts import JsonObject, ModuleContext
+from microcosm_emitter.telemetry.protocol import UNEXPECTED_PROCESS_EXIT_MESSAGE
+from microcosm_emitter.telemetry.requests import COMMAND_FAIL
+from microcosm_emitter.telemetry.service.collector import CollectorDelivery
 from microcosm_emitter.telemetry.service.lifecycle import (
     LifecycleState,
     heartbeat_event,
@@ -49,6 +55,14 @@ class TelemetryModule:
         try:
             self.delivery = CollectorDelivery(
                 self.spool,
+                session=shared_session(
+                    self.context.services,
+                    _development_collector_url(
+                        self.configuration["development_collector_url"]
+                    )
+                    if self.configuration.get("development_collector_url")
+                    else _collector_origin(PRODUCTION_COLLECTOR_URL),
+                ),
                 development_collector_url=self.configuration.get(
                     "development_collector_url"
                 ),

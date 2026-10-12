@@ -147,3 +147,110 @@ def test_serialization_preserves_paths_and_handles_nonfinite_numbers(emitter):
         "path": "/tmp/test",
         "loss": None,
     }
+
+
+def test_block_forwards_metadata_without_constructing_outcome(emitter):
+    emitter.block(phase="preflight", blocking_gate_ids=("uk_local_target_fit",))
+    assert emitter._transport.requests == [
+        {
+            "command": "block",
+            "phase": "preflight",
+            "blocking_gate_ids": ["uk_local_target_fit"],
+            "blocking_failure_count": None,
+            "gate_statuses": None,
+        }
+    ]
+    assert emitter._transport.closed and not emitter.available
+
+
+def test_failure_code_is_forwarded_without_classifying_exception(emitter):
+    emitter.fail(
+        KeyboardInterrupt("operator"),
+        failed_during="compile",
+        failure_class="interrupted",
+        error_code="BUILD_INTERRUPTED",
+    )
+    assert emitter._transport.requests[-1]["error_code"] == "BUILD_INTERRUPTED"
+    assert emitter._transport.requests[-1]["failure_class"] == "interrupted"
+    assert emitter._transport.requests[-1]["error_type"] == "KeyboardInterrupt"
+    assert emitter._transport.closed
+
+
+def test_block_transport_failure_still_closes(emitter, monkeypatch):
+    def failed(request):
+        raise OSError("synthetic private error")
+
+    monkeypatch.setattr(emitter._transport, "send", failed)
+    emitter.block(phase="preflight", blocking_gate_ids=["check"])
+    assert emitter._transport.closed and not emitter.available
+
+
+@pytest.mark.parametrize("outcome", ["complete", "fail", "block"])
+@pytest.mark.parametrize("deferred", [False, True])
+@pytest.mark.parametrize("send_fails", [False, True])
+def test_outcome_cleanup_can_be_deferred(outcome, deferred, send_fails, monkeypatch):
+    transport = RecordingTransport()
+    emitter = LocalTelemetryEmitter(
+        run=TelemetryRun("run", "UK", "test"),
+        transport=transport,
+        close_service_on_finish=not deferred,
+    )
+    if send_fails:
+
+        def failed(request):
+            raise OSError("synthetic send failure")
+
+        monkeypatch.setattr(transport, "send", failed)
+    try:
+        if outcome == "fail":
+            emitter.fail(RuntimeError("synthetic"), error_code="BUILD_FAILED")
+        elif outcome == "block":
+            emitter.block(phase="preflight", blocking_gate_ids=["check"])
+        else:
+            emitter.complete()
+        assert transport.closed is not deferred
+        assert emitter.available is deferred
+    finally:
+        emitter.close()
+    assert transport.closed and not emitter.available
+
+
+@pytest.mark.parametrize("outcome", ["complete", "fail", "block"])
+def test_cleanup_failure_is_contained_for_every_outcome(outcome, monkeypatch):
+    transport = RecordingTransport()
+    emitter = LocalTelemetryEmitter(
+        run=TelemetryRun("run", "UK", "test"),
+        transport=transport,
+    )
+
+    def failed():
+        raise OSError("synthetic cleanup failure")
+
+    monkeypatch.setattr(transport, "close", failed)
+    if outcome == "fail":
+        emitter.fail(RuntimeError("synthetic"))
+    elif outcome == "block":
+        emitter.block(phase="preflight", blocking_gate_ids=["check"])
+    else:
+        emitter.complete()
+    assert not emitter.available
+
+
+def test_start_propagates_deferred_cleanup(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+
+    transport = RecordingTransport()
+    handle = Mock(client=transport)
+    monkeypatch.setattr(client, "start_service", Mock(return_value=handle))
+    emitter = LocalTelemetryEmitter.start(
+        run=TelemetryRun("run", "UK", "test"),
+        spool_path=tmp_path / "spool",
+        close_service_on_finish=False,
+    )
+    try:
+        emitter.complete()
+        handle.close.assert_not_called()
+        assert emitter.available
+    finally:
+        emitter.close()
+    handle.close.assert_called_once()

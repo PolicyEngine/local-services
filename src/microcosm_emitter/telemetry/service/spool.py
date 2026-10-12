@@ -13,8 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from microcosm_emitter.telemetry.protocol import TELEMETRY_SCHEMA_VERSION
-from microcosm_emitter.telemetry.service.constants import (
+from microcosm_emitter.core.constants import (
     BATCH_SIZE,
     MAX_QUEUED_BYTES,
     PRUNE_INTERVAL_SECONDS,
@@ -22,18 +21,19 @@ from microcosm_emitter.telemetry.service.constants import (
     UPLOAD_STATE_LOCAL_ONLY,
     UPLOAD_STATE_PENDING,
 )
-from microcosm_emitter.telemetry.service.database import (
+from microcosm_emitter.core.database import (
     create_spool_engine,
     create_spool_session_factory,
 )
-from microcosm_emitter.telemetry.service.migrations import (
+from microcosm_emitter.core.migrations import (
     upgrade_spool_database,
 )
-from microcosm_emitter.telemetry.service.models import (
+from microcosm_emitter.core.models import (
     TelemetryEventRecord,
     TelemetryRunRecord,
     serialized_json_length,
 )
+from microcosm_emitter.telemetry.protocol import TELEMETRY_SCHEMA_VERSION
 from microcosm_emitter.telemetry.service.timestamps import utc_now
 
 

@@ -18,6 +18,8 @@ def imports(path):
 
 def test_generic_runtime_has_no_domain_or_database_imports():
     forbidden = (
+        "microcosm_emitter.core",
+        "microcosm_emitter.orrery",
         "microcosm_emitter.telemetry",
         "microcosm",
         "sqlalchemy",
@@ -66,6 +68,7 @@ import microcosm_emitter
 import microcosm_emitter.host
 import microcosm_emitter.telemetry
 import microcosm_emitter.telemetry.client
+import microcosm_emitter.orrery.client
 assert not any(name in sys.modules for name in (
     "sqlalchemy", "alembic", "huggingface_hub",
     "microcosm_emitter.telemetry.service",
@@ -76,8 +79,27 @@ assert not any(name in sys.modules for name in (
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
+def test_graph_client_has_no_service_database_auth_or_http_imports():
+    root = ROOT / "src/microcosm_emitter/orrery"
+    forbidden = (
+        "microcosm_emitter.core",
+        "microcosm_emitter.orrery.service",
+        "sqlalchemy",
+        "alembic",
+        "huggingface_hub",
+        "httpx",
+        "microcosm",
+    )
+    for path in (root / "client.py", root / "contracts.py"):
+        assert not any(
+            name == prefix or name.startswith(prefix + ".")
+            for name in imports(path)
+            for prefix in forbidden
+        ), path
+
+
 def test_database_code_has_no_raw_sql_or_manual_schema_creation():
-    paths = list((ROOT / "src/microcosm_emitter/telemetry").rglob("*.py"))
+    paths = list((ROOT / "src/microcosm_emitter").rglob("*.py"))
     assert paths
     for path in paths:
         tree = ast.parse(path.read_text())

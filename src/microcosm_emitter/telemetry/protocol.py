@@ -8,7 +8,7 @@ from typing import Final, Literal
 type TelemetryEventType = Literal[
     "run", "stage", "progress", "calibration", "heartbeat"
 ]
-type TelemetryStatus = Literal["started", "progress", "completed", "failed"]
+type TelemetryStatus = Literal["started", "progress", "completed", "failed", "blocked"]
 
 TELEMETRY_SCHEMA_VERSION: Final = 1
 TELEMETRY_IDENTIFIER_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"
@@ -23,15 +23,18 @@ STATUS_STARTED: Final = "started"
 STATUS_PROGRESS: Final = "progress"
 STATUS_COMPLETED: Final = "completed"
 STATUS_FAILED: Final = "failed"
+STATUS_BLOCKED: Final = "blocked"
 
 STAGE_CREATED: Final = "created"
 STAGE_CALIBRATING: Final = "calibrating"
 STAGE_COMPLETE: Final = "complete"
 STAGE_FAILED: Final = "failed"
+STAGE_BLOCKED: Final = "blocked"
 
 CALIBRATION_EVENT_KIND: Final = "calibration_epoch"
 BUILD_STARTED_MESSAGE: Final = "Microcosm build started."
 BUILD_COMPLETED_MESSAGE: Final = "Microcosm build completed."
+BUILD_BLOCKED_MESSAGE: Final = "Validation checks refused the candidate at {phase}."
 UNEXPECTED_PROCESS_EXIT_MESSAGE: Final = (
     "The build process exited without reporting completion."
 )
@@ -41,6 +44,7 @@ MAX_TELEMETRY_MESSAGE_CHARS: Final = 500
 MAX_TELEMETRY_DETAILS_DEPTH: Final = 6
 MAX_TELEMETRY_COLLECTION_ITEMS: Final = 200
 MAX_TELEMETRY_DETAILS_BYTES: Final = 8_192
+MAX_TELEMETRY_CHECK_ID_CHARS: Final = 200
 SEQUENTIAL_STATUS_MAP: Final = MappingProxyType(
     {
         "failed": STATUS_FAILED,

@@ -10,6 +10,7 @@ dependencies = [
     "sqlalchemy>=2,<3",
     "huggingface-hub>=0.20,<2",
     "psutil>=6,<8",
+    "httpx>=0.27,<1",
 ]
 
 [project.urls]
@@ -17,6 +18,10 @@ Source = "https://github.com/PolicyEngine/microcosm-emitter"
 
 [project.entry-points."microcosm.emitter.modules"]
 telemetry = "microcosm_emitter.telemetry.service:create_module"
+orrery = "microcosm_emitter.orrery.service:create_module"
+
+[project.scripts]
+microcosm-emitter-publish-graph = "microcosm_emitter.orrery.cli:main"
 
 [build-system]
 requires = ["hatchling"]

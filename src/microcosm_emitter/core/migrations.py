@@ -15,7 +15,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import inspect
 from sqlalchemy.engine import Connection, Engine
 
-from microcosm_emitter.telemetry.service.database import create_spool_engine
+from microcosm_emitter.core.database import create_spool_engine
 
 _MIGRATION_TARGET = "head"
 

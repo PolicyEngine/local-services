@@ -3,7 +3,7 @@
 from alembic import context
 from sqlalchemy.engine import Connection
 
-from microcosm_emitter.telemetry.service.models import SpoolModel
+from microcosm_emitter.core.models import SpoolModel
 
 _MISSING_CONNECTION_ERROR = (
     "telemetry spool migrations require a programmatically supplied connection"

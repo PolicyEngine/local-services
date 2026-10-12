@@ -53,11 +53,23 @@ class ServiceHandle:
 def start_service(
     module: str, configuration: JsonObject, *, startup_timeout: float = STARTUP_TIMEOUT
 ) -> ServiceHandle:
+    """Start one explicitly selected module."""
+    return start_services({module: configuration}, startup_timeout=startup_timeout)
+
+
+def start_services(
+    modules: JsonObject, *, startup_timeout: float = STARTUP_TIMEOUT
+) -> ServiceHandle:
     """Return after readiness, or reap the child and remove temporary files."""
     directory = None
     process = None
     try:
-        payload = json.dumps(configuration, allow_nan=False).encode()
+        if not modules or any(
+            not isinstance(name, str) or not isinstance(settings, dict)
+            for name, settings in modules.items()
+        ):
+            raise LocalServiceError("Module configuration must be a nonempty mapping.")
+        payload = json.dumps(modules, allow_nan=False).encode()
         if len(payload) > MAX_MESSAGE_BYTES:
             raise LocalServiceError("Service configuration is too large.")
         deadline = time.monotonic() + startup_timeout
@@ -73,8 +85,6 @@ def start_service(
                     sys.executable,
                     "-m",
                     MODULE_HOST,
-                    "--module",
-                    module,
                     "--socket",
                     str(path),
                     "--parent-pid",

@@ -3,8 +3,25 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
+import pytest
 from alembic import command
+from sqlalchemy.orm import Session
 
+from microcosm_emitter.core.constants import (
+    PRODUCTION_COLLECTOR_URL,
+)
+from microcosm_emitter.core.database import (
+    create_spool_engine,
+)
+from microcosm_emitter.core.migrations import (
+    alembic_config,
+    current_database_revision,
+    migration_head_revision,
+)
+from microcosm_emitter.core.models import (
+    TelemetryRunRecord,
+    serialized_json_length,
+)
 from microcosm_emitter.telemetry.client import (
     TelemetryRun,
 )
@@ -15,20 +32,6 @@ from microcosm_emitter.telemetry.service import collector as collector_module
 from microcosm_emitter.telemetry.service import resources as resources_module
 from microcosm_emitter.telemetry.service import spool as spool_module
 from microcosm_emitter.telemetry.service.collector import CollectorDelivery
-from microcosm_emitter.telemetry.service.constants import (
-    PRODUCTION_COLLECTOR_URL,
-)
-from microcosm_emitter.telemetry.service.database import (
-    create_spool_engine,
-)
-from microcosm_emitter.telemetry.service.migrations import (
-    alembic_config,
-    current_database_revision,
-    migration_head_revision,
-)
-from microcosm_emitter.telemetry.service.models import (
-    serialized_json_length,
-)
 from microcosm_emitter.telemetry.service.sanitization import (
     sanitize_details,
     sanitize_json,
@@ -313,6 +316,120 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
     reopened = EventSpool(spool_path)
     monkeypatch.setattr(collector_module, "_huggingface_token", lambda: "hf-later")
     assert reopened.pending_runs() == []
+
+
+@pytest.mark.parametrize("endpoint", ["registration", "events"])
+@pytest.mark.parametrize("status", [400, 404, 413, 422])
+def test_permanent_collector_rejection_retains_only_rejected_producer(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    endpoint,
+    status,
+):
+    spool = EventSpool(tmp_path / "rejected.sqlite3")
+    bad = _registration()
+    good = {**bad, "producer_id": "producer-good"}
+    spool.register(bad)
+    spool.register(good)
+    rejected = spool.append(bad, _event())
+    spool.append(good, _event())
+    requests = []
+    monkeypatch.setattr(
+        collector_module, "_huggingface_token", lambda: "hf_test_member"
+    )
+
+    def post(url, payload, token):
+        requests.append((url, payload))
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic", "expires_in": 3600}
+        if url.endswith("/v1/runs"):
+            if (
+                endpoint == "registration"
+                and payload["producer_id"] == bad["producer_id"]
+            ):
+                return status, {}
+            return 201, {}
+        if (
+            endpoint == "events"
+            and payload["events"][0]["producer_id"] == bad["producer_id"]
+        ):
+            return status, {}
+        return 202, {}
+
+    monkeypatch.setattr(collector_module, "_http_post", post)
+    delivery = CollectorDelivery(spool, development_collector_url="http://127.0.0.1:1")
+    try:
+        assert delivery.flush_once()  # The unrelated producer still uploads.
+        assert spool.pending_runs() == []
+        assert spool.batch(bad["run_id"], bad["producer_id"]) == [rejected]
+        with Session(spool._engine) as session:
+            record = session.get(
+                TelemetryRunRecord, (bad["run_id"], bad["producer_id"])
+            )
+            assert record.upload_state == "local_only"
+            assert record.local_only_reason == (
+                "collector_rejected_events"
+                if endpoint == "events"
+                else "run_registration_rejected"
+            )
+        request_count = len(requests)
+        assert not delivery.flush_once()
+        assert len(requests) == request_count
+        warning = capsys.readouterr().err
+        assert warning.count("local-only for this run") == 1
+        if endpoint == "events":
+            assert f"HTTP {status}" in warning and "will not be retried" in warning
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize("endpoint", ["registration", "events"])
+@pytest.mark.parametrize("status", [408, 429, 503, None])
+def test_transient_collector_rejection_remains_retryable(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+    status,
+):
+    spool = EventSpool(tmp_path / "retry.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    queued = spool.append(registration, _event())
+    clock = [100.0]
+    attempts = []
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        collector_module, "_huggingface_token", lambda: "hf_test_member"
+    )
+
+    def post(url, payload, token):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic", "expires_in": 3600}
+        current_endpoint = "registration" if url.endswith("/v1/runs") else "events"
+        if current_endpoint == endpoint:
+            attempts.append(current_endpoint)
+            if len(attempts) == 1:
+                if status is None:
+                    raise OSError("synthetic transient network failure")
+                return status, {}
+        return (201, {}) if current_endpoint == "registration" else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", post)
+    delivery = CollectorDelivery(spool, development_collector_url="http://127.0.0.1:1")
+    try:
+        assert not delivery.flush_once()
+        assert spool.pending_runs() == [registration]
+        assert spool.batch(registration["run_id"], registration["producer_id"]) == [
+            queued
+        ]
+        assert not delivery.flush_once()  # Respect the retry deadline.
+        assert len(attempts) == 1
+        clock[0] += 100.0
+        assert delivery.flush_once()
+        assert len(attempts) == 2 and not spool.has_pending()
+    finally:
+        spool.close()
 
 
 def test_resource_sampler_keeps_reaped_child_cpu_monotonic(monkeypatch) -> None:

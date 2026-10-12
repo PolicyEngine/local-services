@@ -3,11 +3,14 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import psutil
 import pytest
 
+from microcosm_emitter.host.launcher import start_services
+from microcosm_emitter.orrery.client import GraphPublicationClient
 from microcosm_emitter.telemetry.client import LocalTelemetryEmitter, TelemetryRun
 from microcosm_emitter.telemetry.service.spool import EventSpool
 
@@ -120,5 +123,85 @@ def test_simultaneous_builds_share_queue_without_auth_or_uploads(tmp_path, colle
             assert [
                 event["sequence"] for event in spool.batch("concurrent", str(number))
             ] == [1, 2, 3]
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize("outcome", ["complete", "fail", "block"])
+@pytest.mark.parametrize("export_fails", [False, True])
+def test_finished_telemetry_keeps_shared_graph_process_until_outer_cleanup(
+    tmp_path,
+    outcome,
+    export_fails,
+):
+    path = tmp_path / "combined.sqlite3"
+    run = TelemetryRun("combined-outcome", "UK", "test")
+    handle = start_services(
+        {
+            "telemetry": {
+                "registration": run.as_registration(),
+                "spool_path": str(path),
+                "heartbeat_seconds": 0.001,
+                "development_collector_url": "http://127.0.0.1:1",
+            },
+            "orrery": {
+                "spool_path": str(path),
+                "development_collector_url": "http://127.0.0.1:1",
+                "publication_origin": "http://127.0.0.1:1",
+            },
+        }
+    )
+    emitter = LocalTelemetryEmitter(
+        run=run,
+        transport=handle.client.for_module("telemetry"),
+        handle=handle,
+        close_service_on_finish=False,
+    )
+    graph = GraphPublicationClient(handle.client.for_module("orrery"))
+    directory = tmp_path / "graph"
+    directory.mkdir()
+    (directory / "graph.orrery.json").write_text('{"nodes":[]}')
+    expectation = (
+        pytest.raises(RuntimeError, match="synthetic export")
+        if export_fails
+        else nullcontext()
+    )
+    with expectation:
+        try:
+            emitter.transition_stage("hf_download")
+            if outcome == "block":
+                emitter.block(phase="preflight", blocking_gate_ids=["check"])
+            elif outcome == "fail":
+                emitter.fail(RuntimeError("synthetic"), error_code="BUILD_FAILED")
+            else:
+                emitter.complete()
+            assert emitter.available and handle.process.poll() is None
+            handle.client.ping()
+            inventory = graph.inventory(directory, {"graph.orrery.json": "graph"})
+            assert inventory is not None
+            assert graph.enqueue(directory, inventory)["status"] == "pending"
+            assert graph.receipt(inventory["publication_id"])["status"] == "pending"
+            emitter.stage("after-finish")
+            if export_fails:
+                raise RuntimeError("synthetic export")
+        finally:
+            graph.close()
+            emitter.close()
+            emitter.close()
+            assert handle.process.wait(timeout=20) == 0
+    spool = EventSpool(path)
+    try:
+        events = spool.batch(run.run_id, run.producer_id)
+        status = {"complete": "completed", "fail": "failed", "block": "blocked"}[
+            outcome
+        ]
+        finished_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["event_type"] == "run" and event["status"] == status
+        )
+        assert finished_index == len(events) - 1
+        assert events[-1]["status"] == status
+        assert not any(event["stage_id"] == "after-finish" for event in events)
     finally:
         spool.close()

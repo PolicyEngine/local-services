@@ -24,6 +24,7 @@ def test_single_distribution_with_required_telemetry_dependencies():
         "sqlalchemy>=2,<3",
         "huggingface-hub>=0.20,<2",
         "psutil>=6,<8",
+        "httpx>=0.27,<1",
     }
 
 
@@ -39,11 +40,13 @@ def test_installed_distribution_includes_host_telemetry_and_migrations():
     modules = list(entry_points(group="microcosm.emitter.modules", name="telemetry"))
     assert len(modules) == 1
     assert modules[0].value == "microcosm_emitter.telemetry.service:create_module"
+    graphs = list(entry_points(group="microcosm.emitter.modules", name="orrery"))
+    assert len(graphs) == 1
+    assert graphs[0].value == "microcosm_emitter.orrery.service:create_module"
+    assert find_spec("microcosm_emitter.orrery.client") is not None
     assert find_spec("microcosm_emitter.host.__main__") is not None
     assert find_spec("microcosm_emitter.telemetry.client") is not None
     assert (
-        find_spec(
-            "microcosm_emitter.telemetry.service.alembic.versions.v20261007_01_initial_spool"
-        )
+        find_spec("microcosm_emitter.core.alembic.versions.v20261007_01_initial_spool")
         is not None
     )
