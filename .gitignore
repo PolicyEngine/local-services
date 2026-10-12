@@ -8,4 +8,5 @@ dist/
 .collector/
 .test-artifacts/
 node_modules/
-*.tgz
+reader-dist/
+typescript/orrery/dist/

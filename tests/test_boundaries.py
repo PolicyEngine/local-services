@@ -18,15 +18,17 @@ def imports(path):
 
 def test_generic_runtime_has_no_domain_or_database_imports():
     forbidden = (
-        "microcosm_provider_telemetry",
-        "microcosm_provider_core",
-        "microcosm_provider_orrery",
+        "microcosm_emitter.core",
+        "microcosm_emitter.orrery",
+        "microcosm_emitter.telemetry",
         "microcosm",
         "sqlalchemy",
         "alembic",
         "huggingface_hub",
     )
-    for path in (ROOT / "packages/provider-client/src").rglob("*.py"):
+    paths = list((ROOT / "src/microcosm_emitter/host").rglob("*.py"))
+    assert paths
+    for path in paths:
         assert not any(
             name == prefix or name.startswith(prefix + ".")
             for name in imports(path)
@@ -35,15 +37,17 @@ def test_generic_runtime_has_no_domain_or_database_imports():
 
 
 def test_client_has_no_service_or_database_imports():
-    root = ROOT / "packages/provider-telemetry/src/microcosm_provider_telemetry"
+    root = ROOT / "src/microcosm_emitter/telemetry"
     forbidden = (
-        "microcosm_provider_telemetry.service",
+        "microcosm_emitter.telemetry.service",
         "sqlalchemy",
         "alembic",
         "huggingface_hub",
         "microcosm",
     )
-    for path in root.rglob("*.py"):
+    paths = list(root.rglob("*.py"))
+    assert paths
+    for path in paths:
         if "service" not in path.relative_to(root).parts:
             assert not any(
                 name == prefix or name.startswith(prefix + ".")
@@ -60,17 +64,44 @@ def audit(event, args):
     if event in {"socket.connect", "socket.bind", "subprocess.Popen", "os.mkdir"}:
         raise AssertionError(event)
 sys.addaudithook(audit)
-import microcosm_provider_client
-import microcosm_provider_telemetry
-import microcosm_provider_telemetry.client
-import microcosm_provider_orrery.client
-assert not any(name in sys.modules for name in ("sqlalchemy", "alembic", "huggingface_hub"))
+import microcosm_emitter
+import microcosm_emitter.host
+import microcosm_emitter.telemetry
+import microcosm_emitter.telemetry.client
+import microcosm_emitter.orrery.client
+assert not any(name in sys.modules for name in (
+    "sqlalchemy", "alembic", "huggingface_hub",
+    "microcosm_emitter.telemetry.service",
+    "microcosm_emitter.telemetry.service.lifecycle",
+    "microcosm_emitter.telemetry.service.sanitization",
+))
 """
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
+def test_graph_client_has_no_service_database_auth_or_http_imports():
+    root = ROOT / "src/microcosm_emitter/orrery"
+    forbidden = (
+        "microcosm_emitter.core",
+        "microcosm_emitter.orrery.service",
+        "sqlalchemy",
+        "alembic",
+        "huggingface_hub",
+        "httpx",
+        "microcosm",
+    )
+    for path in (root / "client.py", root / "contracts.py"):
+        assert not any(
+            name == prefix or name.startswith(prefix + ".")
+            for name in imports(path)
+            for prefix in forbidden
+        ), path
+
+
 def test_database_code_has_no_raw_sql_or_manual_schema_creation():
-    for path in (ROOT / "packages").glob("*/src/**/*.py"):
+    paths = list((ROOT / "src/microcosm_emitter").rglob("*.py"))
+    assert paths
+    for path in paths:
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):

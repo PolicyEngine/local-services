@@ -1,4 +1,4 @@
-"""Runs in an isolated interpreter containing only the installed distributions."""
+"""Verify the single installed distribution away from the source checkout."""
 
 import sys
 from importlib.metadata import distribution
@@ -6,24 +6,30 @@ from importlib.util import find_spec
 from pathlib import Path
 
 
-def base_smoke():
-    from microcosm_provider_client.client import SocketClient
-    from microcosm_provider_client.launcher import start_service
+def host_smoke():
+    from microcosm_emitter.host.client import SocketClient
+    from microcosm_emitter.host.launcher import start_service
 
     assert SocketClient and start_service
-    for name in (
-        "sqlalchemy",
-        "alembic",
-        "huggingface_hub",
-        "microcosm_provider_telemetry",
-        "microcosm",
-    ):
-        assert find_spec(name) is None, name
-    assert distribution("microcosm-provider-client").version
+    assert find_spec("microcosm") is None
+    emitter = distribution("microcosm-emitter")
+    assert emitter.version
+    assert emitter.metadata.get_all("Project-URL") == [
+        "Source, https://github.com/PolicyEngine/microcosm-emitter"
+    ]
+    for name in ("sqlalchemy", "alembic", "huggingface_hub"):
+        assert find_spec(name) is not None, name
+        assert name not in sys.modules, name
+    assert "microcosm_emitter.telemetry" not in sys.modules
+    from microcosm_emitter.orrery.client import GraphPublicationClient
+
+    assert GraphPublicationClient
+    assert "microcosm_emitter.core" not in sys.modules
+    assert "microcosm_emitter.orrery.service" not in sys.modules
 
 
 def telemetry_smoke():
-    from microcosm_provider_telemetry.client import LocalTelemetryEmitter, TelemetryRun
+    from microcosm_emitter.telemetry.client import LocalTelemetryEmitter, TelemetryRun
 
     assert "sqlalchemy" not in sys.modules
     assert "huggingface_hub" not in sys.modules
@@ -31,7 +37,12 @@ def telemetry_smoke():
     run = TelemetryRun("wheel-test", "UK", "installed")
     path = Path.cwd() / "spool" / "events.sqlite3"
     emitter = LocalTelemetryEmitter.start(
-        run=run, spool_path=path, development_collector_url="http://127.0.0.1:1"
+        run=run,
+        spool_path=path,
+        development_collector_url="http://127.0.0.1:1",
+        # A clean wheel install must compile dependency bytecode on first use.
+        # Test packaging independently of the production startup-time limit.
+        startup_timeout_seconds=10,
     )
     assert emitter.available
     try:
@@ -40,10 +51,10 @@ def telemetry_smoke():
         assert emitter._handle.process.wait(timeout=10) == 0
     finally:
         emitter.close()
-    from microcosm_provider_core.migrations import (
+    from microcosm_emitter.core.migrations import (
         current_database_revision,
     )
-    from microcosm_provider_telemetry.service.spool import EventSpool
+    from microcosm_emitter.telemetry.service.spool import EventSpool
 
     assert current_database_revision(path) == "20261008_02"
     spool = EventSpool(path)
@@ -56,14 +67,44 @@ def telemetry_smoke():
         spool.close()
 
 
+def graph_only_smoke():
+    from microcosm_emitter.orrery.client import GraphPublicationClient, publish_graph
+    from microcosm_emitter.orrery.service.queue import GraphPublicationQueue
+
+    path = Path.cwd() / "graph-only.sqlite3"
+    directory = Path.cwd() / "graph-only"
+    directory.mkdir()
+    (directory / "graph.orrery.json").write_text('{"synthetic":true}')
+    client = GraphPublicationClient.start(
+        spool_path=path,
+        development_collector_url="http://127.0.0.1:1",
+        publication_origin="http://127.0.0.1:1",
+        startup_timeout=10,
+    )
+    assert client.available
+    try:
+        inventory = client.inventory(directory, {"graph.orrery.json": "graph"})
+        assert inventory is not None and "run_id" not in inventory
+        receipt = publish_graph(directory, inventory, client=client, wait_seconds=0)
+        assert receipt["status"] == "pending"
+    finally:
+        handle = client._handle
+        client.close()
+        assert handle.process.wait(timeout=20) == 0
+    queue = GraphPublicationQueue(path)
+    try:
+        assert queue.receipt(inventory["publication_id"])["status"] == "pending"
+    finally:
+        queue.close()
+
+
 def combined_smoke():
-    from microcosm_provider_client.launcher import start_services
-    from microcosm_provider_orrery.client import publication_inventory, publish_graph
-    from microcosm_provider_orrery.service.queue import GraphPublicationQueue
-    from microcosm_provider_telemetry.client import LocalTelemetryEmitter, TelemetryRun
+    from microcosm_emitter.host.launcher import start_services
+    from microcosm_emitter.orrery.client import GraphPublicationClient, publish_graph
+    from microcosm_emitter.telemetry.client import LocalTelemetryEmitter, TelemetryRun
 
     path = Path.cwd() / "combined.sqlite3"
-    run = TelemetryRun("combined-test", "GB", "installed")
+    run = TelemetryRun("combined-test", "UK", "installed")
     handle = start_services(
         {
             "telemetry": {
@@ -74,36 +115,36 @@ def combined_smoke():
             "orrery": {
                 "spool_path": str(path),
                 "development_collector_url": "http://127.0.0.1:1",
+                "publication_origin": "http://127.0.0.1:1",
             },
-        }
+        },
+        startup_timeout=10,
     )
-    directory = Path.cwd() / "graph"
+    client = GraphPublicationClient(handle.client.for_module("orrery"))
+    directory = Path.cwd() / "combined-graph"
     directory.mkdir()
     (directory / "graph.orrery.json").write_text('{"synthetic":true}')
-    inventory = publication_inventory(directory, {"graph.orrery.json": "graph"})
     try:
         emitter = LocalTelemetryEmitter(
             run=run, transport=handle.client.for_module("telemetry")
         )
-        emitter.stage("compile")
+        emitter.stage("hf_download")
         emitter.complete()
-        handle.client.ping()  # Completing telemetry must not close publication.
-        receipt = publish_graph(directory, inventory, spool_path=path, wait_seconds=0)
-        assert receipt["status"] == "pending" and "run_id" not in inventory
-        handle.client.for_module("orrery").send(
-            {"directory": str(directory), "inventory": inventory}
+        handle.client.ping()
+        inventory = client.inventory(directory, {"graph.orrery.json": "graph"})
+        assert inventory is not None
+        assert (
+            publish_graph(directory, inventory, client=client, wait_seconds=0)["status"]
+            == "pending"
         )
     finally:
+        client.close()
         handle.close()
         assert handle.process.wait(timeout=20) == 0
-    queue = GraphPublicationQueue(path)
-    try:
-        assert queue.receipt(inventory["publication_id"])["status"] == "pending"
-    finally:
-        queue.close()
 
 
 if __name__ == "__main__":
-    {"base": base_smoke, "telemetry": telemetry_smoke, "combined": combined_smoke}[
-        sys.argv[1]
-    ]()
+    host_smoke()
+    telemetry_smoke()
+    graph_only_smoke()
+    combined_smoke()

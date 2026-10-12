@@ -48,7 +48,7 @@ def test_all_required_checks_include_real_collector_and_matrix():
     assert set(jobs["required"]["needs"]) == {
         "quality",
         "tests",
-        "artifacts",
+        "build-packages",
         "collector",
         "reader",
     }
@@ -56,29 +56,33 @@ def test_all_required_checks_include_real_collector_and_matrix():
         "os": ["ubuntu-latest", "macos-latest"],
         "python": ["3.13", "3.14"],
     }
-    assert jobs["collector"]["needs"] == "artifacts"
+    assert jobs["collector"]["needs"] == "build-packages"
     assert jobs["collector"]["env"]["TEST_DATABASE_URL"].endswith("/telemetry_test")
 
 
-def test_release_tag_matches_both_package_versions():
+def test_release_tag_matches_emitter_version():
     validate = runpy.run_path(str(ROOT / "tools/check-release.py"))["validate"]
     validate("v0.1.0")
     with pytest.raises(AssertionError, match="Release tag"):
         validate("v9.9.9")
 
 
-def test_reader_publishes_verified_tarball_after_python_with_oidc():
-    jobs = workflow("publish.yml")["jobs"]
-    reader = jobs["publish-reader"]
+def test_reader_publishes_only_verified_tarball_after_python():
+    reader = workflow("publish.yml")["jobs"]["publish-reader"]
     assert reader["needs"] == ["verify", "publish"]
     assert reader["environment"] == "pypi"
     assert reader["permissions"]["id-token"] == "write"
     download = next(
-        s for s in reader["steps"] if "download-artifact@" in s.get("uses", "")
+        step for step in reader["steps"] if "download-artifact@" in step.get("uses", "")
     )
     assert download["with"]["name"] == "orrery-reader"
     assert reader["steps"][-1]["run"] == "bash tools/publish-reader.sh"
-    assert (
-        workflow("ci.yml")["jobs"]["reader"]["steps"][-1]["with"]["name"]
-        == "orrery-reader"
-    )
+
+
+def test_build_verifies_one_distribution_without_a_workspace():
+    script = (ROOT / "tools/check-artifacts.sh").read_text()
+    assert script.count("uv build ") == 1
+    assert "--package" not in script
+    assert "--clear" in script
+    for path in (ROOT / ".github/workflows").glob("*.yml"):
+        assert "--all-packages" not in path.read_text()

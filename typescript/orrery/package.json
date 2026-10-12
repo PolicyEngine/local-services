@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PolicyEngine/microcosm-local-provider.git",
+    "url": "git+https://github.com/PolicyEngine/microcosm-emitter.git",
     "directory": "typescript/orrery"
   },
   "files": [
