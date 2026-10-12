@@ -16,11 +16,12 @@ class ModuleContext:
 
 
 class ServiceModule(Protocol):
-    """Message callbacks run on the socket thread; periodic work runs separately.
+    """Message/query callbacks run serially per module, independently of periodic work.
 
     Implementations must synchronize shared state. Returning from handle_message
     authorizes a success acknowledgement; persistence must finish before returning.
-    close runs on the worker after periodic work stops, with a monotonic deadline.
+    Parent-exit and close callbacks run after accepted requests finish and periodic
+    work stops. Close receives a monotonic deadline.
     """
 
     def initialize(self) -> None: ...

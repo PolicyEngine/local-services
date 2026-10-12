@@ -6,6 +6,7 @@ are not subject to the telemetry event queue's time or size pruning.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import re
@@ -292,7 +293,20 @@ class GraphPublicationQueue:
         # The queue row is authoritative. This separate latest-result file (not
         # the build/HF receipt) is a convenience copy, written only after the
         # commit: a deleted preserved directory must not roll back the result.
-        _write_status(directory, receipt)
+        self._write_latest_status(id_, directory)
+
+    def _write_latest_status(self, id_: str, directory: Path) -> None:
+        """Order status copies across processes and reload the committed receipt."""
+        lock_path = self.path.with_name(self.path.name + ".status.lock")
+        try:
+            with lock_path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                receipt = self.receipt(id_)
+                if receipt is not None:
+                    _write_status(directory, receipt)
+        except OSError:
+            # Status documents are best effort; durable completion already committed.
+            pass
 
     def retry(self, id_: str | None = None) -> None:
         """Make preserved pending jobs eligible again, including missing credentials."""

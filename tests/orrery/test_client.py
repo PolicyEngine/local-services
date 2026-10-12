@@ -235,3 +235,118 @@ def test_graph_never_retains_raw_startup_exception(monkeypatch, tmp_path):
     assert "hf_synthetic_private_payload" not in str(client.startup_error)
     assert client.startup_error.__cause__ is None
     assert client.startup_error.__context__ is None
+
+
+@pytest.mark.parametrize("command", ["inventory", "enqueue"])
+def test_graph_file_work_does_not_block_telemetry_or_control(
+    tmp_path, monkeypatch, capsys, command
+):
+    """Graph file I/O must not consume another module's acknowledgement time."""
+    import os
+    import tempfile
+    import threading
+    import time
+
+    from microcosm_emitter.host.client import SocketClient
+    from microcosm_emitter.host.contracts import ModuleContext
+    from microcosm_emitter.host.runtime import ServiceRuntime
+    from microcosm_emitter.orrery.service import module as graph_module
+    from microcosm_emitter.orrery.service import queue as graph_queue
+    from microcosm_emitter.telemetry.service.module import TelemetryModule
+
+    directory = graph_files(tmp_path)
+    inventory = graph_queue.publication_inventory(
+        directory, {"graph.orrery.json": "graph"}
+    )
+    run = TelemetryRun("concurrent-graph", "UK", "test")
+    context = ModuleContext(os.getpid())
+    settings = {
+        "spool_path": str(tmp_path / "events.sqlite3"),
+        "development_collector_url": "http://127.0.0.1:1",
+    }
+    telemetry = TelemetryModule(
+        {**settings, "registration": run.as_registration()}, context
+    )
+    graph = graph_module.OrreryModule(
+        {**settings, "publication_origin": "http://127.0.0.1:1"}, context
+    )
+    entered, release = threading.Event(), threading.Event()
+    original_inventory = graph_queue.publication_inventory
+
+    def delayed_inventory(*args, **kwargs):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test did not release graph file work")
+        return original_inventory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        graph_module if command == "inventory" else graph_queue,
+        "publication_inventory",
+        delayed_inventory,
+    )
+    errors, results = [], []
+    with tempfile.TemporaryDirectory(prefix="pe-concurrency-", dir="/tmp") as raw:
+        runtime = ServiceRuntime(
+            Path(raw) / "s",
+            modules={"telemetry": telemetry, "orrery": graph},
+            is_parent_alive=lambda: True,
+            tick_seconds=100,
+            drain_seconds=0,
+        )
+
+        def serve():
+            try:
+                runtime.run()
+            except Exception as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        client = SocketClient(runtime.socket_path)
+        graph_client = GraphPublicationClient(client.for_module("orrery"))
+        graph_thread = None
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    client.ping()
+                    break
+                except LocalServiceError:
+                    time.sleep(0.01)
+            assert not errors
+
+            def graph_request():
+                results.append(
+                    graph_client.inventory(directory, {"graph.orrery.json": "graph"})
+                    if command == "inventory"
+                    else graph_client.enqueue(directory, inventory)
+                )
+
+            graph_thread = threading.Thread(target=graph_request)
+            graph_thread.start()
+            assert entered.wait(3)
+            emitter = LocalTelemetryEmitter(
+                run=run,
+                transport=client.for_module("telemetry"),
+                close_service_on_finish=False,
+            )
+            emitter.complete()
+            assert telemetry.lifecycle.finished
+            assert "could not be queued" not in capsys.readouterr().err
+            client.ping()
+            client.close()
+            assert thread.is_alive()  # Shutdown waits for the accepted graph request.
+            release.set()
+            graph_thread.join(3)
+            thread.join(3)
+            assert not thread.is_alive() and not graph_thread.is_alive()
+            assert results[0] is not None
+            if command == "enqueue":
+                assert results[0]["status"] == "pending"
+            assert not errors
+        finally:
+            release.set()
+            runtime.stop()
+            if graph_thread is not None:
+                graph_thread.join(3)
+            thread.join(3)
