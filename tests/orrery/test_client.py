@@ -230,6 +230,8 @@ def test_graph_never_retains_raw_startup_exception(monkeypatch, tmp_path):
     )
     client = GraphPublicationClient.start(spool_path=tmp_path / "jobs")
     assert client.startup_error.reason == "startup_failure"
+    assert str(client.startup_error) == "Service startup failed (startup_failure)."
+    assert not hasattr(client.startup_error, "error_type")
     assert "hf_synthetic_private_payload" not in str(client.startup_error)
     assert client.startup_error.__cause__ is None
     assert client.startup_error.__context__ is None

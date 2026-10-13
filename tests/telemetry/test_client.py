@@ -113,7 +113,8 @@ def test_startup_failure_is_disabled_without_leaking_exception_details(
     emitter.complete()
     assert not emitter.available
     warning = capsys.readouterr().err
-    assert "PermissionError" in warning and "sensitive detail" not in warning
+    assert "startup_failure" in warning
+    assert "PermissionError" not in warning and "sensitive detail" not in warning
 
 
 def test_send_and_close_failures_never_interrupt_build(emitter, monkeypatch, capsys):
@@ -310,7 +311,9 @@ def test_telemetry_diagnostic_does_not_retain_raw_exception(
         run=TelemetryRun("run", "UK", "test"), spool_path=tmp_path / "jobs"
     )
     assert emitter.startup_error.reason == "startup_failure"
-    assert emitter.startup_error.error_type == "PermissionError"
+    assert emitter.startup_error.exit_code is None
+    assert str(emitter.startup_error) == "Service startup failed (startup_failure)."
+    assert not hasattr(emitter.startup_error, "error_type")
     assert emitter.startup_error.__cause__ is None
     assert emitter.startup_error.__context__ is None
     assert "hf_synthetic_private_payload" not in capsys.readouterr().err

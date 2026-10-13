@@ -152,7 +152,7 @@ def test_startup_error_and_traceback_do_not_retain_raw_exception(startup):
     with pytest.raises(LocalServiceError) as captured:
         launcher.start_service("test", {"token": "hf_synthetic_configuration"})
     assert captured.value.reason == "startup_failure"
-    assert captured.value.error_type == "PermissionError"
+    assert str(captured.value) == "Service startup failed (startup_failure)."
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
     rendered = "".join(traceback.format_exception(captured.value))
@@ -168,7 +168,8 @@ def test_custom_exception_type_name_is_not_a_startup_diagnostic(startup):
     startup.launch.side_effect = private_error("private payload")
     with pytest.raises(LocalServiceError) as captured:
         launcher.start_service("test", {})
-    assert captured.value.error_type == "Exception"
+    assert captured.value.reason == "startup_failure"
+    assert str(captured.value) == "Service startup failed (startup_failure)."
     assert "hf_synthetic_private_class" not in str(captured.value)
     assert "private payload" not in "".join(traceback.format_exception(captured.value))
 
@@ -255,6 +256,41 @@ def test_child_startup_stderr_redacts_exception_payload_and_spoofed_type(
     assert entry.main() == 1
     warning = capsys.readouterr().err
     assert "startup_failure" in warning
-    assert "Exception" in warning
+    assert warning == "Service startup failed (startup_failure).\n"
     assert "hf_synthetic_private" not in warning
     assert not directory.exists()
+
+
+@pytest.mark.parametrize("custom", [False, True])
+def test_startup_diagnostic_omits_all_exception_names_and_payloads(custom):
+    from microcosm_emitter.host.errors import safe_startup_error
+
+    error_class = (
+        type("hf_synthetic_private_class", (Exception,), {})
+        if custom
+        else PermissionError
+    )
+    failure = safe_startup_error(error_class("Bearer hf_synthetic_private_payload"))
+    assert str(failure) == "Service startup failed (startup_failure)."
+    assert failure.reason == "startup_failure" and failure.exit_code is None
+    assert not hasattr(failure, "error_type")
+    assert failure.__cause__ is failure.__context__ is failure.__traceback__ is None
+
+
+def test_startup_diagnostic_clones_only_reason_and_exit_code():
+    from microcosm_emitter.host.errors import ServiceStartupError, safe_startup_error
+
+    try:
+        raise ServiceStartupError("child_exit", exit_code=-9) from PermissionError(
+            "Bearer hf_synthetic_private_payload"
+        )
+    except ServiceStartupError as original:
+        failure = safe_startup_error(original)
+        assert failure is not original
+        assert (
+            str(failure)
+            == "Service exited before readiness (child_exit, exit_code=-9)."
+        )
+        assert failure.reason == "child_exit" and failure.exit_code == -9
+        assert not hasattr(failure, "error_type")
+        assert failure.__cause__ is failure.__context__ is failure.__traceback__ is None
