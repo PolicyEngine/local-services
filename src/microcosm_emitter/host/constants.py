@@ -10,6 +10,7 @@ ACK_OK: Final = b"ok\n"
 ACK_ERROR: Final = b"error\n"
 DELIMITER: Final = b"\n"
 MAX_MESSAGE_BYTES: Final = 1_048_576
+MAX_PENDING_REQUESTS: Final = 16
 READ_BYTES: Final = 65_536
 SEND_TIMEOUT: Final = 0.2
 STARTUP_TIMEOUT: Final = 15.0

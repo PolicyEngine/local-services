@@ -384,3 +384,249 @@ def test_orrery_module_survives_a_local_queue_error(capsys):
     module.tick(2.0)
     assert len(attempts) == 3
     assert capsys.readouterr().err.count("local queue error") == 1
+
+
+def test_status_file_reloads_newer_receipt_after_an_older_commit(tmp_path):
+    """A delayed writer must copy the latest committed receipt, not its old attempt."""
+    import threading
+
+    from sqlalchemy import event
+
+    directory, inventory = source(tmp_path)
+    queue = GraphPublicationQueue(tmp_path / "jobs.sqlite3")
+    newer = GraphPublicationQueue(queue.path)
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    queue.enqueue(directory, inventory)
+    lease = queue.claim()
+
+    def pause_after_commit(session):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test did not release older status writer")
+
+    event.listen(queue._sessions, "after_commit", pause_after_commit)
+
+    def failed_attempt():
+        try:
+            queue.finish(
+                lease.publication_id,
+                error_code="publication_network_error",
+                expected_lease=lease.lease_until,
+            )
+        except Exception as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=failed_attempt)
+    try:
+        thread.start()
+        assert entered.wait(3)
+        newer.retry(lease.publication_id)
+        current = newer.claim()
+        newer.finish(
+            current.publication_id,
+            url="https://runs.example/runs/published/",
+            expected_lease=current.lease_until,
+        )
+        release.set()
+        thread.join(3)
+        assert not thread.is_alive() and not errors
+        receipt = newer.receipt(lease.publication_id)
+        assert receipt["status"] == "published" and receipt["attempts"] == 2
+        assert (
+            json.loads((directory / "publication.status.json").read_text()) == receipt
+        )
+    finally:
+        release.set()
+        thread.join(3)
+        queue.close()
+        newer.close()
+
+
+def test_status_file_ordering_is_shared_across_processes(tmp_path):
+    """Independent emitter processes must coordinate writes to one status document."""
+    import subprocess
+    import sys
+    import time
+
+    directory, inventory = source(tmp_path)
+    queue = GraphPublicationQueue(tmp_path / "jobs.sqlite3")
+    queue.enqueue(directory, inventory)
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    script = """
+import sys, time
+from pathlib import Path
+from sqlalchemy import event
+from microcosm_emitter.orrery.service.queue import GraphPublicationQueue
+queue = GraphPublicationQueue(Path(sys.argv[1]))
+lease = queue.claim()
+def pause(session):
+    Path(sys.argv[2]).write_text('committed')
+    deadline = time.monotonic() + 5
+    while not Path(sys.argv[3]).exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('status test release')
+        time.sleep(0.01)
+event.listen(queue._sessions, 'after_commit', pause)
+queue.finish(lease.publication_id, error_code='publication_network_error', expected_lease=lease.lease_until)
+queue.close()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(queue.path), str(ready), str(release)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 3
+        while (
+            not ready.exists()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert ready.exists()
+        queue.retry(inventory["publication_id"])
+        current = queue.claim()
+        queue.finish(
+            current.publication_id,
+            url="https://runs.example/runs/published/",
+            expected_lease=current.lease_until,
+        )
+        release.write_text("continue")
+        stdout, stderr = process.communicate(timeout=3)
+        assert process.returncode == 0, stdout + stderr
+        receipt = queue.receipt(inventory["publication_id"])
+        assert receipt["status"] == "published" and receipt["attempts"] == 2
+        assert (
+            json.loads((directory / "publication.status.json").read_text()) == receipt
+        )
+    finally:
+        release.write_text("continue")
+        if process.poll() is None:
+            process.terminate()
+        process.communicate(timeout=3)
+        queue.close()
+
+
+def test_status_file_lock_covers_read_through_replace_across_processes(
+    tmp_path, monkeypatch
+):
+    """A second process must wait while an older writer holds its status-copy lock."""
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    from microcosm_emitter.orrery.service import queue as queue_module
+
+    directory, inventory = source(tmp_path)
+    queue = GraphPublicationQueue(tmp_path / "jobs.sqlite3")
+    queue.enqueue(directory, inventory)
+    lease = queue.claim()
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    original_write = queue_module._write_status
+
+    def paused_write(path, receipt):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("test did not release status copy")
+        original_write(path, receipt)
+
+    monkeypatch.setattr(queue_module, "_write_status", paused_write)
+
+    def old_attempt():
+        try:
+            queue.finish(
+                lease.publication_id,
+                error_code="publication_network_error",
+                expected_lease=lease.lease_until,
+            )
+        except Exception as error:
+            errors.append(error)
+
+    committed = tmp_path / "newer-committed"
+    script = """
+import sys
+from pathlib import Path
+from sqlalchemy import event
+from microcosm_emitter.orrery.service.queue import GraphPublicationQueue
+queue = GraphPublicationQueue(Path(sys.argv[1]))
+queue.retry(sys.argv[2])
+lease = queue.claim()
+event.listen(queue._sessions, 'after_commit', lambda session: Path(sys.argv[3]).write_text('published'))
+queue.finish(lease.publication_id, url='https://runs.example/runs/published/', expected_lease=lease.lease_until)
+queue.close()
+"""
+    thread = threading.Thread(target=old_attempt)
+    process = None
+    try:
+        thread.start()
+        assert entered.wait(3)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(queue.path),
+                lease.publication_id,
+                str(committed),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 3
+        while (
+            not committed.exists()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert committed.exists()
+        # The child has committed, but cannot replace the document until the old
+        # writer completes its read-through-replacement critical section.
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.1)
+        assert not (directory / "publication.status.json").exists()
+        assert queue.receipt(lease.publication_id)["status"] == "published"
+        release.set()
+        thread.join(3)
+        stdout, stderr = process.communicate(timeout=3)
+        assert process.returncode == 0, stdout + stderr
+        assert not thread.is_alive() and not errors
+        assert json.loads(
+            (directory / "publication.status.json").read_text()
+        ) == queue.receipt(lease.publication_id)
+    finally:
+        release.set()
+        thread.join(3)
+        if process is not None:
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=3)
+        queue.close()
+
+
+@pytest.mark.parametrize("unavailable", ["coordination_file", "source_directory"])
+def test_status_copy_failure_cannot_reverse_durable_completion(tmp_path, unavailable):
+    directory, inventory = source(tmp_path)
+    queue = GraphPublicationQueue(tmp_path / "jobs.sqlite3")
+    try:
+        queue.enqueue(directory, inventory)
+        lease = queue.claim()
+        if unavailable == "coordination_file":
+            queue.path.with_name(queue.path.name + ".status.lock").mkdir()
+        else:
+            (directory / "graph.orrery.json").unlink()
+            directory.rmdir()
+        queue.finish(
+            lease.publication_id,
+            url="https://runs.example/runs/published/",
+            expected_lease=lease.lease_until,
+        )
+        assert queue.receipt(lease.publication_id)["status"] == "published"
+        assert not (directory / "publication.status.json").exists()
+    finally:
+        queue.close()

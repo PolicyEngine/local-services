@@ -260,3 +260,19 @@ def test_query_timeout_rejects_unacknowledged_response(running):
     time.sleep(0.15)
     client.ping()
     assert not errors
+
+
+def test_query_rejection_does_not_stop_request_processing(running):
+    module, client, errors = running
+
+    def query(message):
+        if message.get("reject"):
+            raise ValueError("synthetic query failure")
+        return {"accepted": True}
+
+    module.query = query
+    with pytest.raises(LocalServiceError):
+        client.request({"reject": True}, module="default")
+    assert client.request({}, module="default") == {"accepted": True}
+    client.send({"ready": True})
+    assert module.messages == [{"ready": True}] and not errors
