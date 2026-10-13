@@ -1,6 +1,7 @@
 """Start a module in the current interpreter, without installing anything."""
 
 import json
+import math
 import os
 import socket
 import subprocess
@@ -25,7 +26,12 @@ from microcosm_emitter.host.constants import (
     STARTUP_TIMEOUT,
 )
 from microcosm_emitter.host.contracts import JsonObject
-from microcosm_emitter.host.errors import LocalServiceError
+from microcosm_emitter.host.errors import (
+    LocalServiceError,
+    ServiceStartupError,
+    StartupFailureReason,
+    safe_startup_error,
+)
 
 
 @dataclass
@@ -63,16 +69,28 @@ def start_services(
     """Return after readiness, or reap the child and remove temporary files."""
     directory = None
     process = None
+    phase: StartupFailureReason = "invalid_configuration"
     try:
-        if not modules or any(
-            not isinstance(name, str) or not isinstance(settings, dict)
-            for name, settings in modules.items()
+        if (
+            not isinstance(startup_timeout, (int, float))
+            or not math.isfinite(startup_timeout)
+            or startup_timeout < 0
         ):
-            raise LocalServiceError("Module configuration must be a nonempty mapping.")
+            raise ServiceStartupError("invalid_configuration")
+        if (
+            not isinstance(modules, dict)
+            or not modules
+            or any(
+                not isinstance(name, str) or not isinstance(settings, dict)
+                for name, settings in modules.items()
+            )
+        ):
+            raise ServiceStartupError("invalid_configuration")
         payload = json.dumps(modules, allow_nan=False).encode()
         if len(payload) > MAX_MESSAGE_BYTES:
-            raise LocalServiceError("Service configuration is too large.")
+            raise ServiceStartupError("invalid_configuration")
         deadline = time.monotonic() + startup_timeout
+        phase = "startup_failure"
         # Short paths are necessary for macOS's Unix-socket path limit.
         directory = Path(tempfile.mkdtemp(prefix=RUNTIME_PREFIX, dir="/tmp"))
         directory.chmod(0o700)
@@ -97,31 +115,54 @@ def start_services(
                 start_new_session=True,
             )
             # Startup metadata must not appear in process-list arguments.
-            writer.settimeout(max(0.001, deadline - time.monotonic()))
+            phase = "configuration_timeout"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ServiceStartupError("configuration_timeout")
+            writer.settimeout(remaining)
             writer.sendall(payload)
             writer.shutdown(socket.SHUT_WR)
+            if time.monotonic() >= deadline:
+                raise ServiceStartupError("configuration_timeout")
+        phase = "startup_failure"
         client = SocketClient(path)
         while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise LocalServiceError("Service exited before readiness.")
+            exit_code = process.poll()
+            if exit_code is not None:
+                raise ServiceStartupError("child_exit", exit_code=exit_code)
             try:
-                client.ping()
-                return ServiceHandle(process, client, directory)
+                client.ping(timeout=min(client.timeout, deadline - time.monotonic()))
             except LocalServiceError:
-                time.sleep(STARTUP_POLL)
-        raise LocalServiceError("Service readiness timed out.")
+                pass
+            else:
+                if time.monotonic() < deadline:
+                    return ServiceHandle(process, client, directory)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(STARTUP_POLL, remaining))
+        raise ServiceStartupError("readiness_timeout")
     except Exception as error:
+        # Only transfer timeouts are classified as such; an unrelated writer
+        # failure is a startup failure rather than evidence of deadline expiry.
+        reason = (
+            phase
+            if phase != "configuration_timeout" or isinstance(error, TimeoutError)
+            else "startup_failure"
+        )
+        failure = safe_startup_error(error, reason=reason)
         try:
-            if process is not None:
-                terminate_process(process)
-        finally:
-            if directory is not None:
-                _remove_runtime_directory(directory)
-        if isinstance(error, LocalServiceError):
-            raise
-        raise LocalServiceError(
-            f"Service startup failed ({type(error).__name__})."
-        ) from error
+            try:
+                if process is not None:
+                    terminate_process(process)
+            finally:
+                if directory is not None:
+                    _remove_runtime_directory(directory)
+        except Exception as cleanup_error:
+            failure = safe_startup_error(cleanup_error)
+    # Raise outside the handler so the discarded exception is not retained as
+    # either a cause or an implicit context containing private configuration.
+    raise failure from None
 
 
 def terminate_process(process: subprocess.Popen) -> None:

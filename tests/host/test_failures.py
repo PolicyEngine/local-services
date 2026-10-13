@@ -40,7 +40,7 @@ def test_startup_failure_reaps_child_even_when_directory_already_removed(
     monkeypatch.setattr(
         launcher.SocketClient,
         "ping",
-        lambda self: exited(),
+        lambda self, **kwargs: exited(),
     )
     with pytest.raises(LocalServiceError, match="exited"):
         launcher.start_service("missing", {})
@@ -103,8 +103,9 @@ def test_configuration_transfer_timeout_reaps_child(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher.tempfile, "mkdtemp", lambda **kwargs: str(directory))
     monkeypatch.setattr(launcher.subprocess, "Popen", lambda *args, **kwargs: process)
     # The synthetic child never reads stdin, so bounded startup must time out.
-    with pytest.raises(LocalServiceError, match="TimeoutError"):
+    with pytest.raises(LocalServiceError, match="configuration_timeout") as captured:
         launcher.start_service("missing", {"data": "x" * 900_000}, startup_timeout=0.01)
+    assert captured.value.reason == "configuration_timeout"
     process.terminate.assert_called_once()
     process.wait.assert_called_once()
     assert not directory.exists()

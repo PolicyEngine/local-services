@@ -113,7 +113,8 @@ def test_startup_failure_is_disabled_without_leaking_exception_details(
     emitter.complete()
     assert not emitter.available
     warning = capsys.readouterr().err
-    assert "PermissionError" in warning and "sensitive detail" not in warning
+    assert "startup_failure" in warning
+    assert "PermissionError" not in warning and "sensitive detail" not in warning
 
 
 def test_send_and_close_failures_never_interrupt_build(emitter, monkeypatch, capsys):
@@ -254,3 +255,65 @@ def test_start_propagates_deferred_cleanup(monkeypatch, tmp_path):
     finally:
         emitter.close()
     handle.close.assert_called_once()
+
+
+@pytest.mark.parametrize("timeout", [None, 0.75])
+def test_telemetry_start_uses_shared_default_and_preserves_override(
+    monkeypatch, tmp_path, timeout
+):
+    from unittest.mock import Mock
+
+    from microcosm_emitter.host.constants import STARTUP_TIMEOUT
+
+    launch = Mock(return_value=Mock(client=RecordingTransport()))
+    monkeypatch.setattr(client, "start_service", launch)
+    kwargs = {} if timeout is None else {"startup_timeout_seconds": timeout}
+    emitter = LocalTelemetryEmitter.start(
+        run=TelemetryRun("run", "UK", "test"), spool_path=tmp_path / "jobs", **kwargs
+    )
+    assert emitter.available
+    assert STARTUP_TIMEOUT == 15.0
+    assert launch.call_args.kwargs["startup_timeout"] == (
+        STARTUP_TIMEOUT if timeout is None else timeout
+    )
+    assert emitter.startup_error is None
+    emitter.close()
+
+
+def test_telemetry_warning_and_retained_error_use_safe_startup_reason(
+    monkeypatch, tmp_path, capsys
+):
+    from unittest.mock import Mock
+
+    from microcosm_emitter.host import errors
+
+    failure = errors.ServiceStartupError("readiness_timeout")
+    monkeypatch.setattr(client, "start_service", Mock(side_effect=failure))
+    emitter = LocalTelemetryEmitter.start(
+        run=TelemetryRun("run", "UK", "test"), spool_path=tmp_path / "jobs"
+    )
+    assert not emitter.available
+    assert emitter.startup_error.reason == "readiness_timeout"
+    assert "readiness_timeout" in capsys.readouterr().err
+
+
+def test_telemetry_diagnostic_does_not_retain_raw_exception(
+    monkeypatch, tmp_path, capsys
+):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(
+        client,
+        "start_service",
+        Mock(side_effect=PermissionError("Bearer hf_synthetic_private_payload")),
+    )
+    emitter = LocalTelemetryEmitter.start(
+        run=TelemetryRun("run", "UK", "test"), spool_path=tmp_path / "jobs"
+    )
+    assert emitter.startup_error.reason == "startup_failure"
+    assert emitter.startup_error.exit_code is None
+    assert str(emitter.startup_error) == "Service startup failed (startup_failure)."
+    assert not hasattr(emitter.startup_error, "error_type")
+    assert emitter.startup_error.__cause__ is None
+    assert emitter.startup_error.__context__ is None
+    assert "hf_synthetic_private_payload" not in capsys.readouterr().err

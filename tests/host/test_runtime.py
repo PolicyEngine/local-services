@@ -180,15 +180,15 @@ def delayed_listener(monkeypatch):
             raise TimeoutError("test did not release the listening socket")
         original_listen(server, backlog)
 
-    def ping(client):
+    def ping(client, **kwargs):
         probes.append(client.socket_path)
         if len(probes) == 1:
             assert bound.wait(3), "test service never bound the socket"
             try:
-                return original_ping(client)
+                return original_ping(client, **kwargs)
             finally:
                 allow_listen.set()
-        return original_ping(client)
+        return original_ping(client, **kwargs)
 
     monkeypatch.setattr(socket.socket, "listen", listen)
     monkeypatch.setattr(SocketClient, "ping", ping)

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from microcosm_emitter.host.constants import STARTUP_TIMEOUT
+from microcosm_emitter.host.errors import ServiceStartupError, safe_startup_error
 from microcosm_emitter.host.launcher import ServiceHandle, start_service
 from microcosm_emitter.telemetry.constants import (
     DEFAULT_HEARTBEAT_SECONDS,
@@ -84,6 +86,7 @@ class LocalTelemetryEmitter:
         self._close_service_on_finish = close_service_on_finish
         self._closed = False
         self._warned = False
+        self.startup_error: ServiceStartupError | None = None
 
     @classmethod
     def start(
@@ -94,7 +97,7 @@ class LocalTelemetryEmitter:
         identity: Mapping[str, Any] | None = None,
         development_collector_url: str | None = None,
         heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
-        startup_timeout_seconds: float = 3.0,
+        startup_timeout_seconds: float = STARTUP_TIMEOUT,
         close_service_on_finish: bool = True,
     ) -> LocalTelemetryEmitter:
         """Start the installed service; return a disabled adapter on failure."""
@@ -113,13 +116,16 @@ class LocalTelemetryEmitter:
                 startup_timeout=startup_timeout_seconds,
             )
         except Exception as error:
+            failure = safe_startup_error(error)
             print(
-                SERVICE_START_WARNING.format(error_type=type(error).__name__),
+                SERVICE_START_WARNING.format(error_type=str(failure)),
                 file=sys.stderr,
             )
-            return cls(
+            emitter = cls(
                 run=run, transport=None, close_service_on_finish=close_service_on_finish
             )
+            emitter.startup_error = failure
+            return emitter
         return cls(
             run=run,
             transport=handle.client,

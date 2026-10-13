@@ -8,8 +8,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, cast
 
+from microcosm_emitter.host.constants import STARTUP_TIMEOUT
 from microcosm_emitter.host.contracts import JsonObject
-from microcosm_emitter.host.errors import LocalServiceError
+from microcosm_emitter.host.errors import (
+    LocalServiceError,
+    ServiceStartupError,
+    safe_startup_error,
+)
 from microcosm_emitter.host.launcher import ServiceHandle, start_service
 from microcosm_emitter.orrery.constants import GRAPH_REQUEST_TIMEOUT_SECONDS
 from microcosm_emitter.orrery.contracts import (
@@ -51,6 +56,7 @@ class GraphPublicationClient:
     def __init__(self, transport: GraphTransport | None = None) -> None:
         self.transport = transport
         self._handle: ServiceHandle | None = None
+        self.startup_error: ServiceStartupError | None = None
 
     @property
     def available(self) -> bool:
@@ -63,22 +69,22 @@ class GraphPublicationClient:
         spool_path: Path | None = None,
         development_collector_url: str | None = None,
         publication_origin: str | None = None,
-        startup_timeout: float = 3.0,
+        startup_timeout: float = STARTUP_TIMEOUT,
     ) -> GraphPublicationClient:
         client = cls()
-        configuration = {"spool_path": str(spool_path or default_spool_path())}
-        if development_collector_url is not None:
-            configuration["development_collector_url"] = development_collector_url
-        if publication_origin is not None:
-            configuration["publication_origin"] = publication_origin
         try:
+            configuration = {"spool_path": str(spool_path or default_spool_path())}
+            if development_collector_url is not None:
+                configuration["development_collector_url"] = development_collector_url
+            if publication_origin is not None:
+                configuration["publication_origin"] = publication_origin
             client._handle = start_service(
                 "orrery", configuration, startup_timeout=startup_timeout
             )
             client.transport = client._handle.client.for_module("orrery")
-        except (LocalServiceError, OSError, ValueError, TypeError):
+        except (LocalServiceError, OSError, ValueError, TypeError) as error:
             # No acknowledgement means no claim that a durable job exists.
-            pass
+            client.startup_error = safe_startup_error(error)
         return client
 
     def _request(self, message: JsonObject) -> JsonObject | None:
