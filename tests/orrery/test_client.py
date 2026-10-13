@@ -34,7 +34,7 @@ def test_public_client_enqueues_through_graph_only_service_without_run(tmp_path)
         development_collector_url="http://127.0.0.1:1",
         publication_origin="http://127.0.0.1:1",
     )
-    assert client.available
+    assert client.available, getattr(client, "startup_error", None)
     try:
         inventory = client.inventory(
             directory,
@@ -183,3 +183,53 @@ def test_retry_waits_for_a_new_attempt_via_receipt_requests(monkeypatch):
         "retry",
         "receipt",
     ]
+
+
+@pytest.mark.parametrize("timeout", [None, 0.75])
+def test_graph_start_uses_shared_default_and_preserves_override(
+    monkeypatch, tmp_path, timeout
+):
+    from microcosm_emitter.host.constants import STARTUP_TIMEOUT
+
+    launch = Mock(return_value=Mock())
+    monkeypatch.setattr(client_module, "start_service", launch)
+    kwargs = {} if timeout is None else {"startup_timeout": timeout}
+    client = GraphPublicationClient.start(spool_path=tmp_path / "jobs", **kwargs)
+    assert client.available
+    assert STARTUP_TIMEOUT == 15.0
+    assert launch.call_args.kwargs["startup_timeout"] == (
+        STARTUP_TIMEOUT if timeout is None else timeout
+    )
+    assert client.startup_error is None
+    client.close()
+
+
+def test_graph_retains_safe_startup_failure_without_queue_fallback(
+    monkeypatch, tmp_path
+):
+    from microcosm_emitter.host import errors
+
+    failure = errors.ServiceStartupError("child_exit", exit_code=9)
+    monkeypatch.setattr(client_module, "start_service", Mock(side_effect=failure))
+    client = GraphPublicationClient.start(spool_path=tmp_path / "jobs")
+    assert not client.available
+    assert client.startup_error.reason == "child_exit"
+    assert client.startup_error.exit_code == 9
+    assert (
+        client.enqueue(tmp_path, {"publication_id": "not-persisted"})["status"]
+        == "failed"
+    )
+    assert not (tmp_path / "jobs").exists()
+
+
+def test_graph_never_retains_raw_startup_exception(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        client_module,
+        "start_service",
+        Mock(side_effect=OSError("Bearer hf_synthetic_private_payload")),
+    )
+    client = GraphPublicationClient.start(spool_path=tmp_path / "jobs")
+    assert client.startup_error.reason == "startup_failure"
+    assert "hf_synthetic_private_payload" not in str(client.startup_error)
+    assert client.startup_error.__cause__ is None
+    assert client.startup_error.__context__ is None

@@ -40,7 +40,7 @@ def test_startup_failure_reaps_child_even_when_directory_already_removed(
     monkeypatch.setattr(
         launcher.SocketClient,
         "ping",
-        lambda self: exited(),
+        lambda self, **kwargs: exited(),
     )
     with pytest.raises(LocalServiceError, match="exited"):
         launcher.start_service("missing", {})

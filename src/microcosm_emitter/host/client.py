@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import time
 from pathlib import Path
 
 from microcosm_emitter.host.constants import (
@@ -23,7 +24,11 @@ class SocketClient:
         self.closed = False
 
     def _request(
-        self, payload: JsonObject, *, timeout: float | None = None
+        self,
+        payload: JsonObject,
+        *,
+        timeout: float | None = None,
+        deadline: float | None = None,
     ) -> JsonObject | None:
         try:
             data = (
@@ -33,11 +38,22 @@ class SocketClient:
             if len(data) > MAX_MESSAGE_BYTES:
                 raise ValueError("local message exceeds size limit")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-                peer.settimeout(self.timeout if timeout is None else timeout)
+
+                def bound_operation():
+                    remaining = self.timeout if timeout is None else timeout
+                    if deadline is not None:
+                        remaining = min(remaining, deadline - time.monotonic())
+                        if remaining <= 0:
+                            raise TimeoutError()
+                    peer.settimeout(remaining)
+
+                bound_operation()
                 peer.connect(str(self.socket_path))
+                bound_operation()
                 peer.sendall(data)
                 response = bytearray()
                 while DELIMITER not in response:
+                    bound_operation()
                     part = peer.recv(min(4096, MAX_MESSAGE_BYTES + 1 - len(response)))
                     if not part:
                         break
@@ -55,8 +71,13 @@ class SocketClient:
         except (OSError, ValueError, TypeError) as error:
             raise LocalServiceError(type(error).__name__) from error
 
-    def ping(self) -> None:
-        self._request({"action": "ping"})
+    def ping(self, *, timeout: float | None = None) -> None:
+        """Bound a readiness probe across connection, send and all reads."""
+        self._request(
+            {"action": "ping"},
+            timeout=timeout,
+            deadline=None if timeout is None else time.monotonic() + timeout,
+        )
 
     def for_module(self, name: str) -> ModuleClient:
         """Route messages without giving a component ownership of host shutdown."""
