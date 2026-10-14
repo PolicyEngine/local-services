@@ -7,4 +7,5 @@ if (("${#archives[@]}" != 1)); then
   echo "Expected exactly one verified reader tarball." >&2
   exit 1
 fi
-npm publish --access public --provenance "${archives[0]}"
+# Without "./", npm reads "reader-dist/<file>" as a GitHub owner/repo shorthand.
+npm publish --access public --provenance "./${archives[0]}"
