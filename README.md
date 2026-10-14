@@ -35,8 +35,6 @@ The host can also start telemetry and graph modules together with `start_service
 
 Preserve the selected source files until publication succeeds. `microcosm-emitter-publish-graph` asks the service to retry a publication by ID and can re-enqueue a preserved directory on another machine. It never rewrites the original build receipt; the queue and separate latest-status file record retries.
 
-The existing TypeScript package `@policyengine/microcosm-provider-orrery` reads immutable published graph files on a server or in a browser. It remains separate from the Python distribution and does not change the hosted telemetry API.
-
 ## Development
 
 Use Python 3.13 or 3.14 on Linux or macOS.
@@ -46,23 +44,22 @@ uv sync --locked
 bash tools/check-quality.sh
 uv run --no-sync pytest -m 'not collector'
 bash tools/check-artifacts.sh
-bash tools/check-reader.sh
 bash tools/check-changelog.sh
 ```
 
-Tests isolate ambient credentials and use synthetic identities. The artifact check builds one source archive and wheel, installs that wheel into a clean environment away from the source checkout, verifies import boundaries, and exercises telemetry-only, graph-only and combined service startup with packaged migrations. Reader checks cover tests, formatting, types, build and an isolated tarball installation; they do not inspect visual styling.
+Tests isolate ambient credentials and use synthetic identities. The artifact check builds one source archive and wheel, installs that wheel into a clean environment away from the source checkout, verifies import boundaries, and exercises telemetry-only, graph-only and combined service startup with packaged migrations.
 
 The collector compatibility job tests the installed wheel against a pinned dashboard collector and disposable PostgreSQL. It covers the HTTP exchange, event ingestion, blocked outcomes and supplied failure codes in dashboard run documents, rejected identities, and duplicate delivery after a lost acknowledgement. Local execution requires that pinned collector checkout and a loopback test database; `tools/check-collector.sh` verifies these inputs. Never point this test at a deployed database. The pin verifies source compatibility, not which revision the hosted collector currently runs.
 
 ## Publication
 
-Every merge to `main` releases the Python distribution `microcosm-emitter` to PyPI and the TypeScript reader `@policyengine/microcosm-provider-orrery` to npm at one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one.
+Every merge to `main` releases the Python distribution `microcosm-emitter` to PyPI. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one.
 
 `push.yaml` runs twice for each merge:
 
-1. On the merge commit, it bumps the version in `pyproject.toml`, both `package.json` files and `uv.lock`: a major bump for a breaking fragment, a minor bump for an added or removed fragment, and a patch bump otherwise. It collects the fragments into `CHANGELOG.md` and commits the result as "Update microcosm-emitter" using the PolicyEngine GitHub App, which may bypass the `main` ruleset.
-2. On that commit, it runs every CI check, tags the commit with the bare version (for example `0.2.0`), publishes the tested wheel and source archive to PyPI, and then publishes the tested reader tarball to npm. Each step starts only after the one before succeeds.
+1. On the merge commit, it bumps the version in `pyproject.toml` and `uv.lock`: a major bump for a breaking fragment, a minor bump for an added or removed fragment, and a patch bump otherwise. It collects the fragments into `CHANGELOG.md` and commits the result as "Update microcosm-emitter" using the PolicyEngine GitHub App, which may bypass the `main` ruleset.
+2. On that commit, it runs every CI check, tags the commit with the bare version (for example `0.2.0`), and publishes the tested wheel and source archive to PyPI. Each step starts only after the one before succeeds.
 
-Both registries accept uploads only through trusted publishing from `push.yaml` in the `pypi` environment, which only `main` can use. CI holds no long-lived registry token. Renaming the workflow or the environment stops publication until both registries' trusted-publisher settings change to match.
+PyPI accepts uploads only through trusted publishing from `push.yaml` in the `pypi` environment, which only `main` can use. CI holds no long-lived registry token. Renaming the workflow or the environment stops publication until PyPI's trusted-publisher settings change to match.
 
 No hosted-service deployment or consumer activation follows from publishing this package.

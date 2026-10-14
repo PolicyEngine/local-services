@@ -1,8 +1,8 @@
-"""Choose the next shared release version from pending changelog fragments.
+"""Choose the next release version from pending changelog fragments.
 
 A breaking fragment bumps the major version, an added or removed fragment the
-minor version, and any other fragment the patch version. The Python
-distribution and both reader package manifests always share one version.
+minor version, and any other fragment the patch version. The version is read
+from and written to the single version line in pyproject.toml.
 
 Prints the next version. With --check, writes nothing.
 """
@@ -17,13 +17,8 @@ FRAGMENT_HELP = (
     "Name each fragment changelog.d/<name>.<type>.md, where <type> is one of: "
     + ", ".join(FRAGMENT_TYPES)
 )
+VERSIONED_FILE = "pyproject.toml"
 PYPROJECT_VERSION = re.compile(r'^version = "(\d+\.\d+\.\d+)"$', re.MULTILINE)
-PACKAGE_VERSION = re.compile(r'^  "version": "(\d+\.\d+\.\d+)",$', re.MULTILINE)
-VERSIONED_FILES = {
-    "pyproject.toml": PYPROJECT_VERSION,
-    "package.json": PACKAGE_VERSION,
-    "typescript/orrery/package.json": PACKAGE_VERSION,
-}
 
 
 def fragment_types(changelog_dir: Path) -> set[str]:
@@ -57,14 +52,12 @@ def next_version(version: str, types: set[str]) -> str:
 
 
 def current_version(root: Path) -> str:
-    found = {
-        name: pattern.findall((root / name).read_text())
-        for name, pattern in VERSIONED_FILES.items()
-    }
-    versions = {version for matches in found.values() for version in matches}
-    if len(versions) != 1 or any(len(matches) != 1 for matches in found.values()):
-        raise ValueError(f"Expected one shared version, found {found}.")
-    return versions.pop()
+    versions = PYPROJECT_VERSION.findall((root / VERSIONED_FILE).read_text())
+    if len(versions) != 1:
+        raise ValueError(
+            f"Expected one version line in {VERSIONED_FILE}, found {versions}."
+        )
+    return versions[0]
 
 
 def plan_release(root: Path) -> tuple[str, str]:
@@ -73,15 +66,14 @@ def plan_release(root: Path) -> tuple[str, str]:
 
 
 def write_version(root: Path, current: str, upcoming: str) -> None:
-    for name, pattern in VERSIONED_FILES.items():
-        path = root / name
-        path.write_text(
-            pattern.sub(
-                lambda match: match.group(0).replace(current, upcoming),
-                path.read_text(),
-                count=1,
-            )
+    path = root / VERSIONED_FILE
+    path.write_text(
+        PYPROJECT_VERSION.sub(
+            lambda match: match.group(0).replace(current, upcoming),
+            path.read_text(),
+            count=1,
         )
+    )
 
 
 def main(arguments: list[str]) -> None:
