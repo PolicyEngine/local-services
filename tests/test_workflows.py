@@ -10,7 +10,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_COMMIT = "Update microcosm-emitter"
-VERSIONED_FILES = ("pyproject.toml", "package.json", "typescript/orrery/package.json")
+VERSIONED_FILE = "pyproject.toml"
 
 
 def workflow_paths():
@@ -30,14 +30,22 @@ def bump_version():
 
 
 def release_tree(root, *fragments):
-    for name in VERSIONED_FILES:
-        (root / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(ROOT / name, root / name)
+    shutil.copy(ROOT / VERSIONED_FILE, root / VERSIONED_FILE)
     (root / "changelog.d").mkdir()
     (root / "changelog.d/.gitkeep").touch()
     for fragment in fragments:
         (root / "changelog.d" / fragment).write_text("A change.\n")
     return root
+
+
+def remove_version_line(pyproject_text):
+    return re.sub(
+        r'^version = "[^"]+"\n', "", pyproject_text, count=1, flags=re.MULTILINE
+    )
+
+
+def add_tool_version_line(pyproject_text):
+    return pyproject_text + '\n[tool.example]\nversion = "9.9.9"\n'
 
 
 def test_shell_logic_lives_in_scripts():
@@ -65,7 +73,7 @@ def test_verification_includes_real_collector_and_matrix():
     config = workflow("ci.yml")
     assert set(config["on"]) == {"workflow_call"}
     jobs = config["jobs"]
-    assert set(jobs) == {"quality", "tests", "build-packages", "collector", "reader"}
+    assert set(jobs) == {"quality", "tests", "build-packages", "collector"}
     assert jobs["tests"]["strategy"]["matrix"] == {
         "os": ["ubuntu-latest", "macos-latest"],
         "python": ["3.13", "3.14"],
@@ -78,6 +86,7 @@ def test_release_commit_is_verified_then_tagged_then_published():
     config = workflow("push.yaml")
     assert config["on"]["push"]["branches"] == ["main"]
     jobs = config["jobs"]
+    assert set(jobs) == {"versioning", "verify", "tag", "publish"}
     assert f"!= '{RELEASE_COMMIT}'" in jobs["versioning"]["if"]
     assert jobs["versioning"]["steps"][-2]["run"] == "bash tools/update-version.sh"
     assert jobs["versioning"]["steps"][-1]["with"]["message"] == RELEASE_COMMIT
@@ -86,7 +95,6 @@ def test_release_commit_is_verified_then_tagged_then_published():
     assert jobs["tag"]["needs"] == "verify"
     assert jobs["tag"]["steps"][-1]["run"] == "bash tools/publish-git-tag.sh"
     assert jobs["publish"]["needs"] == "tag"
-    assert jobs["publish-reader"]["needs"] == ["verify", "publish"]
 
 
 def test_only_publication_holds_oidc_and_only_versioning_holds_secrets():
@@ -96,29 +104,18 @@ def test_only_publication_holds_oidc_and_only_versioning_holds_secrets():
     oidc_jobs = {
         name for name, job in jobs.items() if "id-token" in job.get("permissions", {})
     }
-    assert oidc_jobs == {"publish", "publish-reader"}
-    for name in oidc_jobs:
-        assert jobs[name]["environment"] == "pypi"
+    assert oidc_jobs == {"publish"}
+    assert jobs["publish"]["environment"] == "pypi"
     assert jobs["publish"]["permissions"] == {"id-token": "write"}
     text = (ROOT / ".github/workflows/push.yaml").read_text()
     assert set(re.findall(r"secrets\.(\w+)", text)) == {"APP_ID", "APP_PRIVATE_KEY"}
     assert text.count("secrets.") == 2
 
 
-def test_registries_receive_only_verified_artifacts():
-    jobs = workflow("push.yaml")["jobs"]
-    publish = jobs["publish"]
+def test_pypi_receives_only_verified_artifacts():
+    publish = workflow("push.yaml")["jobs"]["publish"]
     assert publish["steps"][0]["with"]["name"] == "distributions"
     assert not any("run" in step for step in publish["steps"])
-    reader = jobs["publish-reader"]
-    download = next(
-        step for step in reader["steps"] if "download-artifact@" in step.get("uses", "")
-    )
-    assert download["with"]["name"] == "orrery-reader"
-    assert reader["steps"][-1]["run"] == "bash tools/publish-reader.sh"
-    publish = (ROOT / "tools/publish-reader.sh").read_text()
-    # A bare "reader-dist/<file>" is a GitHub shorthand to npm, not a path.
-    assert 'npm publish --access public --provenance "./${archives[0]}"' in publish
 
 
 @pytest.mark.parametrize(
@@ -135,20 +132,21 @@ def test_fragment_types_choose_the_bump(bump_version, types, expected):
     assert bump_version["next_version"]("1.4.2", types) == expected
 
 
-def test_release_writes_one_version_to_every_package(tmp_path, bump_version):
+def test_release_rewrites_only_the_version_line(tmp_path, bump_version):
     root = release_tree(tmp_path, "1.added.md", "repair.fixed.md")
     current, upcoming = bump_version["plan_release"](root)
     assert upcoming == bump_version["next_version"](current, {"added", "fixed"})
     bump_version["write_version"](root, current, upcoming)
     assert bump_version["current_version"](root) == upcoming
-    for name in VERSIONED_FILES:
-        original = (ROOT / name).read_text().splitlines()
-        updated = (root / name).read_text().splitlines()
-        assert len(updated) == len(original)
-        changed = [
-            pair for pair in zip(original, updated, strict=True) if pair[0] != pair[1]
-        ]
-        assert changed == [(changed[0][0], changed[0][0].replace(current, upcoming))]
+    original = (ROOT / VERSIONED_FILE).read_text().splitlines()
+    updated = (root / VERSIONED_FILE).read_text().splitlines()
+    assert len(updated) == len(original)
+    changed = [
+        (original_line, updated_line)
+        for original_line, updated_line in zip(original, updated, strict=True)
+        if original_line != updated_line
+    ]
+    assert changed == [(f'version = "{current}"', f'version = "{upcoming}"')]
 
 
 @pytest.mark.parametrize(
@@ -162,13 +160,18 @@ def test_release_refuses_missing_or_untyped_fragments(
         bump_version["plan_release"](root)
 
 
-def test_release_refuses_diverged_package_versions(tmp_path, bump_version):
+@pytest.mark.parametrize(
+    "edit_pyproject",
+    [remove_version_line, add_tool_version_line],
+    ids=["missing", "duplicated"],
+)
+def test_release_refuses_a_missing_or_duplicated_version_line(
+    tmp_path, bump_version, edit_pyproject
+):
     root = release_tree(tmp_path, "1.fixed.md")
-    reader = root / "typescript/orrery/package.json"
-    reader.write_text(
-        re.sub(r'"version": "[^"]+"', '"version": "9.9.9"', reader.read_text(), count=1)
-    )
-    with pytest.raises(ValueError, match="one shared version"):
+    pyproject = root / VERSIONED_FILE
+    pyproject.write_text(edit_pyproject(pyproject.read_text()))
+    with pytest.raises(ValueError, match="one version line"):
         bump_version["plan_release"](root)
 
 
