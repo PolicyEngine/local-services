@@ -1,3 +1,10 @@
+## [0.3.0] - 2026-10-14
+
+### Removed
+
+- Remove the unused TypeScript reader `@policyengine/microcosm-provider-orrery`, so each release now publishes only the `microcosm-emitter` Python distribution to PyPI.
+
+
 ## [0.2.1] - 2026-10-14
 
 ### Fixed
