@@ -1,6 +1,6 @@
 [project]
 name = "microcosm-emitter"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local emitter process host with required build telemetry support"
 readme = "README.md"
 requires-python = ">=3.13"

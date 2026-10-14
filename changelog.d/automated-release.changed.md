@@ -1,1 +1,0 @@
-Release automatically on every merge to main: bump one shared version from the changelog fragment types, commit the changelog, run all checks, tag the commit with the bare version, then publish to PyPI and npm through trusted publishing. Pull requests now require a typed changelog fragment, and GitHub releases no longer trigger publication.
