@@ -1,9 +1,8 @@
 name: Verify emitter
 
+# Called by pr.yaml for every pull request and by push.yaml before tagging and
+# publishing a release commit.
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_call:
 
 permissions:
@@ -98,14 +97,3 @@ jobs:
           name: orrery-reader
           path: reader-dist/*.tgz
           if-no-files-found: error
-
-  required:
-    name: Required checks
-    if: always()
-    needs: [quality, tests, build-packages, collector, reader]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require all validation jobs to succeed
-        env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: test "$RESULTS" = "success success success success success"

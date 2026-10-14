@@ -1,0 +1,97 @@
+name: Push
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Every merge runs this workflow twice. On the merge commit, versioning commits
+# the new version and changelog as "Update microcosm-emitter" with the
+# PolicyEngine GitHub App token: unlike GITHUB_TOKEN, its push starts another
+# run, and the app may bypass the main ruleset. On that release commit, the
+# remaining jobs verify, tag, then publish, each only after the one before.
+#
+# PyPI and npm trust this file by name, in the pypi environment, which only
+# main can use. Renaming it stops publication.
+jobs:
+  versioning:
+    name: Update versioning
+    if: |
+      github.repository == 'PolicyEngine/microcosm-emitter'
+      && github.event.head_commit.message != 'Update microcosm-emitter'
+    runs-on: ubuntu-latest
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          python-version: "3.13"
+      - run: bash tools/update-version.sh
+      - uses: EndBug/add-and-commit@290ea2c423ad77ca9c62ae0f5b224379612c0321 # v10
+        with:
+          add: "."
+          author_name: Github Actions[bot]
+          committer_name: Github Actions[bot]
+          message: Update microcosm-emitter
+          github_token: ${{ steps.app-token.outputs.token }}
+          fetch: false
+
+  verify:
+    if: |
+      github.repository == 'PolicyEngine/microcosm-emitter'
+      && github.event.head_commit.message == 'Update microcosm-emitter'
+    uses: ./.github/workflows/ci.yml
+
+  tag:
+    name: Publish git tag
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - run: bash tools/publish-git-tag.sh
+
+  publish:
+    needs: tag
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: distributions
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/
+
+  publish-reader:
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: orrery-reader
+          path: reader-dist
+      - run: bash tools/publish-reader.sh

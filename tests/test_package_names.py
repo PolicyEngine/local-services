@@ -30,7 +30,8 @@ def test_single_distribution_with_required_telemetry_dependencies():
 
 def test_installed_distribution_includes_host_telemetry_and_migrations():
     emitter = distribution(EXPECTED_NAME)
-    assert emitter.version == "0.1.0"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert emitter.version == project["version"]
     assert emitter.metadata.get_all("Project-URL") == [
         "Source, https://github.com/PolicyEngine/microcosm-emitter"
     ]
