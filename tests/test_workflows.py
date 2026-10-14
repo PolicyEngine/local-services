@@ -116,6 +116,9 @@ def test_registries_receive_only_verified_artifacts():
     )
     assert download["with"]["name"] == "orrery-reader"
     assert reader["steps"][-1]["run"] == "bash tools/publish-reader.sh"
+    publish = (ROOT / "tools/publish-reader.sh").read_text()
+    # A bare "reader-dist/<file>" is a GitHub shorthand to npm, not a path.
+    assert 'npm publish --access public --provenance "./${archives[0]}"' in publish
 
 
 @pytest.mark.parametrize(
