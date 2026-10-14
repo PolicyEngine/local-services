@@ -1,3 +1,10 @@
+## [0.2.1] - 2026-10-14
+
+### Fixed
+
+- Publish the reader tarball by its relative path. npm treated the bare reader-dist path as a GitHub repository and never published the reader for 0.2.0.
+
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
