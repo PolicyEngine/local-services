@@ -47,6 +47,7 @@ bash tools/check-quality.sh
 uv run --no-sync pytest -m 'not collector'
 bash tools/check-artifacts.sh
 bash tools/check-reader.sh
+bash tools/check-changelog.sh
 ```
 
 Tests isolate ambient credentials and use synthetic identities. The artifact check builds one source archive and wheel, installs that wheel into a clean environment away from the source checkout, verifies import boundaries, and exercises telemetry-only, graph-only and combined service startup with packaged migrations. Reader checks cover tests, formatting, types, build and an isolated tarball installation; they do not inspect visual styling.
@@ -55,8 +56,13 @@ The collector compatibility job tests the installed wheel against a pinned dashb
 
 ## Publication
 
-The project publishes one Python distribution, `microcosm-emitter`. A published GitHub release triggers version and main-branch ancestry checks, all CI checks, and artifact verification. Only then can the protected `pypi` environment approve publishing the exact tested wheel and source archive. The publish job uses PyPI Trusted Publishing; no long-lived publishing token is supplied through CI. The separate TypeScript reader publication waits for Python publication and publishes the verified tarball through npm OIDC.
+Every merge to `main` releases the Python distribution `microcosm-emitter` to PyPI and the TypeScript reader `@policyengine/microcosm-provider-orrery` to npm at one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one.
 
-First publication requires one PyPI pending trusted publisher for `microcosm-emitter`, attached to GitHub owner `PolicyEngine`, project `microcosm-emitter`, workflow `publish.yml`, and environment `pypi`. That external setup must be verified before releasing. No release is created or merged automatically by this project.
+`push.yaml` runs twice for each merge:
 
-The npm reader requires registry-owner first-publication and trusted-publisher setup; this code does not provision or verify those private account settings. No hosted-service deployment, registry publication or consumer activation follows from installing this package.
+1. On the merge commit, it bumps the version in `pyproject.toml`, both `package.json` files and `uv.lock`: a major bump for a breaking fragment, a minor bump for an added or removed fragment, and a patch bump otherwise. It collects the fragments into `CHANGELOG.md` and commits the result as "Update microcosm-emitter" using the PolicyEngine GitHub App, which may bypass the `main` ruleset.
+2. On that commit, it runs every CI check, tags the commit with the bare version (for example `0.2.0`), publishes the tested wheel and source archive to PyPI, and then publishes the tested reader tarball to npm. Each step starts only after the one before succeeds.
+
+Both registries accept uploads only through trusted publishing from `push.yaml` in the `pypi` environment, which only `main` can use. CI holds no long-lived registry token. Renaming the workflow or the environment stops publication until both registries' trusted-publisher settings change to match.
+
+No hosted-service deployment or consumer activation follows from publishing this package.
