@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from microcosm_emitter.host.constants import (
     ACK_ERROR,
@@ -37,8 +38,11 @@ class ServiceRuntime:
         is_parent_alive: Callable[[], bool],
         tick_seconds: float = TICK_SECONDS,
         drain_seconds: float = DRAIN_SECONDS,
+        description: Mapping[str, Any] | None = None,
     ):
         self.socket_path = socket_path
+        # Returned to ``hello`` requests; the host does not interpret it.
+        self.description = None if description is None else dict(description)
         if (module is None) == (modules is None):
             raise ValueError("Select one module or an explicit module mapping.")
         self.modules = dict(modules) if modules is not None else {"default": module}
@@ -164,6 +168,13 @@ class ServiceRuntime:
                 ):
                     raise ValueError("module request queue is unavailable")
                 return None  # The module worker now owns this connection.
+            elif action == "hello" and self.description is not None:
+                response = (
+                    json.dumps(self.description, allow_nan=False).encode() + DELIMITER
+                )
+                if len(response) > MAX_MESSAGE_BYTES:
+                    raise ValueError("description too large")
+                return response
             elif action == "close":
                 self.stop()
             elif action != "ping":
