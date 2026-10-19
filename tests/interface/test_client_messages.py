@@ -15,6 +15,12 @@ from microcosm_emitter_interface.protocol_fixtures import (
     materialize,
     protocol_fixtures,
 )
+from microcosm_emitter_interface.publication import (
+    PromoteBuild,
+    PublishRelease,
+    ReleaseFile,
+    WithdrawBuild,
+)
 from microcosm_emitter_interface.staging import (
     HuggingFaceSettings,
     RunFile,
@@ -24,6 +30,29 @@ from microcosm_emitter_interface.telemetry import TelemetryRun, TelemetrySetting
 
 FIXTURE_STAGING_REPOSITORY = "policyengine/fixture-staging"
 FIXTURE_PRIVATE_REPOSITORY = "policyengine/fixture-private"
+
+
+def fixture_publication(directory: Path) -> PublishRelease:
+    """The publication recorded in huggingface-publish-release.json."""
+    fixture = fixtures_by_name()["huggingface-publish-release"]
+    recorded = materialize(fixture, directory=directory, spool_path=Path("unused"))
+    return PublishRelease(
+        repository=FIXTURE_PRIVATE_REPOSITORY,
+        release="fixture-release",
+        build="fixture-build",
+        release_role="national_default",
+        make_current=True,
+        files=tuple(
+            ReleaseFile(
+                name=entry["name"],
+                role=entry["role"],
+                local_path=Path(entry["local_path"]),
+                sha256=entry["sha256"],
+                bytes=entry["bytes"],
+            )
+            for entry in recorded["files"]
+        ),
+    )
 
 
 def fixture_bundle(directory: Path) -> StageDatasetBundle:
@@ -217,6 +246,25 @@ SENT_BY: dict[str, Callable[[EmitterClient, Path], Any]] = {
     ),
     "huggingface-check-write-access": lambda client, directory: (
         client.check_write_access(FIXTURE_PRIVATE_REPOSITORY)
+    ),
+    "huggingface-publish-release": lambda client, directory: client.publish_release(
+        fixture_publication(directory), wait_seconds=0
+    ),
+    "huggingface-promote-build": lambda client, directory: client.promote_build(
+        PromoteBuild(
+            repository=FIXTURE_PRIVATE_REPOSITORY,
+            release="fixture-release",
+            build="fixture-build",
+        ),
+        wait_seconds=0,
+    ),
+    "huggingface-withdraw-build": lambda client, directory: client.withdraw_build(
+        WithdrawBuild(
+            repository=FIXTURE_PRIVATE_REPOSITORY,
+            release="fixture-release",
+            build="fixture-build",
+        ),
+        wait_seconds=0,
     ),
     "huggingface-read-back-run-files": lambda client, directory: (
         client.read_back_run_files(

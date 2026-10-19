@@ -1,0 +1,177 @@
+"""Typed release publication: release, build, whether current, files with roles."""
+
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+from fake_hugging_face import PRIVATE_REPOSITORY
+
+from microcosm_emitter_interface.client import EmitterClient
+from microcosm_emitter_interface.publication import (
+    PromoteBuild,
+    PublishRelease,
+    ReleaseFile,
+    WithdrawBuild,
+)
+from microcosm_emitter_interface.releases import ReleasesRecord
+from microcosm_emitter_interface.transport import SocketTransport
+
+RELEASE = "microcosm-uk-2024-25-national"
+BUILD = "uk-frs-calibration-attempt-20261019T083323Z-6cba5d71"
+
+
+def release_file(directory: Path, name: str, role: str, content: bytes) -> ReleaseFile:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_bytes(content)
+    return ReleaseFile(
+        name=name,
+        role=role,
+        local_path=directory / name,
+        sha256=hashlib.sha256(content).hexdigest(),
+        bytes=len(content),
+    )
+
+
+def build_files(directory: Path, build: str = BUILD) -> tuple[ReleaseFile, ...]:
+    return (
+        release_file(
+            directory,
+            "release_manifest.json",
+            "release_manifest",
+            json.dumps({"release": RELEASE, "build": build}).encode(),
+        ),
+        release_file(directory, "microcosm_uk_2024_25.h5", "dataset", b"rows"),
+    )
+
+
+def publication(directory: Path, **changes) -> PublishRelease:
+    arguments = {
+        "repository": PRIVATE_REPOSITORY,
+        "release": RELEASE,
+        "build": BUILD,
+        "release_role": "national_default",
+        "make_current": False,
+    }
+    arguments.update(changes)
+    if "files" not in arguments:
+        arguments["files"] = build_files(directory)
+    return PublishRelease(**arguments)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        lambda files: {"files": files[1:]},
+        lambda files: {
+            "files": (
+                ReleaseFile(
+                    name="release_manifest.json",
+                    role="dataset",
+                    local_path=files[0].local_path,
+                    sha256=files[0].sha256,
+                    bytes=files[0].bytes,
+                ),
+                files[1],
+            )
+        },
+        lambda files: {
+            "files": files
+            + (
+                ReleaseFile(
+                    name="latest-national.json",
+                    role="pointer",
+                    local_path=files[0].local_path,
+                    sha256=files[0].sha256,
+                    bytes=files[0].bytes,
+                ),
+            )
+        },
+        lambda files: {"files": files + (files[1],)},
+        lambda files: {"release": "../escape"},
+        lambda files: {"build": "two/parts"},
+        lambda files: {"release_role": "National Default"},
+        lambda files: {"make_current": "yes"},
+    ],
+    ids=[
+        "no-manifest",
+        "manifest-role",
+        "pointer-file",
+        "duplicate-file",
+        "release",
+        "build",
+        "role",
+        "make-current",
+    ],
+)
+def test_publications_that_break_the_rules_cannot_be_built(tmp_path, changes):
+    with pytest.raises(ValueError):
+        publication(tmp_path, **changes(build_files(tmp_path)))
+
+
+def test_publication_message_names_release_build_and_each_file_role(tmp_path):
+    request = publication(tmp_path, make_current=True)
+    message = request.message()
+    assert {key: message[key] for key in ("command", "release", "build")} == {
+        "command": "publish_release",
+        "release": RELEASE,
+        "build": BUILD,
+    }
+    assert message["make_current"] is True
+    assert message["release_role"] == "national_default"
+    assert [(entry["name"], entry["role"]) for entry in message["files"]] == [
+        ("release_manifest.json", "release_manifest"),
+        ("microcosm_uk_2024_25.h5", "dataset"),
+    ]
+    assert (
+        request.handover_id() == publication(tmp_path, make_current=True).handover_id()
+    )
+    assert request.handover_id() != publication(tmp_path).handover_id()
+
+
+def test_client_publishes_promotes_and_withdraws_through_the_emitter(
+    tmp_path, emitter_with_hub
+):
+    client, hub = emitter_with_hub
+    first = publication(tmp_path / "first", make_current=True)
+    receipt = client.publish_release(first, wait_seconds=20)
+    assert receipt["status"] == "published", receipt
+    second_build = "uk-frs-calibration-attempt-20261020T000000Z-0000aaaa"
+    second = publication(
+        tmp_path / "second",
+        build=second_build,
+        files=build_files(tmp_path / "second", second_build),
+    )
+    second_receipt = client.publish_release(second, wait_seconds=20)
+    assert second_receipt["status"] == "published", second_receipt
+    promoted = client.promote_build(
+        PromoteBuild(
+            repository=PRIVATE_REPOSITORY, release=RELEASE, build=second_build
+        ),
+        wait_seconds=20,
+    )
+    assert promoted["status"] == "published", promoted
+    withdrawn = client.withdraw_build(
+        WithdrawBuild(repository=PRIVATE_REPOSITORY, release=RELEASE, build=BUILD),
+        wait_seconds=20,
+    )
+    assert withdrawn["status"] == "published", withdrawn
+    record = ReleasesRecord.parse(hub.files(PRIVATE_REPOSITORY)["releases.json"])
+    assert record.releases[RELEASE].current == second_build
+    assert record.releases[RELEASE].builds[BUILD].withdrawn is True
+    assert client.release_receipt(first.handover_id())["status"] == "published"
+
+
+def test_client_without_the_module_reports_unavailable(tmp_path, in_thread_emitter):
+    client = EmitterClient(
+        in_thread_emitter(
+            SocketTransport(tmp_path / "unused.sock"),
+            {"modules": ["telemetry"], "protocol_versions": [1]},
+        )
+    )
+    receipt = client.publish_release(publication(tmp_path), wait_seconds=1)
+    assert (receipt["status"], receipt["release"], receipt["build"]) == (
+        "unavailable",
+        RELEASE,
+        BUILD,
+    )

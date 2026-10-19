@@ -102,6 +102,21 @@ The `huggingface` module takes over the uploads Microcosm made itself. Microcosm
 
 **Bundle uploads run on their own thread.** A bundle upload can take minutes, so the module uploads bundles on a worker thread of its own, while the host's worker thread commits run files and makes the commit at shutdown. A bundle upload to one repository therefore never delays run-file commits to another repository, the commit at shutdown, or a read-back. Once shutdown begins, the bundle worker starts no further upload, even to a repository left in its current pass: it checks for shutdown before each repository, again once it has leased the repository, and again once it has claimed a job, immediately before that upload begins, and it gives back a job claimed after shutdown began without attempting it. So during the commit at shutdown a repository can be held only by an upload that passed that last check before shutdown began, or, for the few database operations it takes to give it back, by a lease the worker took just before; the second commit at shutdown covers that repository if the worker stops within the shutdown period. Each delivery leases its repository first, so this machine never commits to one repository twice at once: run files for the repository a bundle is uploading to wait for that upload, and then for the 10-second spacing.
 
+**Releases.** The release writer replaces the commit, tag and pointer-file writes of Microcosm's `release.py`. Nothing calls it yet; Microcosm switches to it in a later change. Each build is published side by side and never changed:
+
+```
+releases.json                                  the only record of what is current
+releases/<release>/<build>/release_manifest.json
+releases/<release>/<build>/...                 the build's files, with their roles
+```
+
+- `publish_release` names the release, the build (Microcosm's attempt ID), whether to make the build current, the release's role, and each file with its role. `promote_build` changes a release's current build; `withdraw_build` marks a build withdrawn, and its folder stays.
+- Every change is one commit: the writer reads `releases.json` and the file list at `main`'s head, applies the change, runs the shared checks in `microcosm_emitter_interface.releases`, and commits the new build folder and `releases.json` with `parent_commit` set to that head. If another commit lands first, it reads the new head and applies the change again, so concurrent publications keep each other's builds.
+- The writer refuses a change unless: every listed build has its folder and a `release_manifest.json` naming the same release and build; `current` names a listed build that is not withdrawn; existing build entries change only `withdrawn`; and no file inside an existing build folder is added, changed or removed (so publishing refuses a build whose folder exists). It never writes a `latest*.json` file, and refuses to change `current` while any `latest*.json` file still exists, until the old pointer files are deleted.
+- It creates no Hugging Face tags or branches, no `current/` folder and no mutable root file, and leaves existing tags and files untouched. It does not port `release.py`'s staging branch, release tag or pointer-file commit, which this layout replaces.
+- A retried publication whose earlier attempt already landed reports `published`. Hub failures stay `pending` and are retried; broken rules are `refused` with the rule's code.
+- `release_change_policy` is where a decision on who may promote or withdraw will plug in; by default every change is allowed. `current` may stay `null`, for a release that is never promoted.
+
 ## Development
 
 Use Python 3.13 or 3.14 on Linux or macOS.

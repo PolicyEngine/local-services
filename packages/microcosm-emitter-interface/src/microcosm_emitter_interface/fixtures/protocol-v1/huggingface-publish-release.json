@@ -1,0 +1,46 @@
+{
+  "protocol_version": 1,
+  "module": "huggingface",
+  "kind": "query",
+  "sequence": 8,
+  "files": {
+    "release_manifest.json": "{\"release\":\"fixture-release\",\"build\":\"fixture-build\"}",
+    "dataset.h5": "synthetic rows",
+    "calibration_diagnostics.json": "{\"schema_version\":8}"
+  },
+  "body": {
+    "protocol_version": 1,
+    "command": "publish_release",
+    "repository": "policyengine/fixture-private",
+    "release": "fixture-release",
+    "build": "fixture-build",
+    "release_role": "national_default",
+    "make_current": true,
+    "files": [
+      {
+        "name": "release_manifest.json",
+        "role": "release_manifest",
+        "local_path": "{directory}/release_manifest.json",
+        "sha256": "9f82c735620892c3f85f288cb9f3e46f5d811c53d5da1745c80aade58b161c85",
+        "bytes": 53
+      },
+      {
+        "name": "dataset.h5",
+        "role": "dataset",
+        "local_path": "{directory}/dataset.h5",
+        "sha256": "5cc590aa15e97595e13963c72aea8d3fbe65fbf5dd5f8fc690ee479f73d45548",
+        "bytes": 14
+      },
+      {
+        "name": "calibration_diagnostics.json",
+        "role": "calibration_diagnostics",
+        "local_path": "{directory}/calibration_diagnostics.json",
+        "sha256": "2300b80de59210bc04c40b1aade68e7b5fc265901dbc9af4e9f506c0bcc36e7c",
+        "bytes": 20
+      }
+    ]
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}

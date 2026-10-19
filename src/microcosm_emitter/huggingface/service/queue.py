@@ -239,14 +239,11 @@ class HandoverQueue:
             due = []
             for repository in sorted(run_file_repositories | job_repositories):
                 schedule = session.get(RepositoryCommitSchedule, repository)
-                if schedule is not None and (
-                    schedule.lease_until > now
-                    or schedule.last_commit_at + MIN_COMMIT_SPACING_SECONDS > now
-                ):
+                if schedule is not None and schedule.lease_until > now:
                     continue
-                run_files_allowed = schedule is None or schedule.retry_after <= now
                 if repository in job_repositories or (
-                    repository in run_file_repositories and run_files_allowed
+                    repository in run_file_repositories
+                    and self._run_files_allowed(schedule, now)
                 ):
                     due.append(repository)
             return due

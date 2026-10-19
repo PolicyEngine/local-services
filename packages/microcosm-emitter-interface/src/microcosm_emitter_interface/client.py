@@ -58,6 +58,14 @@ from microcosm_emitter_interface.protocol import (
     STARTUP_TIMEOUT_SECONDS,
     TELEMETRY_MODULE,
 )
+from microcosm_emitter_interface.publication import (
+    PromoteBuild,
+    PublishRelease,
+    ReleaseChange,
+    ReleaseReceipt,
+    WithdrawBuild,
+    unavailable_release_receipt,
+)
 from microcosm_emitter_interface.spool import default_spool_path
 from microcosm_emitter_interface.staging import (
     HuggingFaceSettings,
@@ -485,6 +493,45 @@ class EmitterClient:
         if isinstance(value, dict):
             return cast(WriteAccess, value)
         return unavailable_write_access()
+
+    def _release_change(
+        self, request: ReleaseChange, wait_seconds: float
+    ) -> ReleaseReceipt:
+        message = request.message()
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: message,
+            kind="release",
+            timeout=FILE_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        if not isinstance(value, dict):
+            return unavailable_release_receipt(request)
+        return cast(ReleaseReceipt, self._wait_until_settled(value, wait_seconds))
+
+    def publish_release(
+        self, request: PublishRelease, *, wait_seconds: float = 300.0
+    ) -> ReleaseReceipt:
+        """Queue a build's publication and wait for it to land or be refused.
+
+        The emitter writes ``releases/<release>/<build>/`` and ``releases.json``
+        in one commit. After ``wait_seconds`` a ``pending`` receipt means the
+        emitter is still retrying; ask again with ``release_receipt``.
+        """
+        return self._release_change(request, wait_seconds)
+
+    def promote_build(
+        self, request: PromoteBuild, *, wait_seconds: float = 60.0
+    ) -> ReleaseReceipt:
+        return self._release_change(request, wait_seconds)
+
+    def withdraw_build(
+        self, request: WithdrawBuild, *, wait_seconds: float = 60.0
+    ) -> ReleaseReceipt:
+        return self._release_change(request, wait_seconds)
+
+    def release_receipt(self, handover_id: str) -> ReleaseReceipt | None:
+        return cast(ReleaseReceipt | None, self._handover_receipt(handover_id))
 
     def close(self) -> None:
         """Ask the emitter to drain and stop; repeated calls do nothing."""

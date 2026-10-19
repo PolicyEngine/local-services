@@ -25,6 +25,13 @@ from microcosm_emitter_interface.identifiers import (
     repository_prefix,
     safe_identifier,
 )
+from microcosm_emitter_interface.publication import (
+    RELEASE_CHANGE,
+    PromoteBuild,
+    PublishRelease,
+    ReleaseFile,
+    WithdrawBuild,
+)
 
 #: Transport bounds for one staging run file and one hand-over. Microcosm's
 #: staging contract keeps its own, smaller limits.
@@ -239,4 +246,75 @@ def parse_stage_dataset_bundle(message: Mapping[str, Any]) -> BundleHandOver:
         remote_prefix=request.remote_prefix,
         request={key: value for key, value in canonical.items()},
         copied=copied,
+    )
+
+
+@dataclass(frozen=True)
+class ReleaseHandOver:
+    handover_id: str
+    repository: str
+    release: str
+    build: str
+    request: dict[str, Any]
+
+
+def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
+    """Check a publication, promotion or withdrawal with the interface's rules."""
+    require_supported_version(message)
+    command = message.get("command")
+    try:
+        if command == "publish_release":
+            entries = message.get("files")
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, Mapping) for entry in entries
+            ):
+                raise RequestRefusedError("INVALID_REQUEST")
+            request = PublishRelease(
+                repository=message.get("repository"),
+                release=message.get("release"),
+                build=message.get("build"),
+                release_role=message.get("release_role"),
+                make_current=message.get("make_current"),
+                files=tuple(
+                    ReleaseFile(
+                        name=entry.get("name"),
+                        role=entry.get("role"),
+                        local_path=Path(str(entry.get("local_path"))),
+                        sha256=entry.get("sha256"),
+                        bytes=entry.get("bytes"),
+                    )
+                    for entry in entries
+                ),
+            )
+        elif command in {"promote_build", "withdraw_build"}:
+            change = PromoteBuild if command == "promote_build" else WithdrawBuild
+            request = change(
+                repository=message.get("repository"),
+                release=message.get("release"),
+                build=message.get("build"),
+            )
+        else:
+            raise RequestRefusedError("INVALID_REQUEST")
+    except (ValueError, TypeError) as error:
+        if isinstance(error, RequestRefusedError):
+            raise
+        raise RequestRefusedError("INVALID_REQUEST") from None
+    if command == "publish_release":
+        for entry, item in zip(message["files"], request.files, strict=True):
+            path = Path(str(entry.get("local_path")))
+            if not path.is_absolute():
+                raise RequestRefusedError("INVALID_REQUEST")
+            try:
+                if not path.is_file():
+                    raise RequestRefusedError("LOCAL_FILE_MISSING")
+                if path.stat().st_size != item.bytes:
+                    raise RequestRefusedError("FILE_SIZE_DIFFERS")
+            except OSError:
+                raise RequestRefusedError("LOCAL_FILE_MISSING") from None
+    return ReleaseHandOver(
+        handover_id=handover_identifier(RELEASE_CHANGE, dict(message)),
+        repository=request.repository,
+        release=request.release,
+        build=request.build,
+        request=dict(message),
     )

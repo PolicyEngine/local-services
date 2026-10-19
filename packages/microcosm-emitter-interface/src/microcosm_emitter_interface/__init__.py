@@ -12,6 +12,12 @@ from microcosm_emitter_interface.launcher import (
 )
 from microcosm_emitter_interface.orrery import OrrerySettings
 from microcosm_emitter_interface.protocol import PROTOCOL_VERSION
+from microcosm_emitter_interface.publication import (
+    PromoteBuild,
+    PublishRelease,
+    ReleaseFile,
+    WithdrawBuild,
+)
 from microcosm_emitter_interface.spool import (
     default_handover_database_path,
     default_spool_path,
@@ -33,11 +39,15 @@ __all__ = [
     "HuggingFaceSettings",
     "OrrerySettings",
     "RequestFailure",
+    "PromoteBuild",
+    "PublishRelease",
+    "ReleaseFile",
     "RunFile",
     "StageDatasetBundle",
     "StageRunFiles",
     "TelemetryRun",
     "TelemetrySettings",
+    "WithdrawBuild",
     "default_handover_database_path",
     "default_spool_path",
 ]

@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "module": "huggingface",
+  "kind": "query",
+  "sequence": 10,
+  "body": {
+    "protocol_version": 1,
+    "command": "withdraw_build",
+    "repository": "policyengine/fixture-private",
+    "release": "fixture-release",
+    "build": "fixture-build"
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}
