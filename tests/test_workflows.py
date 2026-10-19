@@ -229,7 +229,11 @@ def test_release_refuses_a_missing_or_duplicated_version_line(
 def test_build_verifies_both_distributions_from_one_script():
     script = (ROOT / "tools/check-artifacts.sh").read_text()
     assert script.count("uv build ") == 1
-    assert "uv build --all-packages --out-dir dist --clear" in script
+    assert "uv build --all-packages --out-dir dist" in script
+    # Each package's build would clear the shared output directory, so one
+    # build could delete the other's artifacts; clear it once, beforehand.
+    assert "--clear" not in script
+    assert script.index("rm -rf dist") < script.index("uv build ")
     for path in workflow_paths():
         assert "uv build" not in path.read_text()
 
