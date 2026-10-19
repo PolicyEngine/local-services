@@ -1,0 +1,158 @@
+"""Deliver bundle hand-overs to the collector, after their Hugging Face commit.
+
+A bundle hand-over that describes its build gets a second row in the
+hand-over queue, for the ``collector`` destination. It waits until the same
+hand-over's Hugging Face row has staged the bundle, because the submission's
+provenance names that commit. Then each planned submission is submitted until
+the collector accepts or refuses it.
+
+Collector submissions are off unless the module configuration switches them
+on, so an emitter release with this code changes nothing by default.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Mapping
+from typing import Any, Final
+
+from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
+from microcosm_emitter.submissions.client import CollectorSubmissionClient
+from microcosm_emitter.submissions.planning import planned_submissions
+
+COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT: Final = False
+DESTINATION_COLLECTOR: Final = "collector"
+COLLECTOR_SUBMISSION: Final = "collector_submission"
+#: Long enough to upload large native evidence files in one attempt.
+SUBMISSION_LEASE_SECONDS: Final = 3600.0
+MAX_JOBS_PER_CYCLE: Final = 8
+STAGED_STATUSES: Final = frozenset({"uploaded", "already_staged"})
+NOT_STAGED_STATUSES: Final = frozenset({"failed", "refused"})
+WAITING_FOR_HUGGING_FACE: Final = "WAITING_FOR_HUGGING_FACE"
+NOT_STAGED_ON_HUGGING_FACE: Final = "NOT_STAGED_ON_HUGGING_FACE"
+
+
+class CollectorSubmissionDelivery:
+    """Queue and deliver the ``collector`` rows of bundle hand-overs."""
+
+    def __init__(
+        self,
+        queue: HandoverQueue,
+        client: CollectorSubmissionClient,
+        *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.queue, self.client, self.clock = queue, client, clock
+
+    @property
+    def target(self) -> str:
+        return self.client.origin
+
+    def enqueue_for_bundle(
+        self, handover_id: str, request: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self.queue.enqueue_job(
+            handover_id=handover_id,
+            kind=COLLECTOR_SUBMISSION,
+            target=self.target,
+            request=request,
+            receipt=self._receipt(handover_id, "pending", None, 0, []),
+            now=self.clock(),
+            destination=DESTINATION_COLLECTOR,
+        )
+
+    def receipt(self, handover_id: str) -> dict[str, Any] | None:
+        return self.queue.job_receipt(handover_id, DESTINATION_COLLECTOR)
+
+    @staticmethod
+    def _receipt(
+        handover_id: str,
+        status: str,
+        error_code: str | None,
+        attempts: int,
+        submissions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "handover_id": handover_id,
+            "destination": DESTINATION_COLLECTOR,
+            "status": status,
+            "error_code": error_code,
+            "attempts": attempts,
+            "submissions": submissions,
+        }
+
+    def run_cycle(self) -> int:
+        """Attempt each due collector hand-over once; return how many."""
+        attempted = 0
+        for _ in range(MAX_JOBS_PER_CYCLE):
+            job = self.queue.claim_job(
+                self.target,
+                now=self.clock(),
+                lease_seconds=SUBMISSION_LEASE_SECONDS,
+                destination=DESTINATION_COLLECTOR,
+                kinds=[COLLECTOR_SUBMISSION],
+            )
+            if job is None:
+                break
+            self._attempt(job)
+            attempted += 1
+        return attempted
+
+    def _finish(
+        self,
+        job: ClaimedJob,
+        status: str,
+        error_code: str | None,
+        submissions: list[dict[str, Any]],
+        *,
+        retry: bool,
+    ) -> None:
+        receipt = self._receipt(
+            job.handover_id, status, error_code, job.attempts + 1, submissions
+        )
+        self.queue.finish_job(job, receipt=receipt, retry=retry, now=self.clock())
+
+    def _attempt(self, job: ClaimedJob) -> None:
+        previous = self.receipt(job.handover_id) or {}
+        earlier = {entry["kind"]: entry for entry in previous.get("submissions", [])}
+        staged = self.queue.job_receipt(job.handover_id)
+        if staged is None or staged.get("status") in NOT_STAGED_STATUSES:
+            self._finish(job, "skipped", NOT_STAGED_ON_HUGGING_FACE, [], retry=False)
+            return
+        revision = staged.get("revision")
+        if staged.get("status") not in STAGED_STATUSES or not revision:
+            self._finish(
+                job,
+                "pending",
+                WAITING_FOR_HUGGING_FACE,
+                list(earlier.values()),
+                retry=True,
+            )
+            return
+        results: dict[str, dict[str, Any]] = {}
+        for planned in planned_submissions(job.request, revision):
+            settled = earlier.get(planned.kind)
+            if settled is not None and settled["status"] in {"accepted", "failed"}:
+                results[planned.kind] = settled
+                continue
+            outcome = self.client.submit(planned)
+            results[planned.kind] = {
+                "kind": planned.kind,
+                "status": outcome.status,
+                "error_code": outcome.error_code,
+                "submission_id": outcome.submission_id,
+                "collector_status": outcome.collector_status,
+            }
+        submissions = list(results.values())
+        pending = [entry for entry in submissions if entry["status"] == "pending"]
+        failed = [entry for entry in submissions if entry["status"] == "failed"]
+        if pending:
+            self._finish(
+                job, "pending", pending[0]["error_code"], submissions, retry=True
+            )
+        elif failed:
+            self._finish(
+                job, "failed", failed[0]["error_code"], submissions, retry=False
+            )
+        else:
+            self._finish(job, "submitted", None, submissions, retry=False)

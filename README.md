@@ -121,6 +121,16 @@ releases/<release>/<build>/...                 the build's files, with their rol
 - A release change goes at the next cycle, even within 10 seconds of this machine's last commit to the repository; bundles and run files keep that spacing. Each cycle still makes at most one commit per repository.
 - `release_change_policy` is where a decision on who may promote or withdraw will plug in. It receives the validated change and its caller (`ReleaseCaller`: the user the emitter runs as and the build process that started it) when the change is handed over; a refusal is answered at once as `NOT_AUTHORIZED` and never queued. By default every change is allowed. `current` may stay `null`, for a release that is never promoted.
 
+## Collector submissions
+
+The collector's artifact intake (PolicyEngine/microcosm-collector, `docs/artifact-submissions.md`) takes the files its workers build from: calibration diagnostics for the calibration trees, and the Orrery inputs it projects. The `huggingface` module sends them there from staged dataset bundles, so Microcosm needs no separate call.
+
+- **Only described bundles.** A bundle hand-over may carry `CollectorProvenance`: the country, the build (Microcosm's attempt ID), whether the build used licensed microdata, and the release (`None` for a staged build). Without it, the bundle goes only to Hugging Face, as before.
+- **What is submitted.** A `calibration_diagnostics` file gives a `calibration-diagnostics` submission, with any `build_manifest`, `release_manifest` and `demographics` file. `orrery_schema` and `execution_overlay` together give an `orrery-inputs` submission, with any `orrery_upstream` and `orrery_evidence` files, under the collector's role names (`schema`, `execution_overlay`, `upstream`, `evidence`). Dataset files and sidecars are not submitted.
+- **After the Hugging Face commit.** The submission's provenance names the repo, the commit that staged the bundle and its folder, so the collector row of the hand-over waits for the Hugging Face row. A bundle Hugging Face refuses is `skipped`.
+- **The steps.** The module exchanges the build's Hugging Face token for an `artifacts:submit` credential, creates the submission, uploads each file the collector still lacks to its signed URL (only `https://storage.googleapis.com`, or a loopback address in development), and completes it. Each preserved file's size and SHA-256 are checked first. Outages and a collector whose intake is off leave the hand-over `pending` and retried with backoff; refusals are `failed`; success is `submitted`, with each submission's ID. `collector_submission_receipt` reports it.
+- **Off by default.** Nothing is submitted unless the module configuration sets `collector_submissions` to `true`, which no interface release does yet. `development_collector_url` points the module at a loopback collector. Switching submissions on for production builds is a separate emitter change.
+
 ## Development
 
 Use Python 3.13 or 3.14 on Linux or macOS.
