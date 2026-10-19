@@ -1,6 +1,11 @@
 # Microcosm emitter
 
-`microcosm-emitter` is one Python distribution containing the process host, required telemetry library and completed-graph publication library:
+This repository publishes two Python distributions with one shared version:
+
+- `microcosm-emitter-interface` (`packages/microcosm-emitter-interface/`) is the small, dependency-free package a Microcosm build imports. It starts the separately installed emitter as the build's child process and offers one typed call per kind of hand-over. See its README for the compatibility rules and protocol fixtures.
+- `microcosm-emitter` is the emitter itself: the process host, required telemetry library and completed-graph publication library, installed on its own with `uv tool install microcosm-emitter`. It depends on the interface release of the same version.
+
+The `microcosm-emitter` distribution contains:
 
 - `microcosm_emitter.host` owns subprocess startup, a private Unix socket, explicit module loading, parent-process monitoring, and shutdown. Its code does not import telemetry, database, authentication, or Microcosm modules.
 - `microcosm_emitter.telemetry.client` is the thin build adapter. It starts the local telemetry emitter service and sends build requests, without importing the service implementation, database, or authentication libraries.
@@ -67,13 +72,15 @@ The collector compatibility job tests the installed wheel against a pinned dashb
 
 ## Publication
 
-Every merge to `main` releases the Python distribution `microcosm-emitter` to PyPI. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one.
+Every merge to `main` releases both Python distributions, `microcosm-emitter` and `microcosm-emitter-interface`, to PyPI with one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one.
 
 `push.yaml` runs twice for each merge:
 
-1. On the merge commit, it bumps the version in `pyproject.toml` and `uv.lock`: a major bump for a breaking fragment, a minor bump for an added or removed fragment, and a patch bump otherwise. It collects the fragments into `CHANGELOG.md` and commits the result as "Update microcosm-emitter" using the PolicyEngine GitHub App, which may bypass the `main` ruleset.
-2. On that commit, it runs every CI check, tags the commit with the bare version (for example `0.2.0`), and publishes the tested wheel and source archive to PyPI. Each step starts only after the one before succeeds.
+1. On the merge commit, it bumps the version in both `pyproject.toml` files, the emitter's exact `microcosm-emitter-interface` pin and `uv.lock`: a major bump for a breaking fragment, a minor bump for an added or removed fragment, and a patch bump otherwise. It collects the fragments into `CHANGELOG.md` and commits the result as "Update microcosm-emitter" using the PolicyEngine GitHub App, which may bypass the `main` ruleset.
+2. On that commit, it runs every CI check, tags the commit with the bare version (for example `0.2.0`), and publishes the tested wheels and source archives of both distributions to PyPI. Each step starts only after the one before succeeds.
 
-PyPI accepts uploads only through trusted publishing from `push.yaml` in the `pypi` environment, which only `main` can use. CI holds no long-lived registry token. Renaming the workflow or the environment stops publication until PyPI's trusted-publisher settings change to match.
+PyPI accepts uploads only through trusted publishing from `push.yaml` in the `pypi` environment, which only `main` can use; each of the two PyPI projects needs its own trusted-publisher entry for that workflow and environment. CI holds no long-lived registry token. Renaming the workflow or the environment stops publication until PyPI's trusted-publisher settings change to match.
 
-No hosted-service deployment or consumer activation follows from publishing this package.
+The artifact check (`tools/check-artifacts.sh`) builds both distributions, installs the emitter with its interface into one clean environment, as `uv tool install` would, and the interface alone into another, as a build's environment would. From the second, it starts the first's `microcosm-emitter` command and sends telemetry and an Orrery hand-over.
+
+No hosted-service deployment or consumer activation follows from publishing these packages.

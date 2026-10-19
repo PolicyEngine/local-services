@@ -121,3 +121,41 @@ def test_database_code_has_no_raw_sql_or_manual_schema_creation():
                     alias.name in {"sqlite3", "psycopg", "psycopg2"}
                     for alias in node.names
                 ), path
+
+
+INTERFACE_SOURCE = ROOT / "packages/microcosm-emitter-interface/src"
+
+
+def test_interface_imports_only_the_standard_library_and_itself():
+    allowed = set(sys.stdlib_module_names) | {"microcosm_emitter_interface"}
+    paths = list((INTERFACE_SOURCE / "microcosm_emitter_interface").rglob("*.py"))
+    assert paths
+    for path in paths:
+        for name in imports(path):
+            assert name.split(".")[0] in allowed, (path, name)
+
+
+def test_emitter_host_does_not_import_the_interface():
+    for path in (ROOT / "src/microcosm_emitter/host").rglob("*.py"):
+        assert not any(
+            name.split(".")[0] == "microcosm_emitter_interface"
+            for name in imports(path)
+        ), path
+
+
+def test_interface_imports_have_no_runtime_side_effects():
+    script = """
+import sys
+sys.dont_write_bytecode = True
+def audit(event, args):
+    if event in {"socket.connect", "socket.bind", "subprocess.Popen", "os.mkdir"}:
+        raise AssertionError(event)
+sys.addaudithook(audit)
+import microcosm_emitter_interface
+import microcosm_emitter_interface.client
+import microcosm_emitter_interface.launcher
+import microcosm_emitter_interface.protocol_fixtures
+assert not any(name.startswith("microcosm_emitter.") for name in sys.modules)
+assert "microcosm_emitter" not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)

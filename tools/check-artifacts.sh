@@ -3,8 +3,9 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-# Build the wheel from its source archive to check that both libraries and
-# Alembic migrations are included. Remove artifacts from earlier builds first.
-uv build --out-dir dist --clear
+# Build each distribution's wheel from its source archive to check that the
+# libraries, Alembic migrations and protocol fixtures are included. Remove
+# artifacts from earlier builds first.
+uv build --all-packages --out-dir dist --clear
 uv run --no-sync twine check --strict dist/*
 uv run --no-sync python tools/check-installed.py

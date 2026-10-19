@@ -1,8 +1,9 @@
 """Choose the next release version from pending changelog fragments.
 
 A breaking fragment bumps the major version, an added or removed fragment the
-minor version, and any other fragment the patch version. The version is read
-from and written to the single version line in pyproject.toml.
+minor version, and any other fragment the patch version. Both distributions
+share one version: each pyproject.toml holds exactly one version line, and the
+emitter pins the interface release of the same version.
 
 Prints the next version. With --check, writes nothing.
 """
@@ -18,7 +19,12 @@ FRAGMENT_HELP = (
     + ", ".join(FRAGMENT_TYPES)
 )
 VERSIONED_FILE = "pyproject.toml"
+INTERFACE_VERSIONED_FILE = "packages/microcosm-emitter-interface/pyproject.toml"
+VERSIONED_FILES = (VERSIONED_FILE, INTERFACE_VERSIONED_FILE)
 PYPROJECT_VERSION = re.compile(r'^version = "(\d+\.\d+\.\d+)"$', re.MULTILINE)
+INTERFACE_PIN = re.compile(
+    r'^    "microcosm-emitter-interface==([^"]+)",$', re.MULTILINE
+)
 
 
 def fragment_types(changelog_dir: Path) -> set[str]:
@@ -51,13 +57,30 @@ def next_version(version: str, types: set[str]) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def current_version(root: Path) -> str:
-    versions = PYPROJECT_VERSION.findall((root / VERSIONED_FILE).read_text())
+def _file_version(root: Path, versioned_file: str) -> str:
+    versions = PYPROJECT_VERSION.findall((root / versioned_file).read_text())
     if len(versions) != 1:
         raise ValueError(
-            f"Expected one version line in {VERSIONED_FILE}, found {versions}."
+            f"Expected one version line in {versioned_file}, found {versions}."
         )
     return versions[0]
+
+
+def current_version(root: Path) -> str:
+    versions = {
+        versioned_file: _file_version(root, versioned_file)
+        for versioned_file in VERSIONED_FILES
+    }
+    if len(set(versions.values())) != 1:
+        raise ValueError(f"Both distributions must have the same version: {versions}.")
+    version = versions[VERSIONED_FILE]
+    pins = INTERFACE_PIN.findall((root / VERSIONED_FILE).read_text())
+    if pins != [version]:
+        raise ValueError(
+            f"{VERSIONED_FILE} must pin microcosm-emitter-interface=={version} "
+            f"exactly once, found {pins}."
+        )
+    return version
 
 
 def plan_release(root: Path) -> tuple[str, str]:
@@ -66,14 +89,20 @@ def plan_release(root: Path) -> tuple[str, str]:
 
 
 def write_version(root: Path, current: str, upcoming: str) -> None:
-    path = root / VERSIONED_FILE
-    path.write_text(
-        PYPROJECT_VERSION.sub(
+    for versioned_file in VERSIONED_FILES:
+        path = root / versioned_file
+        text = PYPROJECT_VERSION.sub(
             lambda match: match.group(0).replace(current, upcoming),
             path.read_text(),
             count=1,
         )
-    )
+        if versioned_file == VERSIONED_FILE:
+            text = INTERFACE_PIN.sub(
+                lambda match: match.group(0).replace(current, upcoming),
+                text,
+                count=1,
+            )
+        path.write_text(text)
 
 
 def main(arguments: list[str]) -> None:

@@ -11,6 +11,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_COMMIT = "Update microcosm-emitter"
 VERSIONED_FILE = "pyproject.toml"
+INTERFACE_VERSIONED_FILE = "packages/microcosm-emitter-interface/pyproject.toml"
+VERSIONED_FILES = (VERSIONED_FILE, INTERFACE_VERSIONED_FILE)
 
 
 def workflow_paths():
@@ -30,7 +32,9 @@ def bump_version():
 
 
 def release_tree(root, *fragments):
-    shutil.copy(ROOT / VERSIONED_FILE, root / VERSIONED_FILE)
+    for versioned_file in VERSIONED_FILES:
+        (root / versioned_file).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / versioned_file, root / versioned_file)
     (root / "changelog.d").mkdir()
     (root / "changelog.d/.gitkeep").touch()
     for fragment in fragments:
@@ -132,21 +136,67 @@ def test_fragment_types_choose_the_bump(bump_version, types, expected):
     assert bump_version["next_version"]("1.4.2", types) == expected
 
 
-def test_release_rewrites_only_the_version_line(tmp_path, bump_version):
+def changed_lines(versioned_file, root):
+    original = (ROOT / versioned_file).read_text().splitlines()
+    updated = (root / versioned_file).read_text().splitlines()
+    assert len(updated) == len(original)
+    return [
+        (original_line, updated_line)
+        for original_line, updated_line in zip(original, updated, strict=True)
+        if original_line != updated_line
+    ]
+
+
+def test_release_rewrites_both_versions_and_the_interface_pin_only(
+    tmp_path, bump_version
+):
     root = release_tree(tmp_path, "1.added.md", "repair.fixed.md")
     current, upcoming = bump_version["plan_release"](root)
     assert upcoming == bump_version["next_version"](current, {"added", "fixed"})
     bump_version["write_version"](root, current, upcoming)
     assert bump_version["current_version"](root) == upcoming
-    original = (ROOT / VERSIONED_FILE).read_text().splitlines()
-    updated = (root / VERSIONED_FILE).read_text().splitlines()
-    assert len(updated) == len(original)
-    changed = [
-        (original_line, updated_line)
-        for original_line, updated_line in zip(original, updated, strict=True)
-        if original_line != updated_line
+    assert changed_lines(VERSIONED_FILE, root) == [
+        (f'version = "{current}"', f'version = "{upcoming}"'),
+        (
+            f'    "microcosm-emitter-interface=={current}",',
+            f'    "microcosm-emitter-interface=={upcoming}",',
+        ),
     ]
-    assert changed == [(f'version = "{current}"', f'version = "{upcoming}"')]
+    assert changed_lines(INTERFACE_VERSIONED_FILE, root) == [
+        (f'version = "{current}"', f'version = "{upcoming}"')
+    ]
+
+
+def test_release_refuses_diverged_distribution_versions(tmp_path, bump_version):
+    root = release_tree(tmp_path, "1.fixed.md")
+    interface = root / INTERFACE_VERSIONED_FILE
+    interface.write_text(
+        re.sub(
+            r'^version = "[^"]+"$',
+            'version = "9.9.9"',
+            interface.read_text(),
+            count=1,
+            flags=re.MULTILINE,
+        )
+    )
+    with pytest.raises(ValueError, match="same version"):
+        bump_version["plan_release"](root)
+
+
+def test_release_refuses_an_interface_pin_that_differs_from_the_version(
+    tmp_path, bump_version
+):
+    root = release_tree(tmp_path, "1.fixed.md")
+    pyproject = root / VERSIONED_FILE
+    pyproject.write_text(
+        re.sub(
+            r'"microcosm-emitter-interface==[^"]+"',
+            '"microcosm-emitter-interface>=0.1"',
+            pyproject.read_text(),
+        )
+    )
+    with pytest.raises(ValueError, match="pin"):
+        bump_version["plan_release"](root)
 
 
 @pytest.mark.parametrize(
@@ -160,25 +210,31 @@ def test_release_refuses_missing_or_untyped_fragments(
         bump_version["plan_release"](root)
 
 
+@pytest.mark.parametrize("versioned_file", VERSIONED_FILES)
 @pytest.mark.parametrize(
     "edit_pyproject",
     [remove_version_line, add_tool_version_line],
     ids=["missing", "duplicated"],
 )
 def test_release_refuses_a_missing_or_duplicated_version_line(
-    tmp_path, bump_version, edit_pyproject
+    tmp_path, bump_version, edit_pyproject, versioned_file
 ):
     root = release_tree(tmp_path, "1.fixed.md")
-    pyproject = root / VERSIONED_FILE
+    pyproject = root / versioned_file
     pyproject.write_text(edit_pyproject(pyproject.read_text()))
     with pytest.raises(ValueError, match="one version line"):
         bump_version["plan_release"](root)
 
 
-def test_build_verifies_one_distribution_without_a_workspace():
+def test_build_verifies_both_distributions_from_one_script():
     script = (ROOT / "tools/check-artifacts.sh").read_text()
     assert script.count("uv build ") == 1
-    assert "--package" not in script
-    assert "--clear" in script
+    assert "uv build --all-packages --out-dir dist --clear" in script
     for path in workflow_paths():
-        assert "--all-packages" not in path.read_text()
+        assert "uv build" not in path.read_text()
+
+
+def test_installed_check_keeps_the_interface_apart_from_the_emitter():
+    script = (ROOT / "tools/check-installed.py").read_text()
+    assert "microcosm_emitter_interface-" in script
+    assert "tools/installed-interface-smoke.py" in script

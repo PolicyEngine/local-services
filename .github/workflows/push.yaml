@@ -14,7 +14,8 @@ permissions:
 # remaining jobs verify, tag, then publish, each only after the one before.
 #
 # PyPI trusts this file by name, in the pypi environment, which only main can
-# use. Renaming it stops publication.
+# use, for both distributions (microcosm-emitter and microcosm-emitter-interface).
+# Renaming it stops publication.
 jobs:
   versioning:
     name: Update versioning
