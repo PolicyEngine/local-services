@@ -113,12 +113,18 @@ def huggingface_token() -> str | None:
 
 
 class CollectorSession:
-    """One thread-safe short-lived credential shared by independent publishers."""
+    """One thread-safe short-lived credential shared by independent publishers.
 
-    def __init__(self, origin: str, *, post=None, credential=None):
+    ``scope`` asks the exchange for a credential with that scope, such as
+    ``artifacts:submit``. Without it the exchange body stays ``{}``, which the
+    collector answers with a ``telemetry:write`` credential.
+    """
+
+    def __init__(self, origin: str, *, post=None, credential=None, scope=None):
         import threading
 
         self.origin = origin
+        self.scope = scope
         self._post = post or _http_post
         self._credential = credential or huggingface_token
         self._session_token: tuple[str, float] | None = None
@@ -141,7 +147,9 @@ class CollectorSession:
                 return "missing", None
             try:
                 status, response = self._post(
-                    self.origin + TOKEN_EXCHANGE_PATH, {}, hf_token
+                    self.origin + TOKEN_EXCHANGE_PATH,
+                    {} if self.scope is None else {"scope": self.scope},
+                    hf_token,
                 )
             except (OSError, TimeoutError):
                 return "unavailable", None
