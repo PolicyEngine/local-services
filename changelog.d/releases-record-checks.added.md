@@ -1,0 +1,1 @@
+Add `microcosm_emitter_interface.releases`: the shape of each dataset repository's `releases.json`, the changes the release writer makes (publish a build, make a build current, withdraw a build), and the checks every write must pass, so Microcosm and the emitter run the same code.
