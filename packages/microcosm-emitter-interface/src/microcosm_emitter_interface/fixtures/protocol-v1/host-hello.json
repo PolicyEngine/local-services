@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "module": "host",
+  "kind": "hello",
+  "body": {
+    "action": "hello"
+  },
+  "response_keys": [
+    "emitter_version",
+    "modules",
+    "protocol_versions",
+    "skipped_modules"
+  ]
+}

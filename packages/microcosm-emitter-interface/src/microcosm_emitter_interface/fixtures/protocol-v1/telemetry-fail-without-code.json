@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "fail",
+    "message": "Synthetic failure.",
+    "error_type": "MemoryError",
+    "failed_during": null,
+    "failure_class": "oom"
+  }
+}

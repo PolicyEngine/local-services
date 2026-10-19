@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "fail",
+    "message": "Synthetic failure.",
+    "error_type": "RuntimeError",
+    "failed_during": "calibrating",
+    "failure_class": "build_failure",
+    "error_code": "BUILD_FAILED"
+  }
+}

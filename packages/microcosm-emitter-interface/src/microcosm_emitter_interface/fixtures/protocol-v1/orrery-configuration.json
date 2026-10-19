@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "module": "orrery",
+  "kind": "configuration",
+  "body": {
+    "spool_path": "{spool_path}",
+    "development_collector_url": "http://127.0.0.1:1",
+    "publication_origin": "http://127.0.0.1:1"
+  }
+}

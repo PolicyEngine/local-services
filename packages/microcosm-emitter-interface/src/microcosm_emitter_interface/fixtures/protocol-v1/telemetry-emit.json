@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "emit",
+    "event_type": "progress",
+    "stage_id": "compile",
+    "status": "progress",
+    "message": "Compiling.",
+    "details": {
+      "step": 1
+    }
+  }
+}

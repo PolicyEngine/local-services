@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "configuration",
+  "body": {
+    "registration": {
+      "run_id": "fixture-run",
+      "producer_id": "fixture-producer",
+      "country_code": "UK",
+      "pipeline": "fixture-pipeline",
+      "candidate_id": null,
+      "release_id": null,
+      "run_kind": "build"
+    },
+    "spool_path": "{spool_path}",
+    "identity": {
+      "host": "fixture"
+    },
+    "development_collector_url": "http://127.0.0.1:1",
+    "heartbeat_seconds": 60.0
+  }
+}

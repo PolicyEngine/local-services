@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "module": "orrery",
+  "kind": "query",
+  "sequence": 4,
+  "body": {
+    "command": "retry",
+    "publication_id": "fixture-publication"
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}
