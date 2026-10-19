@@ -1,75 +1,13 @@
 """Typed staging-run-file hand-overs, through a real socket to the module."""
 
-import os
-import shutil
-import tempfile
-import threading
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from fake_hugging_face import STAGING_REPOSITORY, FakeHuggingFaceApi
+from fake_hugging_face import STAGING_REPOSITORY
 
-from microcosm_emitter.host.contracts import ModuleContext
-from microcosm_emitter.host.runtime import ServiceRuntime
-from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 from microcosm_emitter_interface.client import EmitterClient
 from microcosm_emitter_interface.staging import RunFile, StageRunFiles
 from microcosm_emitter_interface.transport import SocketTransport
-
-
-@dataclass
-class InThreadEmitter:
-    """An emitter host running in a thread of the test process."""
-
-    transport: SocketTransport
-    description: dict = field(default_factory=dict)
-
-    def close(self):
-        self.transport.close()
-
-
-@pytest.fixture
-def emitter_with_hub(tmp_path):
-    hub = FakeHuggingFaceApi()
-    hub.create_repository(STAGING_REPOSITORY)
-    runtime_directory = Path(tempfile.mkdtemp(prefix="pe-stage-", dir="/tmp"))
-    socket_path = runtime_directory / "service.sock"
-    module = HuggingFaceModule(
-        {"spool_path": str(tmp_path / "events.sqlite3")},
-        ModuleContext(os.getpid()),
-        api_factory=lambda: hub,
-    )
-    runtime = ServiceRuntime(
-        socket_path,
-        modules={"huggingface": module},
-        is_parent_alive=lambda: True,
-        tick_seconds=0.01,
-    )
-    thread = threading.Thread(target=runtime.run)
-    thread.start()
-    transport = SocketTransport(socket_path)
-    deadline = time.monotonic() + 5
-    while True:
-        try:
-            transport.ping()
-            break
-        except Exception:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(0.01)
-    client = EmitterClient(
-        InThreadEmitter(
-            transport, {"modules": ["huggingface"], "protocol_versions": [1]}
-        )
-    )
-    try:
-        yield client, hub
-    finally:
-        client.close()
-        thread.join(timeout=20)
-        shutil.rmtree(runtime_directory, ignore_errors=True)
 
 
 @pytest.mark.parametrize(
@@ -144,9 +82,11 @@ def test_message_names_each_file_by_its_absolute_local_path(tmp_path, monkeypatc
     }
 
 
-def test_client_without_the_hugging_face_module_reports_unavailable(tmp_path):
+def test_client_without_the_hugging_face_module_reports_unavailable(
+    tmp_path, in_thread_emitter
+):
     client = EmitterClient(
-        InThreadEmitter(
+        in_thread_emitter(
             SocketTransport(tmp_path / "unused.sock"),
             {"modules": ["telemetry"], "protocol_versions": [1]},
         )
@@ -160,9 +100,9 @@ def test_client_without_the_hugging_face_module_reports_unavailable(tmp_path):
     ] == ("unavailable")
 
 
-def test_unreachable_emitter_never_raises(tmp_path):
+def test_unreachable_emitter_never_raises(tmp_path, in_thread_emitter):
     client = EmitterClient(
-        InThreadEmitter(
+        in_thread_emitter(
             SocketTransport(tmp_path / "nothing-listens.sock"),
             {"modules": ["huggingface"], "protocol_versions": [1]},
         )

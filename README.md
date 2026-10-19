@@ -67,6 +67,15 @@ The `huggingface` module takes over the uploads Microcosm made itself. Microcosm
 - A commit that merges `runs.json` is pinned to the head it read (`parent_commit`); if another build commits first, the module reads the index again and merges again.
 - `read_back_run_files` commits pending files, then compares the Hub's copy of each committed file with the committed bytes.
 
+**Staged dataset bundles** (Microcosm's `staging_dataset.stage_bundle`, used by `uk_runtime/rowwise_staging.py` and the Orrery evidence bundle). A build verifies its bundle and writes the sidecars as before, then hands the files over by path, each with its role (`dataset`, `calibration_diagnostics`, `build_manifest`, `staged_manifest`, `checksums`, ...), SHA-256 and size. The hand-over is a durable job:
+
+- The worker re-hashes each preserved file and never uploads changed bytes (`PRESERVED_BYTES_CHANGED`); a missing file waits for an operator to restore it (`PRESERVED_FILES_MISSING`).
+- As in Microcosm, it writes every file under `<prefix>/<run_id>/` (by default `staged/<run_id>/`) in one commit pinned to the head it checked, with the message `Stage <run_id> under <prefix>/<run_id>`. A repository copy of the bundle's `staged_manifest` whose `files` equal the outputs' digests is `already_staged` with that copy's commit; a different one is `REMOTE_DIFFERS` and is never overwritten.
+- Unlike Microcosm's single attempt, `REPOSITORY_UNAVAILABLE` and `UPLOAD_FAILED` are retried with backoff, and a commit that loses a race to another writer is checked and tried again. The receipt keeps the last error code while the job is pending.
+- `check_write_access` is Microcosm's staged-dataset preflight: whether a credential is present, the repository is reachable, and the Hub reports a write scope for it.
+
+A repository with both a due bundle and due run files gets the bundle in one cycle and the run files in a later one, so each cycle still makes one commit per repository.
+
 ## Development
 
 Use Python 3.13 or 3.14 on Linux or macOS.

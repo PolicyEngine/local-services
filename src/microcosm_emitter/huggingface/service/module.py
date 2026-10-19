@@ -14,6 +14,7 @@ from typing import Any
 from microcosm_emitter.host.contracts import JsonObject, ModuleContext
 from microcosm_emitter.huggingface.service.delivery import (
     CREDENTIAL_MISSING,
+    DATASET_BUNDLE,
     HuggingFaceDelivery,
 )
 from microcosm_emitter.huggingface.service.hub import (
@@ -23,9 +24,12 @@ from microcosm_emitter.huggingface.service.hub import (
 from microcosm_emitter.huggingface.service.queue import HandoverQueue, sha256_bytes
 from microcosm_emitter.huggingface.service.requests import (
     RequestRefusedError,
+    parse_stage_dataset_bundle,
     parse_stage_run_files,
+    require_supported_version,
     run_reference,
 )
+from microcosm_emitter_interface.identifiers import repository_identifier
 
 WORKER_ERROR_MESSAGE = (
     "Microcosm Hugging Face delivery hit a local queue error; handed-over files "
@@ -95,7 +99,80 @@ class HuggingFaceModule:
             }
         if command == "read_back_run_files":
             return {"read_back": self._read_back_run_files(message)}
+        if command == "stage_dataset_bundle":
+            return {"receipt": self._stage_dataset_bundle(message)}
+        if command == "handover_receipt":
+            return {"receipt": self._handover_receipt(message)}
+        if command == "check_write_access":
+            return {"access": self._check_write_access(message)}
         raise ValueError("unsupported Hugging Face hand-over command")
+
+    def _stage_dataset_bundle(self, message: JsonObject) -> dict[str, Any]:
+        assert self.queue is not None
+        try:
+            hand_over = parse_stage_dataset_bundle(message)
+        except RequestRefusedError as refusal:
+            repository = message.get("repository")
+            return {
+                "handover_id": "",
+                "status": "refused",
+                "error_code": refusal.code,
+                "revision": None,
+                "attempts": 0,
+                "repository": repository if isinstance(repository, str) else "",
+                "prefix": "",
+            }
+        return self.queue.enqueue_job(
+            handover_id=hand_over.handover_id,
+            kind=DATASET_BUNDLE,
+            target=hand_over.repository,
+            request=hand_over.request,
+            receipt={
+                "handover_id": hand_over.handover_id,
+                "status": "pending",
+                "error_code": None,
+                "revision": None,
+                "attempts": 0,
+                "repository": hand_over.repository,
+                "prefix": hand_over.remote_prefix,
+            },
+            now=self.clock(),
+        )
+
+    def _handover_receipt(self, message: JsonObject) -> dict[str, Any] | None:
+        assert self.queue is not None
+        require_supported_version(message)
+        handover_id = message.get("handover_id")
+        if not isinstance(handover_id, str) or not handover_id:
+            raise ValueError("handover_id must be a nonempty string")
+        return self.queue.job_receipt(handover_id)
+
+    def _check_write_access(self, message: JsonObject) -> dict[str, Any]:
+        """Microcosm's staged-dataset preflight: credential, reach and scope."""
+        require_supported_version(message)
+        repository = repository_identifier(message.get("repository"))
+        access: dict[str, Any] = {
+            "status": "checked",
+            "credential": "missing",
+            "reachable": None,
+            "can_write": None,
+            "error_type": None,
+        }
+        api = self.api_factory()
+        if api is None:
+            return access
+        hub = DatasetRepository(repository, api)
+        access["credential"] = "present"
+        try:
+            hub.head_revision()
+        except Exception as error:
+            # Only the type name: the Hub's message can carry request details.
+            return {**access, "reachable": False, "error_type": type(error).__name__}
+        try:
+            can_write = hub.credential_can_write()
+        except Exception:
+            can_write = None
+        return {**access, "reachable": True, "can_write": can_write}
 
     def _stage_run_files(self, message: JsonObject) -> dict[str, Any]:
         assert self.queue is not None

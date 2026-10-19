@@ -19,6 +19,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from microcosm_emitter_interface.bundles import (
+    DatasetBundleReceipt,
+    StageDatasetBundle,
+    WriteAccess,
+    unavailable_bundle_receipt,
+    unavailable_write_access,
+)
+from microcosm_emitter_interface.identifiers import repository_identifier
 from microcosm_emitter_interface.launcher import (
     EmitterProcess,
     EmitterStartupError,
@@ -43,7 +51,9 @@ from microcosm_emitter_interface.protocol import (
     FILE_REQUEST_TIMEOUT_SECONDS,
     HUGGING_FACE_MODULE,
     ORRERY_MODULE,
+    PROTOCOL_VERSION,
     READ_BACK_TIMEOUT_SECONDS,
+    SETTLED_STATUSES,
     STAGING_REQUEST_TIMEOUT_SECONDS,
     STARTUP_TIMEOUT_SECONDS,
     TELEMETRY_MODULE,
@@ -401,6 +411,77 @@ class EmitterClient:
         if isinstance(value, dict):
             return cast(ReadBackResult, value)
         return unavailable_read_back()
+
+    def _handover_receipt(self, handover_id: str) -> dict[str, Any] | None:
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: {
+                "protocol_version": PROTOCOL_VERSION,
+                "command": "handover_receipt",
+                "handover_id": handover_id,
+            },
+            kind="staging",
+            timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        return value if isinstance(value, dict) else None
+
+    def _wait_until_settled(
+        self, receipt: dict[str, Any], wait_seconds: float
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0, wait_seconds)
+        while (
+            receipt.get("status") not in SETTLED_STATUSES
+            and receipt.get("status") != "unavailable"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.1)
+            latest = self._handover_receipt(receipt["handover_id"])
+            if latest is None:
+                break
+            receipt = latest
+        return receipt
+
+    def stage_dataset_bundle(
+        self, request: StageDatasetBundle, *, wait_seconds: float = 0
+    ) -> DatasetBundleReceipt:
+        """Queue a staged dataset bundle; optionally wait for its upload.
+
+        Returns once the hand-over is durably queued (``pending``), or after
+        it settles if that happens within ``wait_seconds``.
+        """
+        message = request.message()
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: message,
+            kind="staging",
+            timeout=FILE_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        if not isinstance(value, dict):
+            return unavailable_bundle_receipt(request)
+        return cast(DatasetBundleReceipt, self._wait_until_settled(value, wait_seconds))
+
+    def dataset_bundle_receipt(self, handover_id: str) -> DatasetBundleReceipt | None:
+        return cast(DatasetBundleReceipt | None, self._handover_receipt(handover_id))
+
+    def check_write_access(self, repository: str) -> WriteAccess:
+        """Whether the build's credential can reach and write ``repository``."""
+        message = {
+            "protocol_version": PROTOCOL_VERSION,
+            "command": "check_write_access",
+            "repository": repository_identifier(repository),
+        }
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: message,
+            kind="staging",
+            timeout=READ_BACK_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("access")
+        if isinstance(value, dict):
+            return cast(WriteAccess, value)
+        return unavailable_write_access()
 
     def close(self) -> None:
         """Ask the emitter to drain and stop; repeated calls do nothing."""

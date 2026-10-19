@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
 from microcosm_emitter_interface.client import EmitterClient
 from microcosm_emitter_interface.launcher import EmitterProcess
 from microcosm_emitter_interface.orrery import OrrerySettings
@@ -22,6 +23,27 @@ from microcosm_emitter_interface.staging import (
 from microcosm_emitter_interface.telemetry import TelemetryRun, TelemetrySettings
 
 FIXTURE_STAGING_REPOSITORY = "policyengine/fixture-staging"
+FIXTURE_PRIVATE_REPOSITORY = "policyengine/fixture-private"
+
+
+def fixture_bundle(directory: Path) -> StageDatasetBundle:
+    """The bundle recorded in huggingface-stage-dataset-bundle.json."""
+    fixture = fixtures_by_name()["huggingface-stage-dataset-bundle"]
+    recorded = materialize(fixture, directory=directory, spool_path=Path("unused"))
+    return StageDatasetBundle(
+        repository=FIXTURE_PRIVATE_REPOSITORY,
+        run_id="fixture-run",
+        files=tuple(
+            BundleFile(
+                name=entry["name"],
+                role=entry["role"],
+                local_path=Path(entry["local_path"]),
+                sha256=entry["sha256"],
+                bytes=entry["bytes"],
+            )
+            for entry in recorded["files"]
+        ),
+    )
 
 
 class RecordingTransport:
@@ -37,7 +59,18 @@ class RecordingTransport:
         self.requests.append(("query", module, dict(message)))
         if module == "huggingface":
             return {
-                "receipt": {"status": "recorded", "pending_files": 0},
+                "receipt": {
+                    "status": "recorded",
+                    "pending_files": 0,
+                    "handover_id": "fixture-handover",
+                },
+                "access": {
+                    "status": "checked",
+                    "credential": "present",
+                    "reachable": True,
+                    "can_write": True,
+                    "error_type": None,
+                },
                 "read_back": {
                     "status": "passed",
                     "files": 0,
@@ -175,6 +208,15 @@ SENT_BY: dict[str, Callable[[EmitterClient, Path], Any]] = {
     ),
     "huggingface-run-files-receipt": lambda client, directory: client.run_files_receipt(
         FIXTURE_STAGING_REPOSITORY, "fixture-run"
+    ),
+    "huggingface-stage-dataset-bundle": lambda client, directory: (
+        client.stage_dataset_bundle(fixture_bundle(directory))
+    ),
+    "huggingface-handover-receipt": lambda client, directory: (
+        client.dataset_bundle_receipt("fixture-handover")
+    ),
+    "huggingface-check-write-access": lambda client, directory: (
+        client.check_write_access(FIXTURE_PRIVATE_REPOSITORY)
     ),
     "huggingface-read-back-run-files": lambda client, directory: (
         client.read_back_run_files(

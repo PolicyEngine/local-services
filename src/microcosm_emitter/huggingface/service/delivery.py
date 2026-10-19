@@ -15,13 +15,17 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from microcosm_emitter.huggingface.service.bundles import stage_bundle
 from microcosm_emitter.huggingface.service.hub import DatasetRepository
-from microcosm_emitter.huggingface.service.queue import HandoverQueue
+from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 from microcosm_emitter.huggingface.service.run_files import commit_run_files
 
 #: Long enough for one commit of a large upload; a crashed writer's lease
 #: expires and another host on this machine resumes the repository.
 REPOSITORY_LEASE_SECONDS = 900.0
+#: The job kinds this emitter delivers.
+DATASET_BUNDLE = "dataset_bundle"
+SUPPORTED_JOB_KINDS = frozenset({DATASET_BUNDLE})
 CREDENTIAL_MISSING = "CREDENTIAL_MISSING"
 UPLOAD_FAILED = "UPLOAD_FAILED"
 CREDENTIAL_MISSING_MESSAGE = (
@@ -65,7 +69,9 @@ class HuggingFaceDelivery:
 
     def run_cycle(self) -> int:
         """Make at most one commit per due repository; return how many."""
-        repositories = self.queue.due_repositories(self.clock())
+        repositories = self.queue.due_repositories(
+            self.clock(), kinds=SUPPORTED_JOB_KINDS
+        )
         if not repositories:
             return 0
         api = self.api_factory()
@@ -95,15 +101,86 @@ class HuggingFaceDelivery:
             return 0
         try:
             if api is None:
-                self._credential_missing(repository)
+                self._credential_missing(repository, run_files_only=run_files_only)
                 return 0
             hub = DatasetRepository(repository, api)
+            if not run_files_only:
+                job = self._claim_job(repository)
+                if job is not None:
+                    return int(self._deliver_job(hub, job))
+                if not self.queue.run_files_due(repository, self.clock()):
+                    return 0
             return int(self._deliver_run_files(hub))
         finally:
             self.queue.release_repository(repository, lease)
 
-    def _credential_missing(self, repository: str) -> None:
+    def _claim_job(self, repository: str) -> ClaimedJob | None:
+        return self.queue.claim_job(
+            repository,
+            now=self.clock(),
+            lease_seconds=REPOSITORY_LEASE_SECONDS,
+            kinds=SUPPORTED_JOB_KINDS,
+        )
+
+    def _finish_job(
+        self,
+        job: ClaimedJob,
+        *,
+        status: str,
+        error_code: str | None,
+        revision: str | None,
+        retry: bool,
+        committed: bool = False,
+    ) -> None:
+        self.queue.finish_job(
+            job,
+            receipt={
+                "handover_id": job.handover_id,
+                "status": status,
+                "error_code": error_code,
+                "revision": revision,
+                "attempts": job.attempts + 1,
+                "repository": job.target,
+                "prefix": f"{job.request['prefix']}/{job.request['run_id']}",
+            },
+            retry=retry,
+            now=self.clock(),
+            committed=committed,
+        )
+
+    def _deliver_job(self, hub: DatasetRepository, job: ClaimedJob) -> bool:
+        outcome = stage_bundle(hub, job.request)
+        if outcome.retry and outcome.error_code is not None:
+            self.warn_once(
+                outcome.error_code,
+                UPLOAD_FAILED_MESSAGE.format(error_type=outcome.error_code),
+            )
+        self._finish_job(
+            job,
+            status=outcome.status,
+            error_code=outcome.error_code,
+            revision=outcome.revision,
+            retry=outcome.retry,
+            committed=outcome.committed,
+        )
+        return outcome.committed
+
+    def _credential_missing(self, repository: str, *, run_files_only: bool) -> None:
         self.warn_once(CREDENTIAL_MISSING, CREDENTIAL_MISSING_MESSAGE)
+        job = None if run_files_only else self._claim_job(repository)
+        if job is not None:
+            self._finish_job(
+                job,
+                status="pending",
+                error_code=CREDENTIAL_MISSING,
+                revision=None,
+                retry=True,
+            )
+            return
+        if not run_files_only and not self.queue.run_files_due(
+            repository, self.clock()
+        ):
+            return
         entries = self.queue.pending_run_files(repository)
         index_entries = self.queue.pending_run_index_entries(repository)
         if entries or index_entries:

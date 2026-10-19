@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "module": "huggingface",
+  "kind": "query",
+  "sequence": 6,
+  "body": {
+    "protocol_version": 1,
+    "command": "handover_receipt",
+    "handover_id": "fixture-handover"
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}

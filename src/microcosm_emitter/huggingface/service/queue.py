@@ -152,8 +152,14 @@ class HandoverQueue:
         with self._sessions.begin() as session:
             self._schedule(session, repository).last_commit_at = now
 
-    def due_repositories(self, now: float) -> list[str]:
-        """Repositories with work due now that may receive a commit now."""
+    def due_repositories(
+        self, now: float, *, kinds: Iterable[str] | None = None
+    ) -> list[str]:
+        """Repositories with work due now that may receive a commit now.
+
+        ``kinds`` limits jobs to those this emitter can deliver, so a job
+        queued by a newer emitter sharing the database waits for it.
+        """
         with self._sessions() as session:
             run_file_repositories = set(
                 session.scalars(
@@ -169,16 +175,15 @@ class HandoverQueue:
                     )
                 )
             )
-            job_repositories = set(
-                session.scalars(
-                    select(HandoverJob.target).where(
-                        HandoverJob.destination == DESTINATION_HUGGING_FACE,
-                        HandoverJob.status == JOB_PENDING,
-                        HandoverJob.next_attempt_at <= now,
-                        HandoverJob.lease_until <= now,
-                    )
-                )
+            job_query = select(HandoverJob.target).where(
+                HandoverJob.destination == DESTINATION_HUGGING_FACE,
+                HandoverJob.status == JOB_PENDING,
+                HandoverJob.next_attempt_at <= now,
+                HandoverJob.lease_until <= now,
             )
+            if kinds is not None:
+                job_query = job_query.where(HandoverJob.kind.in_(list(kinds)))
+            job_repositories = set(session.scalars(job_query))
             due = []
             for repository in sorted(run_file_repositories | job_repositories):
                 schedule = session.get(RepositoryCommitSchedule, repository)
@@ -290,6 +295,32 @@ class HandoverQueue:
                 if delivery.run_index_pending:
                     delivery.run_index_due_at = min(delivery.run_index_due_at, now)
             delivery.updated_at = now
+
+    def run_files_due(self, repository: str, now: float) -> bool:
+        """Whether pending run files are due and past any failure backoff."""
+        with self._sessions() as session:
+            schedule = session.get(RepositoryCommitSchedule, repository)
+            if schedule is not None and schedule.retry_after > now:
+                return False
+            due_file = session.scalar(
+                select(StagedRunFile.path_in_repo)
+                .where(
+                    StagedRunFile.repository == repository,
+                    StagedRunFile.pending.is_(True),
+                    StagedRunFile.due_at <= now,
+                )
+                .limit(1)
+            )
+            due_index = session.scalar(
+                select(StagedRunDelivery.run_id)
+                .where(
+                    StagedRunDelivery.repository == repository,
+                    StagedRunDelivery.run_index_pending.is_(True),
+                    StagedRunDelivery.run_index_due_at <= now,
+                )
+                .limit(1)
+            )
+            return due_file is not None or due_index is not None
 
     def repositories_with_pending_run_files(self) -> list[str]:
         with self._sessions() as session:
@@ -499,6 +530,7 @@ class HandoverQueue:
         now: float,
         lease_seconds: float,
         destination: str = DESTINATION_HUGGING_FACE,
+        kinds: Iterable[str] | None = None,
     ) -> ClaimedJob | None:
         """Lease the earliest-due pending job for ``target``.
 
@@ -506,17 +538,19 @@ class HandoverQueue:
         leaves its job eligible again once the lease expires.
         """
         with self._sessions.begin() as session:
+            statement = select(HandoverJob).where(
+                HandoverJob.destination == destination,
+                HandoverJob.target == target,
+                HandoverJob.status == JOB_PENDING,
+                HandoverJob.next_attempt_at <= now,
+                HandoverJob.lease_until <= now,
+            )
+            if kinds is not None:
+                statement = statement.where(HandoverJob.kind.in_(list(kinds)))
             candidate = session.scalar(
-                select(HandoverJob)
-                .where(
-                    HandoverJob.destination == destination,
-                    HandoverJob.target == target,
-                    HandoverJob.status == JOB_PENDING,
-                    HandoverJob.next_attempt_at <= now,
-                    HandoverJob.lease_until <= now,
-                )
-                .order_by(HandoverJob.next_attempt_at, HandoverJob.created_at)
-                .limit(1)
+                statement.order_by(
+                    HandoverJob.next_attempt_at, HandoverJob.created_at
+                ).limit(1)
             )
             if candidate is None:
                 return None

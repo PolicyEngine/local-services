@@ -3,6 +3,7 @@
 Importing this package starts no process and opens no socket or file.
 """
 
+from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
 from microcosm_emitter_interface.client import EmitterClient, RequestFailure
 from microcosm_emitter_interface.launcher import (
     COMMAND_ENVIRONMENT_VARIABLE,
@@ -20,6 +21,7 @@ from microcosm_emitter_interface.staging import (
 from microcosm_emitter_interface.telemetry import TelemetryRun, TelemetrySettings
 
 __all__ = [
+    "BundleFile",
     "COMMAND_ENVIRONMENT_VARIABLE",
     "DEFAULT_COMMAND",
     "PROTOCOL_VERSION",
@@ -29,6 +31,7 @@ __all__ = [
     "OrrerySettings",
     "RequestFailure",
     "RunFile",
+    "StageDatasetBundle",
     "StageRunFiles",
     "TelemetryRun",
     "TelemetrySettings",

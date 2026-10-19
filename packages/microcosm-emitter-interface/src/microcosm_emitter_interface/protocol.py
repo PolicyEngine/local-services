@@ -27,8 +27,12 @@ ACKNOWLEDGEMENT_TIMEOUT_SECONDS: Final = 0.2
 FILE_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 #: Staging hand-overs copy a few small files into the emitter's queue.
 STAGING_REQUEST_TIMEOUT_SECONDS: Final = 5.0
-#: Read-back downloads a run's committed files from the Hub.
+#: Read-back and the write-access check call the Hub while answering.
 READ_BACK_TIMEOUT_SECONDS: Final = 60.0
+#: Statuses after which a queued hand-over never changes.
+SETTLED_STATUSES: Final = frozenset(
+    {"uploaded", "already_staged", "failed", "published", "refused"}
+)
 STARTUP_TIMEOUT_SECONDS: Final = 15.0
 STARTUP_POLL_SECONDS: Final = 0.02
 DRAIN_SECONDS: Final = 15.0

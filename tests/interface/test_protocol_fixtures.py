@@ -37,6 +37,15 @@ RELEASED_FIXTURE_DIGESTS = {
     "protocol-v1/host-close.json": (
         "68fa81b4116852f91f3c0dab3716a1974a8150039fb2b238f79efc094d9b0f6f"
     ),
+    "protocol-v1/huggingface-check-write-access.json": (
+        "750b7eb8c7c9ea4112bb60560522d3b1591c6c9838239a5a54d72f90c095a631"
+    ),
+    "protocol-v1/huggingface-handover-receipt.json": (
+        "e3d6735361da9326ce9c1aeb893d1c644a749e574ded8c1f2f2071f12e00ca09"
+    ),
+    "protocol-v1/huggingface-stage-dataset-bundle.json": (
+        "6f576285b7a87607c47755ebee00ca051694b39455812a0068ebee2c27277728"
+    ),
     "protocol-v1/huggingface-configuration.json": (
         "5a5ccd639953b24c774418e6e23735f515e46a673a68624e26d640839ef4b1c2"
     ),
@@ -193,8 +202,9 @@ def test_orrery_module_answers_each_query_fixture_in_order(tmp_path):
 
 
 def test_hugging_face_module_answers_each_query_fixture_in_order(tmp_path):
-    hub = FakeHuggingFaceApi()
+    hub = FakeHuggingFaceApi(whoami={"auth": {"accessToken": {"role": "write"}}})
     hub.create_repository("policyengine/fixture-staging")
+    hub.create_repository("policyengine/fixture-private")
     module = HuggingFaceModule(
         configuration_of("huggingface", tmp_path),
         ModuleContext(os.getpid()),
@@ -211,10 +221,14 @@ def test_hugging_face_module_answers_each_query_fixture_in_order(tmp_path):
                 materialize(fixture, directory=directory, spool_path=tmp_path)
             )
             assert set(fixture.response_keys) <= set(response), fixture.name
-            if "receipt" in response:
-                assert response["receipt"]["status"] == "recorded", fixture.name
+            if response.get("receipt") is not None:
+                assert response["receipt"]["status"] in {"recorded", "pending"}, (
+                    fixture.name
+                )
             if "read_back" in response:
                 assert response["read_back"]["status"] in {"pending", "passed"}
+            if "access" in response:
+                assert response["access"]["status"] == "checked"
     finally:
         module.close(time.monotonic())
 
