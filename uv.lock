@@ -2,6 +2,12 @@ version = 1
 revision = 5
 requires-python = ">=3.13"
 
+[manifest]
+members = [
+    "microcosm-emitter",
+    "microcosm-emitter-interface",
+]
+
 [[package]]
 name = "alembic"
 version = "1.20.0"
@@ -606,6 +612,7 @@ dependencies = [
     { name = "alembic" },
     { name = "httpx" },
     { name = "huggingface-hub" },
+    { name = "microcosm-emitter-interface" },
     { name = "psutil" },
     { name = "sqlalchemy" },
 ]
@@ -624,6 +631,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13.3,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "huggingface-hub", specifier = ">=0.20,<2" },
+    { name = "microcosm-emitter-interface", editable = "packages/microcosm-emitter-interface" },
     { name = "psutil", specifier = ">=6,<8" },
     { name = "sqlalchemy", specifier = ">=2,<3" },
 ]
@@ -636,6 +644,11 @@ dev = [
     { name = "ruff", specifier = ">=0.11,<1" },
     { name = "twine", specifier = ">=7,<8" },
 ]
+
+[[package]]
+name = "microcosm-emitter-interface"
+version = "0.3.0"
+source = { editable = "packages/microcosm-emitter-interface" }
 
 [[package]]
 name = "more-itertools"
