@@ -42,7 +42,7 @@ The adapter bounds socket calls and reports telemetry failures without failing t
 
 The service uses the existing Hugging Face credential from the environment or local login cache. The collector validates PolicyEngine membership before issuing a short-lived write credential. Missing or rejected credentials permanently mark that producer's events as local-only. Permanent HTTP client errors when registering a run or uploading events also keep only the affected producer's records local; HTTP 408, 429, server errors and network failures remain retryable. HTTP 401 invalidates the short-lived credential for renewal. The production destination belongs to the package; development overrides accept loopback addresses only.
 
-The queue upgrades the existing `20261007_01` Alembic revision to `20261008_02`, adding graph-job records without changing producer sequences, event IDs or upload eligibility. Unversioned databases are rejected without schema modification. There is no raw SQL, automatic schema adoption, or parallel legacy implementation. The hosted telemetry collector and calibration dashboard do not change.
+The queue upgrades the existing `20261007_01` Alembic revision to `20261008_02`, adding graph-job records, and then to `20261020_03`, adding Hugging Face hand-over records, without changing producer sequences, event IDs or upload eligibility. Unversioned databases are rejected without schema modification. There is no raw SQL, automatic schema adoption, or parallel legacy implementation. The hosted telemetry collector and calibration dashboard do not change.
 
 ## Graph publication
 

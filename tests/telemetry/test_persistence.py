@@ -37,7 +37,7 @@ def test_migrations_match_models_and_reopening_preserves_sequences(tmp_path):
     ] == [1, 2]
     assert spool.batch("fixture-run", "producer-a")[0] == first
     assert first["event_id"] != second["event_id"]
-    assert current_database_revision(path) == "20261008_02"
+    assert current_database_revision(path) == "20261020_03"
     with (
         spool._engine.begin() as connection,
         alembic_config(connection=connection) as config,
@@ -83,5 +83,9 @@ def test_multiple_producers_and_local_only_survive_reopening(tmp_path):
         "telemetry_runs",
         "telemetry_events",
         "graph_publication_jobs",
+        "staged_run_files",
+        "staged_run_deliveries",
+        "repository_commit_schedules",
+        "handover_jobs",
     }
     spool.close()

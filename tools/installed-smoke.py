@@ -56,7 +56,7 @@ def telemetry_smoke():
     )
     from microcosm_emitter.telemetry.service.spool import EventSpool
 
-    assert current_database_revision(path) == "20261008_02"
+    assert current_database_revision(path) == "20261020_03"
     spool = EventSpool(path)
     try:
         assert not spool.has_deliverable()
