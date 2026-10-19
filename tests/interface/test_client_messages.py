@@ -14,7 +14,14 @@ from microcosm_emitter_interface.protocol_fixtures import (
     materialize,
     protocol_fixtures,
 )
+from microcosm_emitter_interface.staging import (
+    HuggingFaceSettings,
+    RunFile,
+    StageRunFiles,
+)
 from microcosm_emitter_interface.telemetry import TelemetryRun, TelemetrySettings
+
+FIXTURE_STAGING_REPOSITORY = "policyengine/fixture-staging"
 
 
 class RecordingTransport:
@@ -28,6 +35,16 @@ class RecordingTransport:
 
     def query(self, module, message, *, timeout=None):
         self.requests.append(("query", module, dict(message)))
+        if module == "huggingface":
+            return {
+                "receipt": {"status": "recorded", "pending_files": 0},
+                "read_back": {
+                    "status": "passed",
+                    "files": 0,
+                    "mismatched_paths": [],
+                    "error_code": None,
+                },
+            }
         if message.get("command") == "inventory":
             return {"inventory": None}
         return {
@@ -52,7 +69,10 @@ def recording_client():
         process=None,
         transport=transport,
         runtime_directory=Path("/nonexistent"),
-        description={"modules": ["orrery", "telemetry"], "protocol_versions": [1]},
+        description={
+            "modules": ["huggingface", "orrery", "telemetry"],
+            "protocol_versions": [1],
+        },
     )
     return EmitterClient(process), transport
 
@@ -130,6 +150,37 @@ SENT_BY: dict[str, Callable[[EmitterClient, Path], Any]] = {
     "orrery-retry": lambda client, directory: client.retry_orrery_inputs(
         "fixture-publication"
     ),
+    "huggingface-stage-run-files": lambda client, directory: client.stage_run_files(
+        StageRunFiles(
+            repository=FIXTURE_STAGING_REPOSITORY,
+            run_id="fixture-run",
+            files=(
+                RunFile("progress.json", directory / "progress.json"),
+                RunFile("artifacts/fit_summary.json", directory / "fit_summary.json"),
+            ),
+            flush=True,
+        )
+    ),
+    "huggingface-stage-run-files-with-index": lambda client, directory: (
+        client.stage_run_files(
+            StageRunFiles(
+                repository=FIXTURE_STAGING_REPOSITORY,
+                run_id="fixture-run",
+                files=(RunFile("progress.json", directory / "progress.json"),),
+                latest_pointer=directory / "latest_staging.json",
+                run_index_entry={"run_id": "fixture-run", "status": "running"},
+                commit_interval_seconds=300,
+            )
+        )
+    ),
+    "huggingface-run-files-receipt": lambda client, directory: client.run_files_receipt(
+        FIXTURE_STAGING_REPOSITORY, "fixture-run"
+    ),
+    "huggingface-read-back-run-files": lambda client, directory: (
+        client.read_back_run_files(
+            FIXTURE_STAGING_REPOSITORY, "fixture-run", wait_seconds=0
+        )
+    ),
 }
 
 CONFIGURED_BY: dict[str, Callable[[Path], dict[str, Any]]] = {
@@ -142,6 +193,9 @@ CONFIGURED_BY: dict[str, Callable[[Path], dict[str, Any]]] = {
         development_collector_url="http://127.0.0.1:1",
         publication_origin="http://127.0.0.1:1",
     ).configuration(spool_path),
+    "huggingface-configuration": lambda spool_path: HuggingFaceSettings().configuration(
+        spool_path
+    ),
 }
 
 
@@ -169,7 +223,9 @@ def test_typed_call_sends_the_recorded_message(recording_client, tmp_path, name)
     directory = tmp_path / "inputs"
     SENT_BY[name](client, directory)
     expected = materialize(fixture, directory=directory.resolve(), spool_path=tmp_path)
-    assert transport.requests[0] == (fixture.kind, fixture.module, expected)
+    # A call may send other requests first (read-back first commits pending
+    # files), but it must send the recorded message.
+    assert (fixture.kind, fixture.module, expected) in transport.requests
 
 
 @pytest.mark.parametrize("name", sorted(CONFIGURED_BY))

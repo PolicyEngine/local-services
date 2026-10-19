@@ -19,6 +19,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+STAGING_REPOSITORY = "policyengine/fixture-staging"
+PRIVATE_REPOSITORY = "policyengine/fixture-private"
+
 
 class FakeHubHTTPError(OSError):
     """Carries ``response.status_code`` like ``huggingface_hub.HfHubHTTPError``."""

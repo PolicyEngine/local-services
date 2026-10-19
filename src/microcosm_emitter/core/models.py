@@ -178,7 +178,8 @@ class StagedRunDelivery(SpoolModel):
     commits: Mapped[int] = mapped_column(Integer, nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(Text)
     last_commit: Mapped[str | None] = mapped_column(Text)
-    run_index_entry: Mapped[dict[str, Any] | None] = mapped_column(JsonObjectText)
+    # JSON text in the build's key order: the merged runs.json keeps it.
+    run_index_entry: Mapped[str | None] = mapped_column(Text)
     run_index_pending: Mapped[bool] = mapped_column(Boolean, nullable=False)
     run_index_due_at: Mapped[float] = mapped_column(Float, nullable=False)
     updated_at: Mapped[float] = mapped_column(Float, nullable=False)

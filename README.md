@@ -54,6 +54,19 @@ The host can also start telemetry and graph modules together with `start_service
 
 Preserve the selected source files until publication succeeds. `microcosm-emitter-publish-graph` asks the service to retry a publication by ID and can re-enqueue a preserved directory on another machine. It never rewrites the original build receipt; the queue and separate latest-status file record retries.
 
+## Hugging Face hand-overs
+
+The `huggingface` module takes over the uploads Microcosm made itself. Microcosm still decides what to hand over and validates its own contracts; the module only writes the bytes it was given, with the build's own Hugging Face credential.
+
+**Staging run files** (Microcosm's `staging.py` and `staging_v2.py` uploads). A build hands over its current run files; the module copies their bytes into the spool database before answering, so the build may rewrite them at once.
+
+- Files land at `<prefix>/<run_id>/<relative path>` (by default `runs/<run_id>/...`), exactly as the build's writer lays them out. Staging contract version 1 also writes `latest_staging.json` at the repository root, and its `runs.json` index: the module merges the run's summary into the repository's current copy at commit time, as Microcosm did, keeping other runs and the same JSON formatting.
+- Each path keeps only the newest bytes, and bytes equal to those last committed are not written again.
+- **One commit per repository per cycle.** Each module tick commits, for each repository with work due, every pending path in one commit. An unforced hand-over is due one interval after the repository's last commit (Microcosm's upload interval); a forced one (final states, artifacts) at the next cycle, but never sooner than 10 seconds after the previous commit. Microcosm's writers made one commit per file, up to eight per upload cycle, and each commit triggered the dataset repository's webhook.
+- Uploads stay best-effort. Requests answer within seconds or report that they were not accepted; a failed commit keeps the files queued and retries with backoff (up to five minutes); without a credential the files stay queued and one warning is printed. On shutdown the module commits pending files once more. Nothing raises into the build.
+- A commit that merges `runs.json` is pinned to the head it read (`parent_commit`); if another build commits first, the module reads the index again and merges again.
+- `read_back_run_files` commits pending files, then compares the Hub's copy of each committed file with the committed bytes.
+
 ## Development
 
 Use Python 3.13 or 3.14 on Linux or macOS.

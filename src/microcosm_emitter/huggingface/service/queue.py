@@ -18,6 +18,7 @@ writer on this machine at a time.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -49,6 +50,15 @@ JOB_PENDING = "pending"
 
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _entry_text(entry: Mapping[str, Any]) -> str:
+    """Order-preserving JSON, so the merged index keeps the build's key order."""
+    return json.dumps(dict(entry), separators=(",", ":"), allow_nan=False)
+
+
+def _entry(text: str | None) -> dict[str, Any]:
+    return {} if text is None else json.loads(text)
 
 
 def retry_delay(failures: int) -> float:
@@ -257,7 +267,7 @@ class HandoverQueue:
                 row.run_id, row.updated_at = run_id, now
             delivery = self._delivery(session, repository, run_id, now)
             if run_index_entry is not None:
-                entry = dict(run_index_entry)
+                entry = _entry_text(run_index_entry)
                 if delivery.run_index_entry != entry or delivery.run_index_pending:
                     delivery.run_index_due_at = (
                         min(delivery.run_index_due_at, due_at)
@@ -280,6 +290,25 @@ class HandoverQueue:
                 if delivery.run_index_pending:
                     delivery.run_index_due_at = min(delivery.run_index_due_at, now)
             delivery.updated_at = now
+
+    def repositories_with_pending_run_files(self) -> list[str]:
+        with self._sessions() as session:
+            return sorted(
+                set(
+                    session.scalars(
+                        select(StagedRunFile.repository).where(
+                            StagedRunFile.pending.is_(True)
+                        )
+                    )
+                )
+                | set(
+                    session.scalars(
+                        select(StagedRunDelivery.repository).where(
+                            StagedRunDelivery.run_index_pending.is_(True)
+                        )
+                    )
+                )
+            )
 
     def pending_run_files(self, repository: str) -> list[PendingRunFile]:
         with self._sessions() as session:
@@ -310,7 +339,7 @@ class HandoverQueue:
                 )
                 .order_by(StagedRunDelivery.run_id)
             )
-            return [(row.run_id, dict(row.run_index_entry or {})) for row in rows]
+            return [(row.run_id, _entry(row.run_index_entry)) for row in rows]
 
     @staticmethod
     def _files_per_run(entries: Iterable[PendingRunFile]) -> dict[str, int]:
@@ -350,7 +379,7 @@ class HandoverQueue:
                 delivery.updated_at = now
             for run_id, entry in index_entries:
                 delivery = self._delivery(session, repository, run_id, now)
-                if delivery.run_index_entry == dict(entry):
+                if delivery.run_index_entry == _entry_text(entry):
                     delivery.run_index_pending = False
             schedule = self._schedule(session, repository)
             schedule.last_commit_at = now

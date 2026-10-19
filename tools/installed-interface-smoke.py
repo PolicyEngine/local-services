@@ -12,7 +12,10 @@ def main(emitter_command: str) -> None:
     assert not interface.requires, interface.requires
     from microcosm_emitter_interface import (
         EmitterClient,
+        HuggingFaceSettings,
         OrrerySettings,
+        RunFile,
+        StageRunFiles,
         TelemetryRun,
         TelemetrySettings,
     )
@@ -31,6 +34,9 @@ def main(emitter_command: str) -> None:
             development_collector_url="http://127.0.0.1:1",
             publication_origin="http://127.0.0.1:1",
         ),
+        # Without a credential (removed by check-installed.py) the module
+        # queues hand-overs and never contacts the Hub.
+        hugging_face=HuggingFaceSettings(),
         spool_path=Path.cwd() / "interface.sqlite3",
         command=emitter_command,
         # A clean install compiles dependency bytecode on first use.
@@ -38,7 +44,7 @@ def main(emitter_command: str) -> None:
     )
     assert client.available, client.startup_error
     try:
-        assert client.modules == {"telemetry", "orrery"}
+        assert client.modules == {"telemetry", "orrery", "huggingface"}
         assert client.emitter_version == interface.version
         assert client.telemetry.transition_stage("compile")
         assert client.telemetry.complete()
@@ -46,6 +52,17 @@ def main(emitter_command: str) -> None:
         assert inventory is not None
         receipt = client.hand_over_orrery_inputs(directory, inventory, wait_seconds=0)
         assert receipt["status"] == "pending", receipt
+        progress = Path.cwd() / "progress.json"
+        progress.write_text('{"stage":"created"}')
+        staged = client.stage_run_files(
+            StageRunFiles(
+                repository="policyengine/installed-check",
+                run_id="interface-wheel",
+                files=(RunFile("progress.json", progress),),
+                flush=True,
+            )
+        )
+        assert staged["status"] == "recorded" and staged["pending_files"] == 1
     finally:
         process = client._process
         client.close()

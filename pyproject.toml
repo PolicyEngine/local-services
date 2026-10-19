@@ -20,6 +20,7 @@ Source = "https://github.com/PolicyEngine/microcosm-emitter"
 [project.entry-points."microcosm.emitter.modules"]
 telemetry = "microcosm_emitter.telemetry.service:create_module"
 orrery = "microcosm_emitter.orrery.service:create_module"
+huggingface = "microcosm_emitter.huggingface.service:create_module"
 
 [project.scripts]
 microcosm-emitter = "microcosm_emitter.cli:main"
