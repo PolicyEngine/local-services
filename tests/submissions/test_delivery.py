@@ -327,13 +327,15 @@ def stage_progress(controls, *, flush: bool) -> None:
     assert controls.module.query(request.message())["receipt"]["status"] == ("recorded")
 
 
-def described_bundle_with_a_held_upload(controls) -> None:
-    """Hand over a bundle naming Orrery inputs; return once its first upload
-    to the collector has started and is held."""
+def described_bundle_with_a_held_upload(controls) -> StageDatasetBundle:
+    """Hand over a bundle naming Orrery inputs; return it once its first
+    upload to the collector has started and is held."""
     controls.hub.create_repository(STAGING_REPOSITORY, {"README.md": b"staging"})
     controls.collector.hold_uploads()
-    stage(controls, bundle(controls, contents={**CONTENTS, **ORRERY_CONTENTS}))
+    request = bundle(controls, contents={**CONTENTS, **ORRERY_CONTENTS})
+    stage(controls, request)
     assert controls.collector.upload_started.wait(10), "no upload started"
+    return request
 
 
 @pytest.fixture
@@ -629,3 +631,115 @@ def test_an_unexpected_error_in_a_submission_releases_its_row(
     del controls.module.collector_delivery.client.submit
     assert controls.module.collector_delivery.run_cycle() == 1
     assert collector_receipt(controls, request)["status"] == "submitted"
+
+
+# The collector row's lease while an attempt runs ---------------------------
+#
+# Every emitter of a user on one machine shares the hand-over database by
+# default, so a second emitter can claim the collector row once its lease
+# has passed. While the first emitter's attempt is uploading, its lease must
+# be kept, however long the upload takes; once that emitter stops, the row
+# must be free again within one lease.
+
+#: Shortened leases, so a lease that is not renewed passes within the test.
+SHORT_SUBMISSION_LEASE_SECONDS = 1.0
+SHORT_LEASE_RENEWAL_SECONDS = 0.2
+#: Two and a half leases that are not renewed.
+OBSERVED_SECONDS = 2.5
+
+
+class RecordingSubmissionClient:
+    """A second emitter's collector client: records each submission it is
+    asked to make, and sends nothing."""
+
+    def __init__(self, origin: str) -> None:
+        self.origin = origin
+        self.submitted: list[str] = []
+
+    def submit(self, planned):
+        from microcosm_emitter.submissions.client import SubmissionOutcome
+
+        self.submitted.append(planned.kind)
+        return SubmissionOutcome("pending", "UPLOAD_FAILED")
+
+
+@pytest.fixture
+def short_collector_leases(monkeypatch):
+    from microcosm_emitter.huggingface.service import module as module_module
+    from microcosm_emitter.submissions import delivery as delivery_module
+
+    monkeypatch.setattr(
+        delivery_module, "SUBMISSION_LEASE_SECONDS", SHORT_SUBMISSION_LEASE_SECONDS
+    )
+    monkeypatch.setattr(
+        delivery_module,
+        "SUBMISSION_LEASE_RENEWAL_SECONDS",
+        SHORT_LEASE_RENEWAL_SECONDS,
+        raising=False,
+    )
+    monkeypatch.setattr(module_module, "COLLECTOR_SHUTDOWN_WAIT_SECONDS", 0.2)
+
+
+@pytest.fixture
+def two_emitters(module_factory, collector, short_collector_leases):
+    """The first emitter runs its own workers; the second is a collector
+    delivery on the same hand-over database, driven by the test."""
+    from microcosm_emitter.huggingface.service.queue import HandoverQueue
+    from microcosm_emitter.submissions.delivery import CollectorSubmissionDelivery
+
+    first = module_factory.start(
+        background_workers=True,
+        clock=time.time,
+        collector_submissions=True,
+        development_collector_url=collector.origin,
+    )
+    second_queue = HandoverQueue(first.tmp_path / "events.handovers.sqlite3")
+    second_client = RecordingSubmissionClient(first.module.collector_delivery.target)
+    second = CollectorSubmissionDelivery(second_queue, second_client, clock=time.time)
+    try:
+        yield first, second, second_client
+    finally:
+        collector.release_uploads()
+        first.module.close(time.monotonic() + 5)
+        second_queue.close()
+
+
+def test_a_second_emitter_never_claims_a_collector_row_during_its_upload(
+    two_emitters,
+):
+    """The #27 round-2 review's NEW BUGS 2: the first emitter's upload is
+    held for longer than two leases."""
+    first, second, second_client = two_emitters
+    request = described_bundle_with_a_held_upload(first)
+
+    claimed = []
+    observed_until = time.monotonic() + OBSERVED_SECONDS
+    while time.monotonic() < observed_until:
+        claimed.append(second.run_cycle())
+        time.sleep(0.1)
+
+    assert not any(claimed) and second_client.submitted == [], (
+        "a second emitter claimed the collector row while its upload was running"
+    )
+    first.collector.release_uploads()
+    # Only the first emitter's client can be accepted; the second's records
+    # every submission as pending.
+    assert wait_until(
+        lambda: collector_receipt(first, request)["status"] == "submitted",
+        seconds=10,
+    ), "the first emitter's result was not recorded"
+
+
+def test_a_collector_row_is_free_within_one_lease_after_shutdown(two_emitters):
+    """Shutdown abandons the held upload; its lease must no longer be kept,
+    so another emitter can take the row over."""
+    first, second, second_client = two_emitters
+    described_bundle_with_a_held_upload(first)
+
+    first.module.close(time.monotonic() + 1)
+
+    assert wait_until(
+        lambda: second.run_cycle() > 0,
+        seconds=SHORT_SUBMISSION_LEASE_SECONDS * 3,
+    ), "the collector row stayed leased after shutdown"
+    assert second_client.submitted
