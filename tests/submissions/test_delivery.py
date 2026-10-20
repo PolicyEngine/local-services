@@ -1,10 +1,11 @@
 """Bundles reach the collector after their Hugging Face commit, when switched on."""
 
 import hashlib
+import threading
 import time
 
 import pytest
-from fake_hugging_face import PRIVATE_REPOSITORY
+from fake_hugging_face import PRIVATE_REPOSITORY, STAGING_REPOSITORY
 
 from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
 from microcosm_emitter_interface.submissions import CollectorProvenance
@@ -290,3 +291,211 @@ def test_a_folder_longer_than_the_collector_accepts_is_not_submitted(
     )
     assert controls.collector.created == []
     assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
+
+
+# A slow or stalled collector submission never holds up Hugging Face ------
+
+
+def wait_until(condition, *, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return condition()
+
+
+def staging_holds(controls, path_in_repo: str) -> bool:
+    return any(
+        path_in_repo in commit.added
+        for commit in controls.hub.commits(STAGING_REPOSITORY)
+    )
+
+
+def stage_progress(controls, *, flush: bool) -> None:
+    from microcosm_emitter_interface.staging import RunFile, StageRunFiles
+
+    progress = controls.tmp_path / "progress.json"
+    progress.write_bytes(b'{"stage":"completed"}')
+    request = StageRunFiles(
+        repository=STAGING_REPOSITORY,
+        run_id="staging-run-1",
+        files=(RunFile("progress.json", progress),),
+        flush=flush,
+        commit_interval_seconds=3600,
+    )
+    assert controls.module.query(request.message())["receipt"]["status"] == ("recorded")
+
+
+def described_bundle_with_a_held_upload(controls) -> None:
+    """Hand over a bundle naming Orrery inputs; return once its first upload
+    to the collector has started and is held."""
+    controls.hub.create_repository(STAGING_REPOSITORY, {"README.md": b"staging"})
+    controls.collector.hold_uploads()
+    stage(controls, bundle(controls, contents={**CONTENTS, **ORRERY_CONTENTS}))
+    assert controls.collector.upload_started.wait(10), "no upload started"
+
+
+@pytest.fixture
+def module_with_workers(module_factory, collector):
+    """The module with its own delivery workers, as the host runs it."""
+    controls = module_factory.start(
+        background_workers=True,
+        collector_submissions=True,
+        development_collector_url=collector.origin,
+    )
+    host_stopped = threading.Event()
+
+    def tick_as_the_host_does():
+        while not host_stopped.wait(0.01):
+            controls.module.tick(time.monotonic())
+
+    host = threading.Thread(target=tick_as_the_host_does, daemon=True)
+    host.start()
+    try:
+        yield controls
+    finally:
+        collector.release_uploads()
+        host_stopped.set()
+        host.join(timeout=10)
+        controls.module.close(time.monotonic() + 5)
+
+
+def test_hugging_face_commits_land_during_a_held_collector_upload(
+    module_with_workers,
+):
+    from microcosm_emitter_interface.publication import PublishRelease, ReleaseFile
+
+    controls = module_with_workers
+    described_bundle_with_a_held_upload(controls)
+    stage_progress(controls, flush=True)
+    manifest = controls.tmp_path / "release_manifest.json"
+    manifest.write_bytes(b'{"release": "fixture-release", "build": "fixture-build"}')
+    publication = PublishRelease(
+        repository=PRIVATE_REPOSITORY,
+        release="fixture-release",
+        build="fixture-build",
+        release_role="national_default",
+        make_current=False,
+        files=(
+            ReleaseFile(
+                name="release_manifest.json",
+                role="release_manifest",
+                local_path=manifest,
+                sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                bytes=manifest.stat().st_size,
+            ),
+        ),
+    )
+    controls.module.query(publication.message())
+
+    assert wait_until(
+        lambda: staging_holds(controls, "runs/staging-run-1/progress.json"),
+        seconds=5,
+    )
+    assert wait_until(
+        lambda: (
+            controls.module.query(
+                {
+                    "protocol_version": 1,
+                    "command": "handover_receipt",
+                    "handover_id": publication.handover_id(),
+                }
+            )["receipt"]["status"]
+            == "published"
+        ),
+        seconds=5,
+    )
+    assert not controls.collector.uploads_released.is_set()
+
+
+def test_the_shutdown_commit_runs_during_a_held_collector_upload(
+    module_factory, collector
+):
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from microcosm_emitter.host.runtime import ServiceRuntime
+
+    controls = module_factory.new(
+        background_workers=True,
+        collector_submissions=True,
+        development_collector_url=collector.origin,
+    )
+    runtime_directory = Path(tempfile.mkdtemp(prefix="pe-collector-", dir="/tmp"))
+    runtime = ServiceRuntime(
+        runtime_directory / "service.sock",
+        modules={"huggingface": controls.module},
+        is_parent_alive=lambda: True,
+        tick_seconds=0.01,
+        drain_seconds=2,
+    )
+    runtime_errors = []
+
+    def run_runtime():
+        try:
+            runtime.run()
+        except BaseException as error:
+            runtime_errors.append(error)
+
+    runtime_thread = threading.Thread(target=run_runtime, daemon=True)
+    runtime_thread.start()
+    try:
+        assert wait_until(lambda: controls.module.queue is not None, seconds=5)
+        described_bundle_with_a_held_upload(controls)
+        # Not due for an hour: only the commit at shutdown can deliver it.
+        stage_progress(controls, flush=False)
+
+        runtime.stop()
+        runtime_thread.join(timeout=5)
+
+        assert not runtime_thread.is_alive()
+        assert runtime_errors == []
+        assert staging_holds(controls, "runs/staging-run-1/progress.json")
+    finally:
+        collector.release_uploads()
+        runtime.stop()
+        runtime_thread.join(timeout=10)
+        shutil.rmtree(runtime_directory, ignore_errors=True)
+
+
+def test_uploads_have_a_finite_write_timeout():
+    from microcosm_emitter.submissions.client import UPLOAD_TIMEOUT
+
+    assert UPLOAD_TIMEOUT.write is not None and UPLOAD_TIMEOUT.write > 0
+
+
+def test_an_upload_stops_once_it_outlasts_its_time_limit():
+    from microcosm_emitter.submissions import client as client_module
+
+    assert client_module.upload_time_limit(1) == client_module.MIN_UPLOAD_SECONDS
+    big = 100 * client_module.MIN_UPLOAD_BYTES_PER_SECOND
+    assert client_module.upload_time_limit(big) == max(
+        100.0, client_module.MIN_UPLOAD_SECONDS
+    )
+    readings = iter([0.0, 1.0, 5.0])
+    chunks = client_module.chunks_until(
+        [b"first", b"second", b"third"], deadline=2.0, clock=lambda: next(readings)
+    )
+    assert next(chunks) == b"first"
+    assert next(chunks) == b"second"
+    with pytest.raises(client_module.UploadTimeLimitError):
+        next(chunks)
+
+
+def test_a_collector_cycle_starts_no_submission_after_its_time_budget(
+    submitting_module, monkeypatch
+):
+    from microcosm_emitter.submissions import delivery as delivery_module
+
+    controls = submitting_module
+    monkeypatch.setattr(delivery_module, "MAX_CYCLE_SECONDS", 0.0)
+    for run_id in ("uk-run-1", "uk-run-2"):
+        stage(controls, bundle(controls, run_id=run_id))
+    controls.module.delivery.run_cycle()
+    controls.clock.advance(20)
+    controls.module.delivery.run_cycle()
+
+    assert controls.module.collector_delivery.run_cycle() == 1
+    assert controls.module.collector_delivery.run_cycle() == 1

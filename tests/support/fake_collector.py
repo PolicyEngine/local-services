@@ -46,6 +46,11 @@ class FakeCollector:
         self.upload_hosts: list[str] = []
         #: Each issued session token and its scope.
         self._tokens: dict[str, str] = {}
+        #: Set when an upload arrives; uploads wait for ``uploads_released``
+        #: while ``hold_uploads`` is on.
+        self.upload_started = threading.Event()
+        self.uploads_released = threading.Event()
+        self.uploads_released.set()
         self._lock = threading.Lock()
         collector = self
 
@@ -88,6 +93,8 @@ class FakeCollector:
                 self._json(404, {"detail": "Not Found"})
 
             def do_PUT(self) -> None:
+                collector.upload_started.set()
+                collector.uploads_released.wait(30)
                 body = self._body()
                 with collector._lock:
                     collector._store(self, self.path.removeprefix("/storage/"), body)
@@ -99,6 +106,13 @@ class FakeCollector:
             kwargs={"poll_interval": 0.02},
             daemon=True,
         )
+
+    def hold_uploads(self) -> None:
+        """Make every upload wait until ``release_uploads``."""
+        self.uploads_released.clear()
+
+    def release_uploads(self) -> None:
+        self.uploads_released.set()
 
     def start(self) -> FakeCollector:
         self._thread.start()

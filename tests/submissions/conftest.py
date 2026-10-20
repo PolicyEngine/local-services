@@ -28,7 +28,8 @@ def collector():
         fake.stop()
 
 
-def start_module(tmp_path, collector, **configuration):
+def new_module(tmp_path, collector, *, background_workers=False, **configuration):
+    """The module and its in-memory Hub, not yet initialized."""
     from microcosm_emitter.host.contracts import ModuleContext
     from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 
@@ -47,10 +48,11 @@ def start_module(tmp_path, collector, **configuration):
         api_factory=lambda: available_api["value"],
         clock=clock,
         collector_credential=lambda: "hf_synthetic",
-        # Each test runs the delivery cycles itself, on its own thread.
-        background_workers=False,
+        # Tests that drive the module by hand run the delivery cycles on
+        # their own thread; the others run the module's own workers.
+        background_workers=background_workers,
+        worker_interval_seconds=0.01,
     )
-    module.initialize()
     return SimpleNamespace(
         module=module,
         clock=clock,
@@ -60,6 +62,12 @@ def start_module(tmp_path, collector, **configuration):
         remove_credential=lambda: available_api.update(value=None),
         restore_credential=lambda: available_api.update(value=hub),
     )
+
+
+def start_module(tmp_path, collector, **options):
+    controls = new_module(tmp_path, collector, **options)
+    controls.module.initialize()
+    return controls
 
 
 @pytest.fixture
@@ -85,3 +93,13 @@ def default_module(tmp_path, collector):
         yield controls
     finally:
         controls.module.close(0)
+
+
+@pytest.fixture
+def module_factory(tmp_path, collector):
+    """Build modules wired to this test's collector: ``new`` leaves the module
+    uninitialized (for a host runtime to start), ``start`` initializes it."""
+    return SimpleNamespace(
+        new=lambda **options: new_module(tmp_path, collector, **options),
+        start=lambda **options: start_module(tmp_path, collector, **options),
+    )
