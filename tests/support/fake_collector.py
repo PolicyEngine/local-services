@@ -40,6 +40,10 @@ class FakeCollector:
         self.corrupt_uploads = False
         self.sign_stored_files = False
         self.upload_origin: str | None = None
+        #: A ``Host`` header value for upload instructions other than the URL's.
+        self.upload_host: str | None = None
+        #: The ``Host`` header each upload arrived with.
+        self.upload_hosts: list[str] = []
         #: Each issued session token and its scope.
         self._tokens: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -157,6 +161,7 @@ class FakeCollector:
         uploads = []
         if submission["status"] == "awaiting_upload":
             origin = self.upload_origin or self.origin
+            host = self.upload_host or origin.split("://", 1)[1]
             for file in body["files"]:
                 object_name = f"submissions/{submission_id}/{file['name']}"
                 if object_name in self.objects and not self.sign_stored_files:
@@ -168,6 +173,7 @@ class FakeCollector:
                         "url": f"{origin}/storage/{object_name}",
                         "headers": {
                             "Content-Type": "application/octet-stream",
+                            "Host": host,
                             "x-goog-meta-sha256": file["sha256"],
                             "x-goog-content-length-range": (
                                 f"{file['size']},{file['size']}"
@@ -209,6 +215,7 @@ class FakeCollector:
 
     def _store(self, handler: Any, object_name: str, body: bytes) -> None:
         self.uploads.append(object_name)
+        self.upload_hosts.append(handler.headers.get("Host", ""))
         expected = handler.headers.get("x-goog-content-length-range", "")
         if expected != f"{len(body)},{len(body)}":
             return handler._json(400, {"detail": "size"})

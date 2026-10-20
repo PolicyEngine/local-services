@@ -447,3 +447,21 @@ def test_a_queued_completion_is_accepted_with_its_status(collector, tmp_path) ->
     document = collector._status_document(outcome.submission_id)
     assert document["job"]["processing_round"] == 1
     assert len(document["files_sha256"]) == 64
+
+
+def test_uploads_send_the_instruction_host_header_as_given(collector, tmp_path) -> None:
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert outcome.status == "accepted"
+    assert collector.upload_hosts == [collector.origin.split("://", 1)[1]] * 2
+
+
+def test_an_instruction_whose_host_differs_from_its_url_is_refused(
+    collector, tmp_path
+) -> None:
+    collector.upload_host = "storage.googleapis.com"
+
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert (outcome.status, outcome.error_code) == ("failed", "UPLOAD_URL_REFUSED")
+    assert collector.uploads == []

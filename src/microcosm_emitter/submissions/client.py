@@ -84,6 +84,17 @@ def upload_url_allowed(url: str, *, allow_loopback: bool) -> bool:
     )
 
 
+def instruction_host_matches(url: str, headers: Mapping[str, str]) -> bool:
+    """Whether an instruction's ``Host`` header, if any, names its URL's host.
+
+    The collector signs ``Host`` with the other headers, and the client sends
+    every header as given, so a different ``Host`` would send the file to
+    another server than the URL names.
+    """
+    hosts = [value for key, value in headers.items() if key.lower() == "host"]
+    return all(value.lower() == urlsplit(url).netloc.lower() for value in hosts)
+
+
 def _preserved_files_outcome(planned: PlannedSubmission) -> SubmissionOutcome | None:
     """Re-hash the files submitted from their paths; copied files are not read."""
     for file in planned.body["files"]:
@@ -256,7 +267,7 @@ class CollectorSubmissionClient:
                 raise _StepFailedError(SubmissionOutcome("pending", INVALID_RESPONSE))
             if not upload_url_allowed(
                 upload["url"], allow_loopback=self._allow_loopback_uploads
-            ):
+            ) or not instruction_host_matches(upload["url"], upload["headers"]):
                 raise _StepFailedError(SubmissionOutcome("failed", UPLOAD_URL_REFUSED))
         return submission_id, uploads
 
