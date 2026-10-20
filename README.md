@@ -23,7 +23,9 @@ The build process imports only the adapter, not the service implementation. It s
 
 The host is never a separately started system service: such a service would not see the build's environment variables. `--skip-unavailable-modules` starts the host without requested modules that this emitter release does not install, so a newer build can still use an older emitter's modules.
 
-A `hello` request on the socket returns the emitter version, the socket protocol versions it accepts and the modules it loaded. `microcosm-emitter version` prints the first two as JSON. Every emitter release must keep accepting every protocol version that builds still send (`microcosm_emitter.compatibility`).
+Only a host started by `microcosm-emitter host` answers a `hello` request on the socket. It returns the emitter version, the socket protocol versions it accepts, the modules it loaded and the requested modules it skipped (`microcosm_emitter.compatibility.HelloResponse`). A host started with `python -m microcosm_emitter.host`, as by the in-process launcher, refuses `hello` like any unknown action. `microcosm-emitter version` prints the emitter version and protocol versions as JSON. Every emitter release must keep accepting every protocol version that builds still send (`microcosm_emitter.compatibility`).
+
+With `--skip-unavailable-modules`, the host still refuses to start if none of the requested modules is installed, and refuses each request to a skipped module as it refuses one to an unknown module.
 
 ## Delivery and persistence
 

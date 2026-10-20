@@ -155,6 +155,19 @@ def test_installed_command_runs_the_host_and_reports_its_protocol_versions(
         assert stop(process, socket_path) == 0
 
 
+def test_hello_and_version_payloads_have_their_typed_fields():
+    from microcosm_emitter.cli import describe
+    from microcosm_emitter.compatibility import EmitterDescription, HelloResponse
+
+    assert set(describe()) == EmitterDescription.__required_keys__
+    assert HelloResponse.__required_keys__ == {
+        "emitter_version",
+        "protocol_versions",
+        "modules",
+        "skipped_modules",
+    }
+
+
 def test_host_without_a_parent_creation_time_reads_it_from_its_own_parent(
     tmp_path, runtime_directory
 ):
@@ -267,8 +280,31 @@ def test_unavailable_modules_are_skipped_only_when_requested(
         description = json.loads(socket_request(socket_path, {"action": "hello"}))
         assert description["modules"] == ["orrery"]
         assert description["skipped_modules"] == ["not-installed"]
+        # A request to a skipped module is refused like one to an unknown
+        # module, and the host keeps serving the modules it loaded.
+        for action in ("message", "query"):
+            refusal = socket_request(
+                socket_path,
+                {"action": action, "module": "not-installed", "message": {}},
+            )
+            assert refusal == b"error\n"
+        assert socket_request(socket_path, {"action": "ping"}) == b"ok\n"
     finally:
         assert stop(process, socket_path) == 0
+
+
+def test_skipping_unavailable_modules_refuses_to_start_without_any_module(
+    runtime_directory,
+):
+    process, socket_path = start_command(
+        {"not-installed": {}, "also-not-installed": {}},
+        runtime_directory,
+        extra_arguments=("--skip-unavailable-modules",),
+    )
+    _, error_output = process.communicate(timeout=20)
+    assert process.returncode == 1
+    assert b"Service startup failed" in error_output
+    assert not socket_path.exists()
 
 
 class RecordedParent:

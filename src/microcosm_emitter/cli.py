@@ -12,12 +12,15 @@ import json
 import sys
 from importlib.metadata import version
 
-from microcosm_emitter.compatibility import SUPPORTED_PROTOCOL_VERSIONS
+from microcosm_emitter.compatibility import (
+    SUPPORTED_PROTOCOL_VERSIONS,
+    EmitterDescription,
+)
 
 DISTRIBUTION_NAME = "microcosm-emitter"
 
 
-def describe() -> dict[str, object]:
+def describe() -> EmitterDescription:
     """Versions a client checks before sending any hand-over."""
     return {
         "emitter_version": version(DISTRIBUTION_NAME),

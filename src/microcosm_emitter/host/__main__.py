@@ -3,10 +3,9 @@
 import argparse
 import json
 import sys
-from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
+from microcosm_emitter.compatibility import EmitterDescription, HelloResponse
 from microcosm_emitter.host.constants import MAX_MESSAGE_BYTES
 from microcosm_emitter.host.contracts import ModuleContext
 from microcosm_emitter.host.errors import ModuleNotInstalledError, safe_startup_error
@@ -18,9 +17,15 @@ from microcosm_emitter.host.runtime import ServiceRuntime
 def main(
     argv: list[str] | None = None,
     *,
-    description: Mapping[str, Any] | None = None,
+    description: EmitterDescription | None = None,
 ) -> int:
-    """Run the host; ``description`` is what a ``hello`` request returns."""
+    """Run the host.
+
+    With ``description`` (given only by `microcosm-emitter host`), the host
+    answers ``hello`` with it and the loaded and skipped modules. Without it,
+    as when started with `python -m microcosm_emitter.host`, ``hello`` is
+    refused like any unknown action.
+    """
     parser = argparse.ArgumentParser(prog="microcosm-emitter host")
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--parent-pid", type=int, required=True)
@@ -55,19 +60,21 @@ def main(
                 skipped.append(name)
         if not modules:
             raise ValueError("no requested module is installed")
+        hello_response: HelloResponse | None = (
+            None
+            if description is None
+            else {
+                "emitter_version": description["emitter_version"],
+                "protocol_versions": list(description["protocol_versions"]),
+                "modules": sorted(modules),
+                "skipped_modules": sorted(skipped),
+            }
+        )
         ServiceRuntime(
             args.socket,
             modules=modules,
             is_parent_alive=parent.alive,
-            description=(
-                None
-                if description is None
-                else {
-                    **description,
-                    "modules": sorted(modules),
-                    "skipped_modules": sorted(skipped),
-                }
-            ),
+            description=hello_response,
         ).run()
         return 0
     except Exception as error:
