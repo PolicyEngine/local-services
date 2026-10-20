@@ -712,6 +712,37 @@ def test_the_change_policy_receives_the_typed_change_and_its_caller(tmp_path, hu
     assert (caller.parent_pid, caller.user) == (os.getpid(), getpass.getuser())
 
 
+def test_a_user_without_a_name_is_named_by_its_numeric_id(tmp_path, hub, monkeypatch):
+    """In a container run with an arbitrary user ID, ``getpass.getuser()``
+    raises on Python 3.13 and later; the change is still handed over."""
+    import getpass
+
+    def no_user_name():
+        raise OSError("No username set in the environment")
+
+    monkeypatch.setattr(getpass, "getuser", no_user_name)
+    callers = []
+
+    def record_and_allow(change, caller):
+        callers.append(caller)
+        return None
+
+    module = HuggingFaceModule(
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+        release_change_policy=record_and_allow,
+        background_workers=False,
+    )
+    module.initialize()
+    try:
+        receipt = module.query(promotion(FIRST_BUILD).message())["receipt"]
+    finally:
+        module.close(0)
+    assert receipt["status"] == "pending"
+    assert [caller.user for caller in callers] == [str(os.getuid())]
+
+
 def test_the_default_policy_allows_every_change(hugging_face_module):
     from microcosm_emitter.huggingface.service.releases import (
         ReleaseCaller,
