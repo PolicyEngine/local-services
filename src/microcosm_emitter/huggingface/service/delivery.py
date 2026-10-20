@@ -326,6 +326,7 @@ class HuggingFaceDelivery:
         committed: bool = False,
         revision: str | None = None,
         message: str | None = None,
+        current: str | None = None,
     ) -> None:
         receipt: dict[str, Any] = {
             "handover_id": job.handover_id,
@@ -340,6 +341,7 @@ class HuggingFaceDelivery:
                 commit=revision,
                 release=job.request["release"],
                 build=job.request["build"],
+                current=current,
             )
         else:
             receipt.update(
@@ -354,9 +356,11 @@ class HuggingFaceDelivery:
     def _deliver_job(self, hub: DatasetRepository, held: HeldLeases) -> bool:
         job = held.job
         assert job is not None, "The job is claimed before delivery."
+        current = None
         if job.kind == RELEASE_CHANGE:
             outcome = self._release_outcome(hub, job)
             revision, message = outcome.commit, outcome.message
+            current = outcome.current
         else:
             outcome = stage_bundle(hub, job.request, job.files)
             revision, message = outcome.revision, None
@@ -375,6 +379,7 @@ class HuggingFaceDelivery:
             committed=outcome.committed,
             revision=revision,
             message=message,
+            current=current,
         )
         return outcome.committed
 

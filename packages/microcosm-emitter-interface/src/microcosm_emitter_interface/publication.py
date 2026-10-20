@@ -228,6 +228,16 @@ class ReleaseReceipt(TypedDict):
     machine's newer change that left ``releases.json`` unchanged is not
     seen; only the hour's expiry bounds how late an older change to that
     release can land after it.
+
+    ``current`` says which build is current. On a ``published`` receipt it is
+    the release's current build in ``releases.json`` once this change was
+    applied (or, when nothing needed writing, as the writer found it), and
+    ``None`` when the release has no current build. On every other status it
+    is ``None``. A publication with ``make_current=True`` therefore made its
+    build current exactly when ``status == "published"`` and ``current ==
+    build``; it can be ``published`` without that when a change to
+    ``current`` requested after it landed first, or when the build was
+    already published, and ``message`` then says which.
     """
 
     handover_id: str
@@ -239,6 +249,7 @@ class ReleaseReceipt(TypedDict):
     release: str
     build: str
     attempts: int
+    current: str | None
 
 
 def unavailable_release_receipt(request: ReleaseChange) -> ReleaseReceipt:
@@ -260,4 +271,5 @@ def unavailable_release_receipt(request: ReleaseChange) -> ReleaseReceipt:
         "release": request.release,
         "build": request.build,
         "attempts": 0,
+        "current": None,
     }

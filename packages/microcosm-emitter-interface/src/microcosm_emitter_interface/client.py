@@ -515,7 +515,16 @@ class EmitterClient:
 
         The emitter writes ``releases/<release>/<build>/`` and ``releases.json``
         in one commit. After ``wait_seconds`` a ``pending`` receipt means the
-        emitter is still retrying; ask again with ``release_receipt``.
+        emitter is still retrying; ask again with ``release_receipt``. A
+        change still pending an hour after it was handed over is ``refused``
+        with ``REQUEST_EXPIRED``.
+
+        ``published`` means the build is listed. Whether it is current is in
+        the receipt's ``current`` field, the release's current build after
+        this change: with ``make_current=True``, the build became current
+        exactly when ``receipt["current"] == request.build``. It does not when
+        a change to ``current`` requested after this one landed first, or when
+        the build was already published; ``message`` then says which.
         """
         return self._release_change(request, wait_seconds)
 

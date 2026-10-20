@@ -146,7 +146,12 @@ def allow_every_change(change: ReleaseChange, caller: ReleaseCaller) -> str | No
 
 @dataclass(frozen=True)
 class ReleaseOutcome:
-    """One attempt's result: final unless ``retry``."""
+    """One attempt's result: final unless ``retry``.
+
+    ``current`` is set only when ``published``: the release's current build
+    in ``releases.json`` once the change was applied (or found applied), or
+    ``None`` when the release has no current build.
+    """
 
     status: ReleaseStatus
     error_code: str | None = None
@@ -154,6 +159,7 @@ class ReleaseOutcome:
     commit: str | None = None
     retry: bool = False
     committed: bool = False
+    current: str | None = None
 
 
 def _refused(code: str, message: str) -> ReleaseOutcome:
@@ -433,10 +439,11 @@ def apply_release_change(
             return _pending(REPOSITORY_UNAVAILABLE)
         if violations:
             return _refused_for(violations)
+        current = after.releases[release].current
         if not new_files and record_bytes == after.serialize():
             # Nothing to write (the build is already current, for example):
             # the Hub would skip an empty commit and answer with its head.
-            return ReleaseOutcome("published", commit=head)
+            return ReleaseOutcome("published", commit=head, current=current)
         operations = [add_operation(path, local) for path, local in new_files.items()]
         operations.append(add_operation(RELEASES_RECORD_PATH, after.serialize()))
         if changes_current and not overtaken:
@@ -457,7 +464,9 @@ def apply_release_change(
             if overtaken and isinstance(change, PublishRelease)
             else None
         )
-        return ReleaseOutcome("published", message=note, commit=commit, committed=True)
+        return ReleaseOutcome(
+            "published", message=note, commit=commit, committed=True, current=current
+        )
     return _pending(PARENT_CONFLICT)
 
 
@@ -499,4 +508,6 @@ def _already_published(
             f"Build {build} of {release} was already published; the current "
             f"build is {entry.current}."
         )
-    return ReleaseOutcome("published", message=message, commit=commit or head)
+    return ReleaseOutcome(
+        "published", message=message, commit=commit or head, current=entry.current
+    )

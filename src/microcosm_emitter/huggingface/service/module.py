@@ -244,6 +244,7 @@ class HuggingFaceModule:
                 "release": str(message.get("release") or ""),
                 "build": str(message.get("build") or ""),
                 "attempts": 0,
+                "current": None,
             }
 
         try:
@@ -270,6 +271,7 @@ class HuggingFaceModule:
                 "release": hand_over.change.release,
                 "build": hand_over.change.build,
                 "attempts": 0,
+                "current": None,
             },
             now=self.clock(),
         )
