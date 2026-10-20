@@ -1,8 +1,12 @@
 """Submitting one planned submission: exchange, create, upload, complete."""
 
 import hashlib
+import socket
+import time
 
+import httpx
 import pytest
+from fake_collector import FakeCollector
 
 from microcosm_emitter.core.auth import CollectorSession
 from microcosm_emitter.submissions.client import (
@@ -465,3 +469,114 @@ def test_an_instruction_whose_host_differs_from_its_url_is_refused(
 
     assert (outcome.status, outcome.error_code) == ("failed", "UPLOAD_URL_REFUSED")
     assert collector.uploads == []
+
+
+# Slow and stalled uploads ---------------------------------------------------
+#
+# Both sides of the loopback connection get small socket buffers, so the
+# client's sends wait for the fake collector to read the body.
+
+SMALL_SOCKET_BUFFER_BYTES = 16 * 1024
+#: Three pieces of at most 1 MiB (``UPLOAD_CHUNK_BYTES``).
+LARGE_FILE_BYTES = 5 * 1024 * 1024 // 2
+
+
+@pytest.fixture
+def slow_link_collector():
+    fake = FakeCollector(receive_buffer_bytes=SMALL_SOCKET_BUFFER_BYTES).start()
+    try:
+        yield fake
+    finally:
+        fake.release_uploads()
+        fake.stop()
+
+
+def slow_link_client(collector) -> CollectorSubmissionClient:
+    session = CollectorSession(
+        collector.origin, credential=lambda: "hf_synthetic", scope=SUBMIT_SCOPE
+    )
+    small_send_buffer = (socket.SOL_SOCKET, socket.SO_SNDBUF, SMALL_SOCKET_BUFFER_BYTES)
+    return CollectorSubmissionClient(
+        collector.origin,
+        credential=session.credential,
+        invalidate_credential=session.invalidate,
+        http=httpx.Client(
+            follow_redirects=False,
+            transport=httpx.HTTPTransport(socket_options=[small_send_buffer]),
+        ),
+        allow_loopback_uploads=True,
+        clock=ManualClock(),
+    )
+
+
+def one_large_file_submission(directory, content: bytes) -> PlannedSubmission:
+    """A submission of one file, uploaded from its path."""
+    template = planned_submission(directory / "template")
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "calibration_diagnostics.json").write_bytes(content)
+    files = [
+        {
+            "name": "calibration_diagnostics.json",
+            "role": "calibration_diagnostics",
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    ]
+    return PlannedSubmission(
+        kind=template.kind,
+        body={**template.body, "files": files},
+        local_paths={
+            "calibration_diagnostics.json": str(
+                directory / "calibration_diagnostics.json"
+            )
+        },
+    )
+
+
+def test_an_upload_that_keeps_progressing_is_never_stopped(
+    slow_link_collector, tmp_path, monkeypatch
+) -> None:
+    """However long it takes, an upload that keeps making progress completes.
+
+    The fake reads 64 KiB every 20 ms, so the 2.5 MiB file takes about a
+    second, and each send makes progress well within the 1-second stall
+    threshold set here. Any limit on an upload's total time derived from
+    the file's size is set as short as the client allows it: the client
+    before this fix stopped every upload after such a limit.
+    """
+    from microcosm_emitter.submissions import client as client_module
+
+    monkeypatch.setattr(client_module, "UPLOAD_TIMEOUT", httpx.Timeout(10.0, write=1.0))
+    monkeypatch.setattr(client_module, "MIN_UPLOAD_SECONDS", 0.1, raising=False)
+    monkeypatch.setattr(
+        client_module, "MIN_UPLOAD_BYTES_PER_SECOND", 1 << 40, raising=False
+    )
+    slow_link_collector.upload_read_pace = (64 * 1024, 0.02)
+    content = b"x" * LARGE_FILE_BYTES
+    planned = one_large_file_submission(tmp_path, content)
+
+    outcome = slow_link_client(slow_link_collector).submit(planned)
+
+    assert (outcome.status, outcome.error_code) == ("accepted", None), (
+        "an upload that kept making progress was stopped"
+    )
+    assert list(slow_link_collector.objects.values()) == [content]
+
+
+def test_a_stalled_upload_is_abandoned(
+    slow_link_collector, tmp_path, monkeypatch
+) -> None:
+    """The fake reads nothing: once the buffers are full no send makes
+    progress, and the upload fails after the stall threshold (0.5 s here)."""
+    from microcosm_emitter.submissions import client as client_module
+
+    monkeypatch.setattr(client_module, "UPLOAD_TIMEOUT", httpx.Timeout(10.0, write=0.5))
+    slow_link_collector.hold_uploads()
+    planned = one_large_file_submission(tmp_path, b"x" * LARGE_FILE_BYTES)
+    started = time.monotonic()
+
+    outcome = slow_link_client(slow_link_collector).submit(planned)
+
+    assert (outcome.status, outcome.error_code) == ("pending", "UPLOAD_FAILED")
+    assert time.monotonic() - started < 5
+    assert slow_link_collector.objects == {}

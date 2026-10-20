@@ -11,19 +11,25 @@ exchange and every submission path answer 404 ``intake_not_enabled``) or
 ``"absent"`` (a collector released before intake: the exchange answers 200
 with a ``telemetry:write`` token and no ``scope``, and submission paths 404
 without a ``code``).
+
+For slow links: ``receive_buffer_bytes`` gives each connection a small
+receive buffer, so the client's sends wait for the fake to read, and
+``upload_read_pace`` makes it read an upload's body a few bytes at a time.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
 class FakeCollector:
-    def __init__(self) -> None:
+    def __init__(self, *, receive_buffer_bytes: int | None = None) -> None:
         self.exchange_requests: list[dict[str, Any]] = []
         self.created: list[dict[str, Any]] = []
         self.completed: list[str] = []
@@ -51,6 +57,8 @@ class FakeCollector:
         self.upload_started = threading.Event()
         self.uploads_released = threading.Event()
         self.uploads_released.set()
+        #: ``(bytes per read, pause in seconds)``: read upload bodies slowly.
+        self.upload_read_pace: tuple[int, float] | None = None
         self._lock = threading.Lock()
         collector = self
 
@@ -60,6 +68,22 @@ class FakeCollector:
 
             def _body(self) -> bytes:
                 return self.rfile.read(int(self.headers.get("Content-Length", "0")))
+
+            def _paced_body(self) -> bytes:
+                remaining = int(self.headers.get("Content-Length", "0"))
+                pace = collector.upload_read_pace
+                if pace is None:
+                    return self.rfile.read(remaining)
+                bytes_per_read, pause_seconds = pace
+                pieces = []
+                while remaining > 0:
+                    piece = self.rfile.read(min(bytes_per_read, remaining))
+                    if not piece:
+                        break
+                    pieces.append(piece)
+                    remaining -= len(piece)
+                    time.sleep(pause_seconds)
+                return b"".join(pieces)
 
             def _json(self, status: int, payload: dict[str, Any]) -> None:
                 encoded = json.dumps(payload).encode()
@@ -95,11 +119,20 @@ class FakeCollector:
             def do_PUT(self) -> None:
                 collector.upload_started.set()
                 collector.uploads_released.wait(30)
-                body = self._body()
+                body = self._paced_body()
                 with collector._lock:
                     collector._store(self, self.path.removeprefix("/storage/"), body)
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), Handler, bind_and_activate=False
+        )
+        if receive_buffer_bytes is not None:
+            # Accepted connections inherit the listening socket's buffer size.
+            self._server.socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes
+            )
+        self._server.server_bind()
+        self._server.server_activate()
         self.origin = f"http://127.0.0.1:{self._server.server_address[1]}"
         self._thread = threading.Thread(
             target=self._server.serve_forever,
