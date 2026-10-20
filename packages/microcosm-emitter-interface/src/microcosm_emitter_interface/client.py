@@ -208,6 +208,32 @@ class EmitterClient:
             return False
         return True
 
+    def _request(
+        self,
+        module: str,
+        build_message: MessageBuilder,
+        *,
+        kind: str,
+        timeout: float = FILE_REQUEST_TIMEOUT_SECONDS,
+    ) -> tuple[dict[str, Any] | None, RequestFailureReason | None]:
+        """The module's answer, or None and why this call failed.
+
+        The reason belongs to this call only. ``last_failure`` is shared by
+        every call and thread, so a receipt's error code never reads it.
+        """
+        if module not in self.modules:
+            self._fail(kind, "emitter_unavailable")
+            return None, "emitter_unavailable"
+        message = self._message(build_message, kind=kind)
+        if message is None:
+            return None, "invalid_arguments"
+        assert self._process is not None
+        try:
+            return self._process.transport.query(module, message, timeout=timeout), None
+        except Exception as error:
+            self._fail(kind, "not_accepted", error)
+            return None, "not_accepted"
+
     def _query(
         self,
         module: str,
@@ -216,25 +242,8 @@ class EmitterClient:
         kind: str,
         timeout: float = FILE_REQUEST_TIMEOUT_SECONDS,
     ) -> dict[str, Any] | None:
-        if module not in self.modules:
-            self._fail(kind, "emitter_unavailable")
-            return None
-        message = self._message(build_message, kind=kind)
-        if message is None:
-            return None
-        assert self._process is not None
-        try:
-            return self._process.transport.query(module, message, timeout=timeout)
-        except Exception as error:
-            self._fail(kind, "not_accepted", error)
-            return None
-
-    def _error_code(self) -> str:
-        """The receipt error code for the call that just failed."""
-        failure = self.last_failure
-        if failure is not None and failure.reason == "invalid_arguments":
-            return "invalid_arguments"
-        return "local_service_unavailable"
+        answer, _ = self._request(module, build_message, kind=kind, timeout=timeout)
+        return answer
 
     def emit_telemetry(self, command: TelemetryCommand) -> bool:
         """Hand over one telemetry event; True once the emitter committed it."""
@@ -309,8 +318,10 @@ class EmitterClient:
     def _orrery_receipt_request(
         self, build_message: MessageBuilder, publication_id: str | None
     ) -> PublicationReceipt:
-        response = self._query(ORRERY_MODULE, build_message, kind="Orrery")
-        return answered_receipt(response, publication_id, error_code=self._error_code())
+        answer, failure = self._request(ORRERY_MODULE, build_message, kind="Orrery")
+        return answered_receipt(
+            answer, publication_id, error_code=_receipt_error_code(failure)
+        )
 
     def close(self) -> None:
         """Ask the emitter to drain and stop; repeated calls do nothing."""
@@ -322,6 +333,17 @@ class EmitterClient:
                 self._process.close()
             except Exception as error:
                 self._fail("close", "not_accepted", error)
+
+
+def _receipt_error_code(failure: RequestFailureReason | None) -> str:
+    """The error code of an unavailable receipt, from its own call's failure.
+
+    An answer without a receipt, or no answer, is ``local_service_unavailable``,
+    as in the emitter's in-process client.
+    """
+    if failure == "invalid_arguments":
+        return "invalid_arguments"
+    return "local_service_unavailable"
 
 
 def _wait_seconds(value: Any) -> float:
