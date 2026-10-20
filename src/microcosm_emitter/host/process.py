@@ -25,12 +25,18 @@ class ParentProcess:
 def parent_process(pid: int, created_at: float | None) -> ParentProcess:
     """Identify the build that owns this host.
 
-    A launcher may pass the creation time it measured. Otherwise the named
-    process must still be this host's parent, which also proves it has not
-    exited and been replaced by an unrelated process with a reused PID.
+    A launcher may pass the creation time it measured. Otherwise the host reads
+    the creation time of the process named ``pid`` and then checks that this
+    process is still its parent. A parent that exits is replaced as parent by
+    another, still running process, so a match after the read proves the
+    creation time is the parent's, not that of an unrelated process that was
+    given the same process ID after the parent exited.
     """
     if created_at is not None:
         return ParentProcess(pid, created_at)
     if os.getppid() != pid:
         raise ValueError("the named parent process is not this host's parent")
-    return ParentProcess(pid, psutil.Process(pid).create_time())
+    parent_created_at = psutil.Process(pid).create_time()
+    if os.getppid() != pid:
+        raise ValueError("the named parent process is not this host's parent")
+    return ParentProcess(pid, parent_created_at)

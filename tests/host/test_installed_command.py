@@ -260,6 +260,60 @@ def test_unavailable_modules_are_skipped_only_when_requested(
         assert stop(process, socket_path) == 0
 
 
+class RecordedParent:
+    """Stand-ins for ``os.getppid`` and ``psutil.Process`` that log each call."""
+
+    def __init__(self, parent_ids: list[int], created_at: float):
+        self.parent_ids = list(parent_ids)
+        self.created_at = created_at
+        self.calls: list[str] = []
+
+    def getppid(self) -> int:
+        self.calls.append("getppid")
+        return (
+            self.parent_ids.pop(0) if len(self.parent_ids) > 1 else self.parent_ids[0]
+        )
+
+    def process(self, pid: int):
+        recorder = self
+
+        class Process:
+            def create_time(self) -> float:
+                recorder.calls.append("create_time")
+                return recorder.created_at
+
+        return Process()
+
+
+def test_parent_creation_time_is_read_before_the_final_parent_check(monkeypatch):
+    from microcosm_emitter.host import process as process_module
+
+    recorded = RecordedParent([4321], created_at=1234.5)
+    monkeypatch.setattr(process_module.os, "getppid", recorded.getppid)
+    monkeypatch.setattr(process_module.psutil, "Process", recorded.process)
+
+    parent = process_module.parent_process(4321, None)
+
+    assert (parent.pid, parent.created_at) == (4321, 1234.5)
+    assert "create_time" in recorded.calls
+    assert recorded.calls[-1] == "getppid"
+    assert recorded.calls.index("create_time") < len(recorded.calls) - 1
+
+
+def test_parent_that_exits_while_its_creation_time_is_read_is_refused(monkeypatch):
+    """The process ID may already name an unrelated process when it is read."""
+    from microcosm_emitter.host import process as process_module
+
+    # The parent is this host's parent at first, then exits; the host is
+    # adopted by process 1 while the creation time is being read.
+    recorded = RecordedParent([4321, 1], created_at=1234.5)
+    monkeypatch.setattr(process_module.os, "getppid", recorded.getppid)
+    monkeypatch.setattr(process_module.psutil, "Process", recorded.process)
+
+    with pytest.raises(ValueError, match="not this host's parent"):
+        process_module.parent_process(4321, None)
+
+
 def test_version_command_prints_the_emitter_and_protocol_versions():
     result = subprocess.run(
         [installed_command(), "version"],
