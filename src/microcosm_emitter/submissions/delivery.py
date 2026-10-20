@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, Final
 
+from microcosm_emitter.huggingface.service.delivery import never_stop
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 from microcosm_emitter.submissions.client import CollectorSubmissionClient
 from microcosm_emitter.submissions.planning import (
@@ -101,15 +102,19 @@ class CollectorSubmissionDelivery:
             "submissions": submissions,
         }
 
-    def run_cycle(self) -> int:
+    def run_cycle(self, *, stop_requested: Callable[[], bool] = never_stop) -> int:
         """Attempt each due collector hand-over once; return how many.
 
         The module runs this on a worker thread of its own, so a slow
-        submission never delays a Hugging Face commit.
+        submission never delays a Hugging Face commit. Once
+        ``stop_requested`` turns true (shutdown has begun), the cycle claims
+        no further hand-over.
         """
         cycle_deadline = time.monotonic() + MAX_CYCLE_SECONDS
         attempted = 0
         for _ in range(MAX_JOBS_PER_CYCLE):
+            if stop_requested():
+                break
             if attempted and time.monotonic() >= cycle_deadline:
                 break
             job = self.queue.claim_job(

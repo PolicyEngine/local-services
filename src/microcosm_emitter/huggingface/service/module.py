@@ -67,6 +67,11 @@ from microcosm_emitter_interface.publication import RELEASE_CHANGE
 
 #: A read-back of a run with no file this emitter committed: nothing to compare.
 NO_COMMITTED_FILES = "NO_COMMITTED_FILES"
+#: At shutdown, how long the module waits for a collector submission in
+#: progress, after both Hugging Face shutdown commits and never past the
+#: shutdown deadline. A submission still running then is abandoned; its row
+#: is retried later.
+COLLECTOR_SHUTDOWN_WAIT_SECONDS = 2.0
 WORKER_ERROR_MESSAGE = (
     "Microcosm Hugging Face delivery hit a local queue error; handed-over files "
     "stay queued for a later attempt."
@@ -211,7 +216,9 @@ class HuggingFaceModule:
         if self.collector_delivery is not None:
             workers[COLLECTOR_SUBMISSION] = DeliveryWorker(
                 "collector-submissions",
-                lambda _stop_requested: self.collector_delivery.run_cycle(),
+                lambda stop_requested: self.collector_delivery.run_cycle(
+                    stop_requested=stop_requested
+                ),
                 interval_seconds=self.worker_interval_seconds,
                 on_error=self._collector_error,
             )
@@ -513,24 +520,37 @@ class HuggingFaceModule:
 
         The commit at shutdown runs first, on the calling thread, for every
         repository a worker is not uploading to at that moment. Once stopped,
-        a worker starts no new upload. Its upload in progress has until
-        ``deadline`` to finish, and that repository's run files are committed
-        after it if time remains. An upload still running at ``deadline`` is
-        abandoned when the process exits; its job lease expires and the next
-        emitter retries the job.
+        a worker starts no new upload or submission. A Hugging Face upload in
+        progress has until ``deadline`` to finish, and that repository's run
+        files are committed after it if time remains. Only then does the
+        module wait for a collector submission in progress, for at most
+        ``COLLECTOR_SHUTDOWN_WAIT_SECONDS`` and never past ``deadline``, so
+        collector work never uses up the time the Hugging Face commits need.
+        An upload or submission still running at the end is abandoned when
+        the process exits; its lease expires and the next emitter retries it.
         """
         if self._closed:
             return
         self._closed = True
         for worker in self.workers.values():
             worker.stop()
+        hugging_face_workers = [
+            worker
+            for kind, worker in self.workers.items()
+            if kind != COLLECTOR_SUBMISSION
+        ]
+        collector_worker = self.workers.get(COLLECTOR_SUBMISSION)
         try:
             self._drain(deadline)
-            workers_stopped = all(
-                [worker.wait(deadline) for worker in self.workers.values()]
+            hugging_face_stopped = all(
+                [worker.wait(deadline) for worker in hugging_face_workers]
             )
-            if self.workers and workers_stopped:
+            if hugging_face_workers and hugging_face_stopped:
                 self._drain(deadline)
+            collector_stopped = collector_worker is None or collector_worker.wait(
+                min(deadline, time.monotonic() + COLLECTOR_SHUTDOWN_WAIT_SECONDS)
+            )
+            workers_stopped = hugging_face_stopped and collector_stopped
         except Exception:
             self._worker_error()
             workers_stopped = False

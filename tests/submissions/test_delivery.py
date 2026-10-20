@@ -507,6 +507,45 @@ def test_a_held_collector_upload_leaves_the_second_shutdown_commit_its_time(
         controls.module.close(0)
 
 
+def test_shutdown_waits_for_a_held_collector_upload_only_briefly(
+    module_factory, collector, monkeypatch
+):
+    from microcosm_emitter.huggingface.service import module as module_module
+
+    monkeypatch.setattr(module_module, "COLLECTOR_SHUTDOWN_WAIT_SECONDS", 0.2)
+    controls = module_factory.start(
+        background_workers=True,
+        clock=time.time,
+        collector_submissions=True,
+        development_collector_url=collector.origin,
+    )
+    try:
+        described_bundle_with_a_held_upload(controls)
+        started = time.monotonic()
+
+        controls.module.close(started + 10)
+
+        assert time.monotonic() - started < 5
+    finally:
+        collector.release_uploads()
+        controls.module.close(0)
+
+
+def test_a_collector_cycle_claims_nothing_once_shutdown_begins(submitting_module):
+    controls = submitting_module
+    request = bundle(controls)
+    stage(controls, request)
+    controls.module.delivery.run_cycle()
+
+    attempted = controls.module.collector_delivery.run_cycle(
+        stop_requested=lambda: True
+    )
+
+    assert attempted == 0
+    assert collector_receipt(controls, request)["attempts"] == 0
+    assert controls.collector.created == []
+
+
 def test_uploads_have_a_finite_write_timeout():
     from microcosm_emitter.submissions.client import UPLOAD_TIMEOUT
 
