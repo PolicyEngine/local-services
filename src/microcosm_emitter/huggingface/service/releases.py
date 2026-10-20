@@ -42,8 +42,9 @@ each other. So:
   ``[newest requests: <release>=<time>; ...]``: for each release, the newest
   request time of the changes applied to it that set ``current``. Every
   writer commit carries those times forward, dropping a release's time once
-  it is ``ORDER_WINDOW_SECONDS`` older than the newest time listed, by which
-  point every change requested before it has expired.
+  it is ``ORDER_WINDOW_SECONDS`` older than the Hub's date for the last
+  commit to ``releases.json``, by which point every change requested before
+  it has expired.
 - A withdrawal, and a publication that only adds a build, never change
   ``current``: they are never overtaken, never count as newer, and add no
   time. A withdrawal cannot conflict with a change to ``current`` either:
@@ -53,8 +54,17 @@ each other. So:
 What this cannot see: a newer change on another machine that left
 ``releases.json`` unchanged (promoting the build that is already current)
 makes no commit, so it leaves no time in a commit title; only the expiry
-bounds how late an older change can still land after it. Request times come
-from each machine's clock.
+bounds how late an older change can still land after it.
+
+Request times come from each machine's clock, so two machines whose clocks
+differ by some amount can still land changes in the wrong order when they
+were requested less than that amount apart. Every change is requested before
+its commit, so a time in a commit title more than ``CLOCK_TOLERANCE_SECONDS``
+after the Hub's date for that commit comes from a clock that runs fast, and
+is ignored: such a machine's change is then ordered only by its own queue
+and the expiry, but it can neither block later changes to its release on
+other machines until real time catches up, nor push other releases' times
+out of the titles.
 """
 
 from __future__ import annotations
@@ -108,11 +118,16 @@ REQUEST_EXPIRED = "REQUEST_EXPIRED"
 #: or a few backoffs (at most five minutes apart), short enough that an old
 #: request never lands silently after the operator has moved on.
 RELEASE_CHANGE_EXPIRY_SECONDS = 3600.0
-#: How long after a newer request time a release's time stays in commit
-#: titles. A change requested before a dropped time was requested more than
-#: this long before a change that has since landed, so it has expired, unless
-#: the two machines' clocks differ by more than the window minus the expiry.
+#: How long a release's time stays in commit titles, counted back from the
+#: Hub's date for the last commit to ``releases.json`` (from the newest time
+#: listed when the Hub reports no date). A change requested before a dropped
+#: time was requested more than this long before that commit, so it has
+#: expired, unless its machine's clock is more than the window minus the
+#: expiry slow.
 ORDER_WINDOW_SECONDS = 2 * RELEASE_CHANGE_EXPIRY_SECONDS
+#: How far after the Hub's date for a writer commit a time in its title may
+#: be. Only a clock that runs fast records a later one; it is ignored.
+CLOCK_TOLERANCE_SECONDS = 300.0
 #: Ends the title of a writer commit once any change that sets ``current``
 #: has been applied.
 _NEWEST_REQUESTS = re.compile(r" \[newest requests: (?P<entries>[^\]]+)\]$")
@@ -240,18 +255,28 @@ def _parsed_newest_requests(title: str | None) -> dict[str, float]:
 
 def _newest_requests_on_record(
     repository: DatasetRepository, head: str, files: list[str]
-) -> dict[str, float]:
+) -> tuple[dict[str, float], float | None]:
     """Each release's newest request time, from the title of the commit that
-    last changed ``releases.json``.
+    last changed ``releases.json``, and the Hub's date for that commit.
 
-    Empty without a record, or when that commit was not the writer's (P1's
-    one-time migration, for example).
+    The times are empty without a record, or when that commit was not the
+    writer's (P1's one-time migration, for example). A time more than
+    ``CLOCK_TOLERANCE_SECONDS`` after the Hub's date is left out.
     """
     if RELEASES_RECORD_PATH not in files:
-        return {}
-    return _parsed_newest_requests(
-        repository.last_commit_title(RELEASES_RECORD_PATH, revision=head)
+        return {}, None
+    title, committed_at = repository.last_commit_title_and_date(
+        RELEASES_RECORD_PATH, revision=head
     )
+    newest_requests = _parsed_newest_requests(title)
+    if committed_at is None:
+        return newest_requests, None
+    latest_believable = committed_at + CLOCK_TOLERANCE_SECONDS
+    return {
+        release: seconds
+        for release, seconds in newest_requests.items()
+        if seconds <= latest_believable
+    }, committed_at
 
 
 def _newest_per_release(*sources: Mapping[str, float]) -> dict[str, float]:
@@ -265,11 +290,23 @@ def _newest_per_release(*sources: Mapping[str, float]) -> dict[str, float]:
     return newest_requests
 
 
-def _within_order_window(newest_requests: Mapping[str, float]) -> dict[str, float]:
-    """The times a commit title still needs (see ``ORDER_WINDOW_SECONDS``)."""
+def _within_order_window(
+    newest_requests: Mapping[str, float], record_committed_at: float | None
+) -> dict[str, float]:
+    """The times a commit title still needs (see ``ORDER_WINDOW_SECONDS``).
+
+    The window ends at the Hub's date for the last commit to
+    ``releases.json``, so no machine's clock decides which times are dropped;
+    without that date, at the newest time listed.
+    """
     if not newest_requests:
         return {}
-    oldest_kept = max(newest_requests.values()) - ORDER_WINDOW_SECONDS
+    window_end = (
+        max(newest_requests.values())
+        if record_committed_at is None
+        else record_committed_at
+    )
+    oldest_kept = window_end - ORDER_WINDOW_SECONDS
     return {
         release: seconds
         for release, seconds in newest_requests.items()
@@ -378,7 +415,9 @@ def apply_release_change(
         ):
             return _already_published(repository, change, record, head)
         try:
-            on_record = _newest_requests_on_record(repository, head, files)
+            on_record, record_committed_at = _newest_requests_on_record(
+                repository, head, files
+            )
         except Exception:
             return _pending(REPOSITORY_UNAVAILABLE)
         newest_requests = _newest_per_release(on_record, newest_local_requests or {})
@@ -450,7 +489,7 @@ def apply_release_change(
             newest_requests[release] = requested
         message = _commit_message(
             change,
-            _within_order_window(newest_requests),
+            _within_order_window(newest_requests, record_committed_at),
             makes_current=makes_current,
         )
         try:

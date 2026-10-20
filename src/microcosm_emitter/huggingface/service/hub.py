@@ -10,6 +10,7 @@ in-memory Hub. The client carries the build's own credential, found exactly as
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,25 @@ _MISSING_FILE_ERROR_NAMES = frozenset(
 #: or 5xx response for an uncached file). It subclasses ``EntryNotFoundError``
 #: and ``FileNotFoundError``, so a check by class alone mistakes it for absence.
 _NO_ANSWER_ERROR_NAME = "LocalEntryNotFoundError"
+
+
+def _field(value: Any, name: str) -> Any:
+    """``name`` of a Hub answer, which may be a mapping or an object."""
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _seconds_since_epoch(value: Any) -> float | None:
+    """A date the Hub reported, in seconds; ``None`` if it is not a date."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return (value if value.tzinfo else value.replace(tzinfo=UTC)).timestamp()
 
 
 def hugging_face_api() -> Any | None:
@@ -165,17 +185,25 @@ class DatasetRepository:
         oid = self._last_commit_field(path_in_repo, "oid", revision=None)
         return str(oid) if oid else None
 
-    def last_commit_title(
+    def last_commit_title_and_date(
         self, path_in_repo: str, *, revision: str | None = None
-    ) -> str | None:
-        """The first line of the message of the commit that last changed
-        ``path_in_repo`` at ``revision``, when the Hub reports it."""
-        title = self._last_commit_field(path_in_repo, "title", revision=revision)
-        return title if isinstance(title, str) else None
+    ) -> tuple[str | None, float | None]:
+        """The commit that last changed ``path_in_repo`` at ``revision``: the
+        first line of its message, and the Hub's date for it in seconds since
+        the epoch. Each is ``None`` when the Hub does not report it."""
+        commit = self._last_commit_info(path_in_repo, revision=revision)
+        title = _field(commit, "title")
+        return (
+            title if isinstance(title, str) and title else None,
+            _seconds_since_epoch(_field(commit, "date")),
+        )
 
     def _last_commit_field(
         self, path_in_repo: str, name: str, *, revision: str | None
     ) -> Any:
+        return _field(self._last_commit_info(path_in_repo, revision=revision), name)
+
+    def _last_commit_info(self, path_in_repo: str, *, revision: str | None) -> Any:
         entries = self.api.get_paths_info(
             repo_id=self.repo_id,
             paths=[path_in_repo],
@@ -184,18 +212,9 @@ class DatasetRepository:
             revision=revision,
         )
         for entry in entries or []:
-            commit = (
-                entry.get("last_commit")
-                if isinstance(entry, Mapping)
-                else getattr(entry, "last_commit", None)
-            )
-            value = (
-                commit.get(name)
-                if isinstance(commit, Mapping)
-                else getattr(commit, name, None)
-            )
-            if value:
-                return value
+            commit = _field(entry, "last_commit")
+            if commit:
+                return commit
         return None
 
     def _access_token(self) -> Mapping[str, Any] | None:
