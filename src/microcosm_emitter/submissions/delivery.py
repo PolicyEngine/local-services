@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
-from microcosm_emitter.huggingface.service.delivery import never_stop
+from microcosm_emitter.huggingface.service.delivery import HeldLeases, never_stop
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 from microcosm_emitter.submissions.client import CollectorSubmissionClient
 from microcosm_emitter.submissions.planning import (
@@ -28,11 +29,15 @@ from microcosm_emitter.submissions.planning import (
 COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT: Final = False
 DESTINATION_COLLECTOR: Final = "collector"
 COLLECTOR_SUBMISSION: Final = "collector_submission"
-#: Long enough to upload large native evidence files in one attempt on most
-#: links. It is not renewed during an attempt: an attempt that outlasts it (a
-#: very large file on a slow link) can be claimed again by another emitter
-#: on this machine, and the later result is the one recorded.
-SUBMISSION_LEASE_SECONDS: Final = 3600.0
+#: How long a collector row's lease lasts without renewal. While an attempt
+#: runs, its lease is renewed every ``SUBMISSION_LEASE_RENEWAL_SECONDS``, as
+#: ``HeldLeases`` does for Hugging Face jobs, so another emitter on this
+#: machine (they share the hand-over database) never claims the row while an
+#: upload runs, however long it takes. Renewal stops when the attempt ends
+#: or shutdown begins, so a row whose emitter was killed or stopped is free
+#: again within one lease.
+SUBMISSION_LEASE_SECONDS: Final = 120.0
+SUBMISSION_LEASE_RENEWAL_SECONDS: Final = 30.0
 MAX_JOBS_PER_CYCLE: Final = 8
 #: How long one cycle keeps starting submissions. The budget never stops a
 #: submission in progress: an upload at or above the minimum rate described
@@ -46,6 +51,17 @@ NOT_STAGED_ON_HUGGING_FACE: Final = "NOT_STAGED_ON_HUGGING_FACE"
 COLLECTOR_FOLDER_TOO_LONG: Final = "COLLECTOR_FOLDER_TOO_LONG"
 #: The emitter hit an unexpected error of its own during an attempt.
 LOCAL_ERROR: Final = "LOCAL_ERROR"
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    """What one attempt at a collector row ends with."""
+
+    status: str
+    error_code: str | None
+    submissions: list[dict[str, Any]]
+    retry: bool
+    retry_after: float | None = None
 
 
 class CollectorSubmissionDelivery:
@@ -130,60 +146,64 @@ class CollectorSubmissionDelivery:
             )
             if job is None:
                 break
+            held = HeldLeases.for_job(
+                self.queue,
+                job,
+                clock=self.clock,
+                lease_seconds=SUBMISSION_LEASE_SECONDS,
+                renewal_seconds=SUBMISSION_LEASE_RENEWAL_SECONDS,
+                stop_requested=stop_requested,
+            ).start()
             try:
-                self._attempt(job)
+                result = self._attempt(job)
             except Exception:
                 # Record the attempt, so the row is retried after the usual
                 # backoff instead of staying leased for the whole lease.
                 earlier = (self.receipt(job.handover_id) or {}).get("submissions")
-                self._finish(
-                    job, "pending", LOCAL_ERROR, list(earlier or []), retry=True
+                result = AttemptResult(
+                    "pending", LOCAL_ERROR, list(earlier or []), retry=True
                 )
+            finally:
+                held.stop()
+            assert held.job is not None, "The held lease names the claimed job."
+            # The renewed lease: only the holder of the current lease records.
+            self._finish(held.job, result)
             attempted += 1
         return attempted
 
-    def _finish(
-        self,
-        job: ClaimedJob,
-        status: str,
-        error_code: str | None,
-        submissions: list[dict[str, Any]],
-        *,
-        retry: bool,
-        retry_after: float | None = None,
-    ) -> None:
+    def _finish(self, job: ClaimedJob, result: AttemptResult) -> None:
         receipt = self._receipt(
-            job.handover_id, status, error_code, job.attempts + 1, submissions
+            job.handover_id,
+            result.status,
+            result.error_code,
+            job.attempts + 1,
+            result.submissions,
         )
         self.queue.finish_job(
             job,
             receipt=receipt,
-            retry=retry,
+            retry=result.retry,
             now=self.clock(),
-            retry_after=retry_after,
+            retry_after=result.retry_after,
         )
 
-    def _attempt(self, job: ClaimedJob) -> None:
+    def _attempt(self, job: ClaimedJob) -> AttemptResult:
         if len(bundle_folder(job.request)) > MAX_FOLDER_CHARACTERS:
             # The collector refuses such a folder with a final 422.
-            self._finish(job, "skipped", COLLECTOR_FOLDER_TOO_LONG, [], retry=False)
-            return
+            return AttemptResult("skipped", COLLECTOR_FOLDER_TOO_LONG, [], retry=False)
         previous = self.receipt(job.handover_id) or {}
         earlier = {entry["kind"]: entry for entry in previous.get("submissions", [])}
         staged = self.queue.job_receipt(job.handover_id)
         if staged is None or staged.get("status") in NOT_STAGED_STATUSES:
-            self._finish(job, "skipped", NOT_STAGED_ON_HUGGING_FACE, [], retry=False)
-            return
+            return AttemptResult("skipped", NOT_STAGED_ON_HUGGING_FACE, [], retry=False)
         revision = staged.get("revision")
         if staged.get("status") not in STAGED_STATUSES or not revision:
-            self._finish(
-                job,
+            return AttemptResult(
                 "pending",
                 WAITING_FOR_HUGGING_FACE,
                 list(earlier.values()),
                 retry=True,
             )
-            return
         results: dict[str, dict[str, Any]] = {}
         waits: list[float] = []
         for planned in planned_submissions(job.request, revision, job.files):
@@ -205,17 +225,15 @@ class CollectorSubmissionDelivery:
         pending = [entry for entry in submissions if entry["status"] == "pending"]
         failed = [entry for entry in submissions if entry["status"] == "failed"]
         if pending:
-            self._finish(
-                job,
+            return AttemptResult(
                 "pending",
                 pending[0]["error_code"],
                 submissions,
                 retry=True,
                 retry_after=max(waits) if waits else None,
             )
-        elif failed:
-            self._finish(
-                job, "failed", failed[0]["error_code"], submissions, retry=False
+        if failed:
+            return AttemptResult(
+                "failed", failed[0]["error_code"], submissions, retry=False
             )
-        else:
-            self._finish(job, "submitted", None, submissions, retry=False)
+        return AttemptResult("submitted", None, submissions, retry=False)
