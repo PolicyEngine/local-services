@@ -321,3 +321,42 @@ def test_unconvertible_bundle_arguments_report_failure(running, tmp_path):
     if running:
         assert transport.requests == []
         assert client.last_failure.reason == "invalid_arguments"
+
+
+def test_a_pending_bundle_receipt_without_an_identifier_is_returned_not_raised(
+    tmp_path,
+):
+    import hashlib
+
+    from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
+
+    client, transport = hugging_face_client()
+    transport.query = lambda module, message, *, timeout=None: {
+        "receipt": {"status": "pending"}
+    }
+    manifest = tmp_path / "staged_manifest.json"
+    manifest.write_bytes(b"{}")
+    request = StageDatasetBundle(
+        repository="policyengine/fixture-staging",
+        run_id="run-1",
+        files=(
+            BundleFile(
+                name="staged_manifest.json",
+                role="staged_manifest",
+                local_path=manifest,
+                sha256=hashlib.sha256(b"{}").hexdigest(),
+                bytes=2,
+            ),
+            BundleFile(
+                name="dataset.h5",
+                role="dataset",
+                local_path=manifest,
+                sha256=hashlib.sha256(b"{}").hexdigest(),
+                bytes=2,
+            ),
+        ),
+    )
+
+    receipt = client.stage_dataset_bundle(request, wait_seconds=1)
+
+    assert receipt == {"status": "pending"}

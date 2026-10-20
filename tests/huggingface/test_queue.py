@@ -243,6 +243,38 @@ def test_a_newer_hand_over_during_a_commit_stays_pending(queue):
     }
 
 
+def test_earlier_bytes_handed_over_again_during_a_commit_are_committed_after_it(
+    queue,
+):
+    """The repository holds X; Y is being committed when X is handed over again."""
+    path_in_repo = "runs/run-1/progress.json"
+    stage(queue, path_in_repo, b"X", now=1000)
+    commit_everything(queue, now=1001, revision="commit-x")
+    stage(queue, path_in_repo, b"Y", now=1100)
+    claimed = queue.pending_run_files(REPOSITORY)
+    stage(queue, path_in_repo, b"X", now=1101)
+    queue.record_run_files_committed(
+        REPOSITORY, claimed, [], revision="commit-y", now=1102
+    )
+    assert [entry.content for entry in queue.pending_run_files(REPOSITORY)] == [b"X"]
+
+
+def test_retries_back_off_up_to_five_minutes():
+    from microcosm_emitter.huggingface.service.queue import (
+        MAX_RETRY_SECONDS,
+        retry_delay,
+    )
+
+    assert MAX_RETRY_SECONDS == 300.0
+    assert [retry_delay(failures) for failures in (1, 2, 8, 9, 64)] == [
+        2.0,
+        4.0,
+        256.0,
+        300.0,
+        300.0,
+    ]
+
+
 def test_receipt_counts_committed_files_and_commits_per_run(queue):
     queue.stage_run_files(
         repository=REPOSITORY,
