@@ -77,6 +77,9 @@ class FakeCollector:
         self.upload_hosts: list[str] = []
         #: Each issued session token and its scope.
         self._tokens: dict[str, str] = {}
+        #: How long an issued token lasts; an expired one is answered 401.
+        self.token_lifetime_seconds = 900
+        self._token_expiry: dict[str, float] = {}
         #: Set when an upload arrives; uploads wait for ``uploads_released``
         #: while ``hold_uploads`` is on.
         self.upload_started = threading.Event()
@@ -120,6 +123,8 @@ class FakeCollector:
 
             def _token_scope(self) -> str | None:
                 token = self.headers.get("Authorization", "").removeprefix("Bearer ")
+                if collector._token_expiry.get(token, float("inf")) <= time.monotonic():
+                    return None
                 return collector._tokens.get(token)
 
             def do_POST(self) -> None:
@@ -222,12 +227,13 @@ class FakeCollector:
             return handler._json(200, {"access_token": token, "expires_in": 900})
         token = f"session-token-{len(self._tokens) + 1}"
         self._tokens[token] = scope
+        self._token_expiry[token] = time.monotonic() + self.token_lifetime_seconds
         handler._json(
             200,
             {
                 "access_token": token,
                 "token_type": "bearer",
-                "expires_in": 900,
+                "expires_in": self.token_lifetime_seconds,
                 "scope": scope,
             },
         )

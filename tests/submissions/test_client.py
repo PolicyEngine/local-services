@@ -2,6 +2,7 @@
 
 import hashlib
 import socket
+import threading
 import time
 
 import httpx
@@ -633,3 +634,39 @@ def test_an_https_upload_that_keeps_progressing_is_never_stopped(
     finally:
         collector.release_uploads()
         collector.stop()
+
+
+def test_completion_after_uploads_that_outlast_the_token_uses_a_fresh_token(
+    collector, tmp_path, monkeypatch
+) -> None:
+    """The #27 round-2 review's CODE QUALITY 3: the uploads outlast the
+    collector token, so completing with the token fetched before them is
+    answered 401. The client must ask its session again just before it
+    completes; the session exchanges again only when the token is expiring.
+    """
+    from microcosm_emitter.core import auth as auth_module
+
+    monkeypatch.setattr(auth_module, "MINIMUM_TOKEN_LIFETIME_SECONDS", 1)
+    monkeypatch.setattr(auth_module, "TOKEN_REFRESH_MARGIN_SECONDS", 0)
+    collector.token_lifetime_seconds = 1
+    collector.hold_uploads()
+    planned = planned_submission(tmp_path)
+    client = submission_client(collector)
+    outcomes = []
+    submitting = threading.Thread(
+        target=lambda: outcomes.append(client.submit(planned)), daemon=True
+    )
+    submitting.start()
+    try:
+        assert collector.upload_started.wait(10), "no upload started"
+        # The token expires while the upload is held.
+        time.sleep(1.5)
+    finally:
+        collector.release_uploads()
+        submitting.join(timeout=30)
+
+    (outcome,) = outcomes
+    assert (outcome.status, outcome.error_code) == ("accepted", None), (
+        "the completion after a long upload used an expired token"
+    )
+    assert collector.exchange_requests == [{"scope": "artifacts:submit"}] * 2
