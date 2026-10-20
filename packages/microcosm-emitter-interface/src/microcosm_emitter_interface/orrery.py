@@ -145,8 +145,12 @@ def answered_receipt(
     *,
     error_code: str = "local_service_unavailable",
 ) -> PublicationReceipt:
-    """The receipt in the module's answer, or an unavailable receipt."""
+    """The receipt in the module's answer, or an unavailable receipt.
+
+    An answer whose receipt has no status is not a receipt: the build reads
+    ``status`` from every receipt it gets.
+    """
     value = None if answer is None else answer.get("receipt")
-    if isinstance(value, dict):
+    if isinstance(value, dict) and isinstance(value.get("status"), str):
         return cast(PublicationReceipt, value)
     return unavailable_receipt(publication_id, error_code=error_code)

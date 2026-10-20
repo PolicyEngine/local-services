@@ -238,9 +238,16 @@ def _accepted_description(
         # An emitter without a ``hello`` answer predates this protocol.
         raise EmitterStartupError("unsupported_protocol_version") from None
     versions = description.get("protocol_versions")
-    if not isinstance(versions, list) or PROTOCOL_VERSION not in versions:
-        raise EmitterStartupError("unsupported_protocol_version")
-    if not isinstance(description.get("modules"), list):
+    modules = description.get("modules")
+    # Every call reads the module names as a set of strings, so a later
+    # emitter's differently shaped answer is refused here, at startup.
+    if (
+        not isinstance(versions, list)
+        or not all(type(version) is int for version in versions)
+        or PROTOCOL_VERSION not in versions
+        or not isinstance(modules, list)
+        or not all(isinstance(module, str) for module in modules)
+    ):
         raise EmitterStartupError("unsupported_protocol_version")
     return description
 
