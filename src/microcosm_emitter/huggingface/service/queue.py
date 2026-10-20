@@ -47,8 +47,10 @@ from microcosm_emitter.core.migrations import upgrade_handover_database
 
 #: The shortest time between two commits to one repository from this machine,
 #: of run files or jobs, even for hand-overs that ask to be committed at the
-#: next cycle. Only the drain at shutdown ignores it; other machines' commits
-#: are not counted.
+#: next cycle. A cycle checks it when it lists the repository and again once
+#: it has leased it, because another thread may have committed in between.
+#: Only the drain at shutdown ignores it; other machines' commits are not
+#: counted.
 MIN_COMMIT_SPACING_SECONDS = 10.0
 MAX_RETRY_SECONDS = 300.0
 DESTINATION_HUGGING_FACE = "huggingface"
@@ -249,6 +251,33 @@ class HandoverQueue:
                     due.append(repository)
             return due
 
+    @staticmethod
+    def _spacing_elapsed(schedule: RepositoryCommitSchedule | None, now: float) -> bool:
+        """Whether this machine's last commit to the repository is far enough back.
+
+        The spacing keeps bursts of commits, each starting the dataset
+        repository's webhook, from reaching the Hub.
+        """
+        return (
+            schedule is None
+            or schedule.last_commit_at + MIN_COMMIT_SPACING_SECONDS <= now
+        )
+
+    def commit_spacing_elapsed(self, repository: str, now: float) -> bool:
+        with self._sessions() as session:
+            return self._spacing_elapsed(
+                session.get(RepositoryCommitSchedule, repository), now
+            )
+
+    @classmethod
+    def _run_files_allowed(
+        cls, schedule: RepositoryCommitSchedule | None, now: float
+    ) -> bool:
+        """Run files wait out failure backoff and the spacing between commits."""
+        return cls._spacing_elapsed(schedule, now) and (
+            schedule is None or schedule.retry_after <= now
+        )
+
     # Staging run files ---------------------------------------------------
 
     @staticmethod
@@ -351,10 +380,10 @@ class HandoverQueue:
             delivery.updated_at = now
 
     def run_files_due(self, repository: str, now: float) -> bool:
-        """Whether pending run files are due and past any failure backoff."""
+        """Whether pending run files are due, past backoff and commit spacing."""
         with self._sessions() as session:
             schedule = session.get(RepositoryCommitSchedule, repository)
-            if schedule is not None and schedule.retry_after > now:
+            if not self._run_files_allowed(schedule, now):
                 return False
             due_file = session.scalar(
                 select(StagedRunFile.path_in_repo)

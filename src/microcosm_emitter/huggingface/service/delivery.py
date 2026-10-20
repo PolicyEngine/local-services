@@ -277,9 +277,17 @@ class HuggingFaceDelivery:
         )
 
     def _claim_job(self, repository: str, kinds: frozenset[str]) -> ClaimedJob | None:
+        """The next due job of ``kinds``, once the commit spacing has elapsed.
+
+        Checked here, after the repository is leased: another thread may have
+        committed to it since this cycle listed it.
+        """
+        now = self.clock()
+        if not self.queue.commit_spacing_elapsed(repository, now):
+            return None
         return self.queue.claim_job(
             repository,
-            now=self.clock(),
+            now=now,
             lease_seconds=REPOSITORY_LEASE_SECONDS,
             kinds=kinds,
         )
