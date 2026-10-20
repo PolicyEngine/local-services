@@ -1177,3 +1177,98 @@ def test_commit_titles_keep_each_release_time_within_the_order_window(hub, tmp_p
     assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
         f"[newest requests: {NATIONAL}={written_time(later)}]"
     )
+
+
+# A withdrawal never changes `current`: `withdraw_build` refuses the current
+# build, and `make_current` refuses a withdrawn one. So a withdrawal cannot
+# conflict with a change that sets `current`, and only changes that set
+# `current` (promotions, and publications that make their build current)
+# count when deciding whether a newer change to a release has landed.
+
+
+def publish_three(hub, tmp_path, requested_at):
+    """FIRST_BUILD (current), SECOND_BUILD and THIRD_BUILD, all listed."""
+    for build in (FIRST_BUILD, SECOND_BUILD, THIRD_BUILD):
+        request, _ = publish_request(tmp_path, build, make_current=build == FIRST_BUILD)
+        assert apply_requested_at(hub, request, requested_at).status == "published"
+
+
+def test_a_publication_is_made_current_after_a_later_unrelated_withdrawal(
+    hub, tmp_path
+):
+    """The #24 round-2 review's first test."""
+    first, _ = publish_request(tmp_path, FIRST_BUILD, make_current=True)
+    second, _ = publish_request(tmp_path, SECOND_BUILD)
+    for request in (first, second):
+        assert apply_requested_at(hub, request, 100.0).status == "published"
+    assert apply_requested_at(hub, withdrawal(SECOND_BUILD), 300.0).status == (
+        "published"
+    )
+    third, _ = publish_request(tmp_path, THIRD_BUILD, make_current=True)
+
+    outcome = apply_requested_at(hub, third, 200.0)
+
+    assert (outcome.status, outcome.error_code) == ("published", None)
+    assert record_of(hub).releases[NATIONAL].current == THIRD_BUILD, (
+        "a later withdrawal of another build kept the publication from becoming current"
+    )
+    assert outcome.message is None
+
+
+def test_a_promotion_is_not_refused_for_a_later_unrelated_withdrawal(hub, tmp_path):
+    """The #24 round-2 review's second test."""
+    publish_three(hub, tmp_path, 100.0)
+    assert apply_requested_at(hub, withdrawal(THIRD_BUILD), 300.0).status == (
+        "published"
+    )
+
+    outcome = apply_requested_at(hub, promotion(SECOND_BUILD), 200.0)
+
+    assert (outcome.status, outcome.error_code) == ("published", None), (
+        "a promotion was refused for a later withdrawal of another build"
+    )
+    assert record_of(hub).releases[NATIONAL].current == SECOND_BUILD
+
+
+def test_a_withdrawal_is_not_refused_for_a_later_unrelated_promotion(hub, tmp_path):
+    publish_three(hub, tmp_path, 100.0)
+    assert apply_requested_at(hub, promotion(SECOND_BUILD), 300.0).status == (
+        "published"
+    )
+
+    outcome = apply_requested_at(hub, withdrawal(THIRD_BUILD), 200.0)
+
+    assert (outcome.status, outcome.error_code) == ("published", None), (
+        "a withdrawal was refused for a later promotion of another build"
+    )
+    entry = record_of(hub).releases[NATIONAL]
+    assert entry.builds[THIRD_BUILD].withdrawn
+    assert entry.current == SECOND_BUILD
+
+
+def test_a_queued_promotion_lands_after_a_later_withdrawal_on_this_machine(
+    hugging_face_module,
+):
+    """The review's variant on one machine: the promotion waits after a
+    transient error while a withdrawal of another build, handed over later,
+    lands first."""
+    controls = hugging_face_module
+    for build in (FIRST_BUILD, SECOND_BUILD, THIRD_BUILD):
+        request, _ = publish_request(
+            controls.tmp_path, build, make_current=build == FIRST_BUILD
+        )
+        assert queue_change(controls, request)["status"] == "published"
+    queued = queue_a_promotion_that_fails_once(controls, SECOND_BUILD)
+    controls.clock.advance(1)
+    later = withdrawal(THIRD_BUILD)
+    hand_over(controls, later)
+    controls.module.delivery.run_cycle()
+    assert status_of(receipt_of(controls, later)) == ("published", None)
+
+    controls.clock.advance(600)
+    controls.module.delivery.run_cycle()
+
+    assert status_of(receipt_of(controls, queued)) == ("published", None), (
+        "a queued promotion was refused for a later withdrawal of another build"
+    )
+    assert current_of(controls).current == SECOND_BUILD
