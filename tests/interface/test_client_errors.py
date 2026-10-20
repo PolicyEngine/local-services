@@ -150,6 +150,43 @@ def test_successful_call_after_a_failure_keeps_the_last_failure_until_the_next()
     assert transport.requests[-1] == ("message", "telemetry", {"command": "complete"})
 
 
+class ReceiptlessGraphTransport:
+    """The in-process client's transport, answering without a receipt."""
+
+    def request(self, message, *, timeout=None):
+        return {"receipt": None}
+
+    def close(self):
+        pass
+
+
+def test_an_orrery_receipt_reports_the_error_code_of_its_own_call():
+    client, transport = running_client()
+    transport.query = lambda module, message, *, timeout=None: {"receipt": None}
+    assert client.telemetry.stage("compile", value=MultiElementArray()) is False
+    assert client.last_failure.reason == "invalid_arguments"
+
+    receipt = client.orrery_receipt("a-publication-this-spool-never-queued")
+
+    assert receipt["status"] == "failed"
+    assert receipt["error_code"] == "local_service_unavailable"
+    from microcosm_emitter.orrery.client import GraphPublicationClient
+
+    in_process_client = GraphPublicationClient(ReceiptlessGraphTransport())
+    assert receipt == in_process_client.receipt("a-publication-this-spool-never-queued")
+
+
+def test_an_orrery_retry_reports_the_error_code_of_its_own_call():
+    client, transport = running_client()
+    transport.query = lambda module, message, *, timeout=None: {"receipt": None}
+    assert client.orrery_inventory(UnresolvablePath(), {"graph.json": "graph"}) is None
+    assert client.last_failure.reason == "invalid_arguments"
+
+    receipt = client.retry_orrery_inputs("a-publication-this-spool-never-queued")
+
+    assert receipt["error_code"] == "local_service_unavailable"
+
+
 def test_unconvertible_orrery_arguments_report_failure():
     client, transport = running_client()
     assert client.orrery_inventory(UnresolvablePath(), {"graph.json": "graph"}) is None
