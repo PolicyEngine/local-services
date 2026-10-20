@@ -217,9 +217,15 @@ class ReleaseReceipt(TypedDict):
     ``PRESERVED_FILES_MISSING``). A refusal's ``error_code`` names the broken
     rule, for example ``BUILD_FOLDER_EXISTS`` or ``POINTER_FILES_PRESENT``;
     ``REQUEST_EXPIRED`` when the change was still pending an hour after it was
-    handed over; ``NEWER_CHANGE_LANDED`` when a change to ``current`` or a
-    withdrawal requested after it landed first. Request such a change again
-    if it is still wanted.
+    handed over; ``NEWER_CHANGE_LANDED`` when a promotion or withdrawal was
+    overtaken: a change to ``current`` or a withdrawal of the same release,
+    requested after it, landed first. Request such a change again, as a new
+    request, if it is still wanted. A publication that makes its build
+    current is never refused for being overtaken: it is ``published`` with
+    its build listed, ``current`` left as the newer change set it, and a
+    ``message`` that says so. Another machine's newer change that left
+    ``releases.json`` unchanged is not seen; only the hour's expiry bounds
+    how late an older change to that release can land after it.
     """
 
     handover_id: str

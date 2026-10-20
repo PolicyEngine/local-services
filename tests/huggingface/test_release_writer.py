@@ -126,9 +126,10 @@ def test_a_published_build_can_become_current_in_the_same_commit(hub, tmp_path):
     assert apply(hub, request).status == "published"
     assert record_of(hub).releases[NATIONAL].current == FIRST_BUILD
     (commit,) = hub.commits(PRIVATE_REPOSITORY)
-    title, newest_request = commit.message.split(" [newest request ")
+    title, newest_requests = commit.message.split(" [newest requests: ")
     assert title.endswith("and make it current")
-    assert newest_request.endswith("+00:00]")
+    assert newest_requests.startswith(f"{NATIONAL}=")
+    assert newest_requests.endswith("+00:00]")
 
 
 def test_publication_refuses_a_build_whose_folder_exists(hub, tmp_path):
@@ -963,7 +964,7 @@ def test_the_record_orders_changes_by_request_time_not_landing_order(hub, tmp_pa
     )
     assert record_of(hub).releases[NATIONAL].current == SECOND_BUILD
     assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
-        "[newest request 1970-01-01T00:06:40.000000+00:00]"
+        f"[newest requests: {NATIONAL}=1970-01-01T00:06:40.000000+00:00]"
     )
 
 
@@ -977,7 +978,7 @@ def test_a_plain_publication_carries_the_newest_request_time_forward(hub, tmp_pa
     third, _ = publish_request(tmp_path, THIRD_BUILD)
     assert apply_requested_at(hub, third, 50.0).status == "published"
     assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
-        "[newest request 1970-01-01T00:05:00.000000+00:00]"
+        f"[newest requests: {NATIONAL}=1970-01-01T00:05:00.000000+00:00]"
     )
     older = apply_requested_at(hub, promotion(SECOND_BUILD), 200.0)
     assert (older.status, older.error_code) == ("refused", "NEWER_CHANGE_LANDED")
@@ -1114,3 +1115,65 @@ def test_a_stale_promotion_is_refused_after_a_later_commit_to_another_release(
 
     assert (stale.status, stale.error_code) == ("refused", "NEWER_CHANGE_LANDED")
     assert record_of(hub).releases[NATIONAL].current == FIRST_BUILD
+
+
+def written_time(seconds: float) -> str:
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(seconds, UTC).isoformat(timespec="microseconds")
+
+
+def test_an_overtaken_publication_lists_its_build_without_making_it_current(
+    hub, tmp_path
+):
+    first, _ = publish_request(tmp_path, FIRST_BUILD)
+    assert apply_requested_at(hub, first, 100.0).status == "published"
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), 300.0).status == (
+        "published"
+    )
+    second, _ = publish_request(tmp_path, SECOND_BUILD, make_current=True)
+
+    outcome = apply_requested_at(hub, second, 200.0)
+
+    assert (outcome.status, outcome.error_code) == ("published", None)
+    assert outcome.message == (
+        f"Build {SECOND_BUILD} of {NATIONAL} was published but not made current: "
+        f"a change to {NATIONAL} requested after this one has already landed, "
+        f"and the current build is {FIRST_BUILD}."
+    )
+    record = record_of(hub)
+    assert set(record.releases[NATIONAL].builds) == {FIRST_BUILD, SECOND_BUILD}
+    assert record.releases[NATIONAL].current == FIRST_BUILD
+    assert hub.commits(PRIVATE_REPOSITORY)[-1].message == (
+        f"Publish build {SECOND_BUILD} of {NATIONAL} "
+        f"[newest requests: {NATIONAL}={written_time(300.0)}]"
+    )
+
+
+def test_commit_titles_keep_each_release_time_within_the_order_window(hub, tmp_path):
+    from microcosm_emitter.huggingface.service.releases import ORDER_WINDOW_SECONDS
+
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, 100.0).status == "published"
+    assert apply_requested_at(hub, dense_publication(tmp_path), 100.0).status == (
+        "published"
+    )
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), 200.0).status == (
+        "published"
+    )
+    assert apply_requested_at(hub, dense_promotion(), 300.0).status == "published"
+    assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
+        f"[newest requests: {DENSE}={written_time(300.0)}; "
+        f"{NATIONAL}={written_time(200.0)}]"
+    )
+
+    # Every change requested before the dense time has expired by now.
+    later = 300.0 + ORDER_WINDOW_SECONDS + 1
+    assert apply_requested_at(hub, promotion(SECOND_BUILD), later).status == (
+        "published"
+    )
+
+    assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
+        f"[newest requests: {NATIONAL}={written_time(later)}]"
+    )

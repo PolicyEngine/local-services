@@ -394,13 +394,14 @@ class HuggingFaceDelivery:
             change,
             published_at=iso_timestamp(self.clock()),
             requested_at=job.created_at,
-            newest_local_request=self._newest_ordered_change_landed(job.target),
+            newest_local_requests=self._newest_ordered_changes_landed(job.target),
         )
 
-    def _newest_ordered_change_landed(self, repository: str) -> float | None:
-        """When the newest ordered release change (see ``is_ordered``) this
-        machine landed on ``repository`` was handed over."""
-        handed_over = []
+    def _newest_ordered_changes_landed(self, repository: str) -> dict[str, float]:
+        """For each release, when the newest ordered change to it (see
+        ``is_ordered``) that this machine landed on ``repository`` was handed
+        over."""
+        newest_requests: dict[str, float] = {}
         for created_at, request in self.queue.requests_with_status(
             repository, kind=RELEASE_CHANGE, status="published"
         ):
@@ -409,8 +410,10 @@ class HuggingFaceDelivery:
             except RequestRefusedError:
                 continue
             if is_ordered(change):
-                handed_over.append(created_at)
-        return max(handed_over, default=None)
+                newest_requests[change.release] = max(
+                    newest_requests.get(change.release, created_at), created_at
+                )
+        return newest_requests
 
     def _credential_missing(
         self,
