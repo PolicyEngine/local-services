@@ -498,3 +498,31 @@ def test_a_release_change_without_a_request_id_is_refused(hugging_face_module):
     del message["request_id"]
     receipt = controls.module.query(message)["receipt"]
     assert (receipt["status"], receipt["error_code"]) == ("refused", "INVALID_REQUEST")
+
+
+def test_a_landed_publication_retried_after_another_promotion_is_published(
+    hub, tmp_path
+):
+    """The commit landed but raised; another build was promoted meanwhile."""
+    request, _ = publish_request(tmp_path, FIRST_BUILD, make_current=True)
+    hub.fail_after_next_commit(FakeHubHTTPError(503))
+    first = apply(hub, request)
+    assert (first.status, first.error_code) == ("pending", "UPLOAD_FAILED")
+    landed = hub.commits(PRIVATE_REPOSITORY)[-1]
+    other, _ = publish_request(tmp_path, SECOND_BUILD, make_current=True)
+    assert apply(hub, other).status == "published"
+    retried = apply(hub, request, published_at="2026-10-21T00:00:00+00:00")
+    assert (retried.status, retried.commit) == ("published", landed.oid)
+    assert record_of(hub).releases[NATIONAL].current == SECOND_BUILD
+    assert len(hub.commits(PRIVATE_REPOSITORY)) == 2
+
+
+def test_republishing_a_published_build_does_not_promote_it(hub, tmp_path):
+    """Promoting is ``promote_build``'s job; publication reports what landed."""
+    listed, _ = publish_request(tmp_path, FIRST_BUILD)
+    assert apply(hub, listed).status == "published"
+    again, _ = publish_request(tmp_path, FIRST_BUILD, make_current=True)
+    outcome = apply(hub, again)
+    assert outcome.status == "published"
+    assert record_of(hub).releases[NATIONAL].current is None
+    assert len(hub.commits(PRIVATE_REPOSITORY)) == 1

@@ -83,6 +83,7 @@ class FakeHuggingFaceApi:
         self.whoami_response = whoami
         self._failures: dict[str, list[BaseException]] = {}
         self._before_commit: list[Callable[[], None]] = []
+        self._after_commit_failures: list[BaseException] = []
         self._lock = threading.RLock()
         self._download_directory = Path(tempfile.mkdtemp(prefix="fake-hub-"))
         self._sequence = 0
@@ -101,6 +102,10 @@ class FakeHuggingFaceApi:
     def fail_next(self, method: str, error: BaseException, *, times: int = 1) -> None:
         """Raise ``error`` from the next ``times`` calls of ``method``."""
         self._failures.setdefault(method, []).extend([error] * times)
+
+    def fail_after_next_commit(self, error: BaseException) -> None:
+        """Let the next commit land, then raise ``error`` as if it had not."""
+        self._after_commit_failures.append(error)
 
     def run_before_next_commit(self, action: Callable[[], None]) -> None:
         """Run ``action`` (for example another writer's commit) first."""
@@ -227,6 +232,8 @@ class FakeHuggingFaceApi:
                 parent=head.oid,
                 added=added,
             )
+        if self._after_commit_failures:
+            raise self._after_commit_failures.pop(0)
         return SimpleNamespace(oid=oid, commit_url=f"https://fake/{oid}")
 
     def hf_hub_download(

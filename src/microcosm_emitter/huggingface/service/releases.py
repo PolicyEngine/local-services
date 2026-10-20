@@ -224,11 +224,13 @@ def _already_published(
     record: ReleasesRecord,
     head: str,
 ) -> ReleaseOutcome:
-    """A build folder that exists is refused, unless this request made it.
+    """A build folder that exists is refused, unless this build landed.
 
-    A retried publication whose earlier attempt landed (the receipt was lost)
-    finds its own build listed with byte-identical manifest: that is
-    published, not refused.
+    A retried publication whose earlier attempt landed (its commit raised, or
+    the receipt was lost) finds its build listed with a byte-identical
+    manifest: that is ``published``, not refused, even if another build has
+    been made current since. Publishing never promotes an already published
+    build; ``promote_build`` does that.
     """
     release, build = request["release"], request["build"]
     entry = record.releases.get(release)
@@ -241,8 +243,6 @@ def _already_published(
     exists_message = f"{build_folder(release, build)}/ already exists."
     if entry is None or build not in entry.builds:
         return _refused("BUILD_FOLDER_EXISTS", exists_message)
-    if request["make_current"] and entry.current != build:
-        return _refused("BUILD_FOLDER_EXISTS", exists_message)
     try:
         same = repository.download(manifest_path, revision=head) == (
             local_manifest.read_bytes()
@@ -252,4 +252,10 @@ def _already_published(
         return _pending("REPOSITORY_UNAVAILABLE")
     if not same:
         return _refused("BUILD_FOLDER_EXISTS", exists_message)
-    return ReleaseOutcome("published", commit=commit or head)
+    message = None
+    if request["make_current"] and entry.current != build:
+        message = (
+            f"Build {build} of {release} was already published; the current "
+            f"build is {entry.current}."
+        )
+    return ReleaseOutcome("published", message=message, commit=commit or head)
