@@ -355,3 +355,95 @@ def test_no_bundle_upload_starts_once_shutdown_begins(tmp_path):
     finally:
         first_upload_released.set()
         test_finished.set()
+
+
+# The 10-second spacing between commits to one repository, across threads.
+#
+# The host's thread (run files) and the bundle worker each build a list of due
+# repositories, then deliver them in turn. Another thread can commit to a
+# repository on that list meanwhile, so the spacing must be checked again
+# once the repository is leased. Each test makes the other thread's commit
+# from inside the first commit of the cycle, with the clock standing still.
+
+
+def hand_over_run_file(controls, repository: str, run_id: str) -> None:
+    local = controls.tmp_path / run_id / "progress.json"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(b'{"stage":"calibrating"}')
+    receipt = controls.module.query(
+        StageRunFiles(
+            repository=repository,
+            run_id=run_id,
+            files=(RunFile("progress.json", local),),
+            flush=True,
+        ).message()
+    )["receipt"]
+    assert receipt["status"] == "recorded", receipt
+
+
+def hand_over_bundle(controls, repository: str, run_id: str) -> None:
+    receipt = controls.module.query(
+        bundle_message(controls.tmp_path / f"bundle-{run_id}", repository, run_id)
+    )["receipt"]
+    assert receipt["status"] == "pending", receipt
+
+
+def bundle_cycle(controls) -> int:
+    from microcosm_emitter.huggingface.service.delivery import DATASET_BUNDLE
+
+    return controls.module.delivery.job_cycle(frozenset({DATASET_BUNDLE}))
+
+
+def test_a_bundle_waits_for_the_spacing_after_a_run_file_commit_during_its_cycle(
+    hugging_face_module,
+):
+    from microcosm_emitter.huggingface.service.queue import (
+        MIN_COMMIT_SPACING_SECONDS,
+    )
+
+    controls = hugging_face_module
+    hand_over_bundle(controls, PRIVATE_REPOSITORY, "uk-run-1")
+    hand_over_bundle(controls, STAGING_REPOSITORY, "uk-run-2")
+    hand_over_run_file(controls, STAGING_REPOSITORY, "staging-run-1")
+    # While the bundle cycle uploads to the private repository, the host's
+    # thread commits the staging repository's run files.
+    controls.hub.run_before_next_commit(controls.module.delivery.run_file_cycle)
+
+    bundle_cycle(controls)
+
+    staging_commits = controls.hub.commits(STAGING_REPOSITORY)
+    assert [list(commit.added) for commit in staging_commits] == [
+        ["runs/staging-run-1/progress.json"]
+    ], "the staging bundle was committed less than 10 seconds after its run files"
+    assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
+    controls.clock.advance(MIN_COMMIT_SPACING_SECONDS)
+    bundle_cycle(controls)
+    assert len(controls.hub.commits(STAGING_REPOSITORY)) == 2
+
+
+def test_run_files_wait_for_the_spacing_after_a_bundle_commit_during_their_cycle(
+    hugging_face_module,
+):
+    from microcosm_emitter.huggingface.service.queue import (
+        MIN_COMMIT_SPACING_SECONDS,
+    )
+
+    controls = hugging_face_module
+    hand_over_run_file(controls, PRIVATE_REPOSITORY, "private-run-1")
+    hand_over_run_file(controls, STAGING_REPOSITORY, "staging-run-1")
+    hand_over_bundle(controls, STAGING_REPOSITORY, "uk-run-2")
+    # While the run-file cycle commits to the private repository, the bundle
+    # worker commits the staging repository's bundle.
+    controls.hub.run_before_next_commit(lambda: bundle_cycle(controls))
+
+    controls.module.delivery.run_file_cycle()
+
+    staging_commits = controls.hub.commits(STAGING_REPOSITORY)
+    assert [commit.message for commit in staging_commits] == [
+        "Stage uk-run-2 under staged/uk-run-2"
+    ], "the staging run files were committed less than 10 seconds after the bundle"
+    controls.clock.advance(MIN_COMMIT_SPACING_SECONDS)
+    controls.module.delivery.run_file_cycle()
+    assert "runs/staging-run-1/progress.json" in (
+        controls.hub.commits(STAGING_REPOSITORY)[-1].added
+    )
