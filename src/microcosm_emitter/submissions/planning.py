@@ -19,6 +19,8 @@ from microcosm_emitter_interface.submissions import (
 )
 
 SUBMISSION_CONTRACT_VERSION: Final = 1
+#: The longest ``provenance.huggingface.folder`` the collector accepts.
+MAX_FOLDER_CHARACTERS: Final = 512
 CALIBRATION_DIAGNOSTICS_KIND: Final = "calibration-diagnostics"
 ORRERY_INPUTS_KIND: Final = "orrery-inputs"
 
@@ -76,6 +78,11 @@ def _kinds_named(request: Mapping[str, Any]) -> list[SubmissionKind]:
     return [kind for kind in SUBMISSION_KINDS if kind.required_roles <= roles]
 
 
+def bundle_folder(request: Mapping[str, Any]) -> str:
+    """The bundle's Hugging Face folder, ``<prefix>/<run_id>``."""
+    return f"{request['prefix']}/{request['run_id']}"
+
+
 def wants_collector_submission(request: Mapping[str, Any]) -> bool:
     """Whether a bundle describes its build and names files the collector takes."""
 
@@ -105,7 +112,7 @@ def planned_submissions(
         "huggingface": {
             "repo": request["repository"],
             "commit": revision,
-            "folder": f"{request['prefix']}/{run_id}",
+            "folder": bundle_folder(request),
         },
     }
     planned = []

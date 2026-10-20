@@ -25,7 +25,14 @@ ORRERY_CONTENTS = {
 }
 
 
-def bundle(controls, *, collector=PROVENANCE, contents=CONTENTS, run_id="uk-run-1"):
+def bundle(
+    controls,
+    *,
+    collector=PROVENANCE,
+    contents=CONTENTS,
+    run_id="uk-run-1",
+    prefix="staged",
+):
     directory = controls.tmp_path / run_id
     directory.mkdir(exist_ok=True)
     files = []
@@ -41,7 +48,11 @@ def bundle(controls, *, collector=PROVENANCE, contents=CONTENTS, run_id="uk-run-
             )
         )
     return StageDatasetBundle(
-        repository=PRIVATE_REPOSITORY, run_id=run_id, files=files, collector=collector
+        repository=PRIVATE_REPOSITORY,
+        run_id=run_id,
+        files=files,
+        collector=collector,
+        prefix=prefix,
     )
 
 
@@ -257,3 +268,25 @@ def test_files_microcosm_rewrites_after_staging_are_submitted_as_handed_over(
         b'{"outputs": {}}',
         b'{"schema": 8}',
     ]
+
+
+def test_a_folder_longer_than_the_collector_accepts_is_not_submitted(
+    submitting_module,
+):
+    """The contract allows a folder of at most 512 characters; a longer one
+    would be refused with a final 422."""
+    controls = submitting_module
+    long_prefix = "/".join(["p" * 128] * 3)
+    request = bundle(controls, run_id="r" * 128, prefix=long_prefix)
+    assert len(request.remote_prefix) > 512
+    stage(controls, request)
+
+    cycle(controls)
+
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == (
+        "skipped",
+        "COLLECTOR_FOLDER_TOO_LONG",
+    )
+    assert controls.collector.created == []
+    assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1

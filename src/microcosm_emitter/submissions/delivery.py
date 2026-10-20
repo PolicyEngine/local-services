@@ -18,7 +18,11 @@ from typing import Any, Final
 
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 from microcosm_emitter.submissions.client import CollectorSubmissionClient
-from microcosm_emitter.submissions.planning import planned_submissions
+from microcosm_emitter.submissions.planning import (
+    MAX_FOLDER_CHARACTERS,
+    bundle_folder,
+    planned_submissions,
+)
 
 COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT: Final = False
 DESTINATION_COLLECTOR: Final = "collector"
@@ -30,6 +34,7 @@ STAGED_STATUSES: Final = frozenset({"uploaded", "already_staged"})
 NOT_STAGED_STATUSES: Final = frozenset({"failed", "refused"})
 WAITING_FOR_HUGGING_FACE: Final = "WAITING_FOR_HUGGING_FACE"
 NOT_STAGED_ON_HUGGING_FACE: Final = "NOT_STAGED_ON_HUGGING_FACE"
+COLLECTOR_FOLDER_TOO_LONG: Final = "COLLECTOR_FOLDER_TOO_LONG"
 
 
 class CollectorSubmissionDelivery:
@@ -129,6 +134,10 @@ class CollectorSubmissionDelivery:
         )
 
     def _attempt(self, job: ClaimedJob) -> None:
+        if len(bundle_folder(job.request)) > MAX_FOLDER_CHARACTERS:
+            # The collector refuses such a folder with a final 422.
+            self._finish(job, "skipped", COLLECTOR_FOLDER_TOO_LONG, [], retry=False)
+            return
         previous = self.receipt(job.handover_id) or {}
         earlier = {entry["kind"]: entry for entry in previous.get("submissions", [])}
         staged = self.queue.job_receipt(job.handover_id)
