@@ -60,9 +60,11 @@ class StageRunFiles:
     - ``run_index_entry`` is version 1's summary of this run; the emitter
       merges it into the repository's ``runs.json`` when it commits.
     - An unforced hand-over is committed one ``commit_interval_seconds`` after
-      the repository's last commit; ``flush`` asks for the next cycle (final
-      states and artifacts). Either way a cycle makes one commit per
-      repository, carrying the newest bytes of every pending path.
+      this machine's last commit to the repository; ``flush`` asks for the
+      next cycle (final states and artifacts). Either way a cycle makes one
+      commit per repository, carrying the newest bytes of every pending path,
+      and two commits from this machine to one repository are at least 10
+      seconds apart.
     """
 
     repository: str

@@ -42,7 +42,9 @@ from microcosm_emitter.core.models import (
 )
 
 #: The shortest time between two commits to one repository from this machine,
-#: even for hand-overs that ask to be committed at the next cycle.
+#: of run files or jobs, even for hand-overs that ask to be committed at the
+#: next cycle. Only the drain at shutdown ignores it; other machines' commits
+#: are not counted.
 MIN_COMMIT_SPACING_SECONDS = 10.0
 MAX_RETRY_SECONDS = 300.0
 DESTINATION_HUGGING_FACE = "huggingface"
@@ -92,7 +94,14 @@ class ClaimedJob:
 
 
 class HandoverQueue:
-    """Hand-over records, retained until delivered or settled."""
+    """Hand-over records in the spool database.
+
+    Rows are kept after delivery; nothing deletes them yet. Settled jobs keep
+    their receipts, committed run files keep their path and committed digest
+    (their bytes are cleared), and run deliveries and repository schedules
+    keep their counts and times. Only the bytes copied for a hand-over
+    (``handover_files``) are deleted, once every destination has settled.
+    """
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
