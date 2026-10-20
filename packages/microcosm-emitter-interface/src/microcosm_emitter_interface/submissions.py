@@ -31,9 +31,11 @@ class CollectorProvenance:
 
     ``build_id`` is the attempt ID Microcosm assigns, the same from staging
     through release. ``licensed_data`` says whether the build used licensed
-    microdata; the collector keeps everything derived from such a build
-    private until output clearance. ``release`` is ``None`` for a staged
-    build that is not a release.
+    microdata. The collector keeps the Orrery outputs of such a build private
+    until output clearance; calibration data may be public whether or not
+    the build used licensed data (decision D10); and native evidence is never
+    published. ``release`` is ``None`` for a staged build that is not a
+    release.
     """
 
     country_code: str
