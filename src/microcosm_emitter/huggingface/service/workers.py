@@ -13,9 +13,12 @@ the commit at shutdown, or a read-back. Two writers never commit to one
 repository at once: each delivery first leases its repository in the
 hand-over database, and one that finds it leased tries again next cycle.
 
-Once shutdown begins (``stop``), a worker starts no new upload: its cycle
-receives ``stop_requested`` and checks it before each repository, so only
-an upload already under way when ``stop`` was called can still be running.
+Once shutdown begins (``stop``), a worker starts no further upload: its
+cycle receives ``stop_requested`` and checks it before each repository, once
+that repository is leased, and once a job is claimed, immediately before the
+upload begins; a job claimed after ``stop`` is given back unattempted. So
+only an upload that passed that last check before ``stop`` was called can
+still be running.
 """
 
 from __future__ import annotations

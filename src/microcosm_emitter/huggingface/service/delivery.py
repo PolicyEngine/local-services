@@ -167,8 +167,10 @@ class HuggingFaceDelivery:
     ) -> int:
         """Deliver one due job of ``kinds`` per repository; return how many.
 
-        Once ``stop_requested`` turns true (shutdown has begun), the cycle
-        starts no new upload and returns.
+        ``stop_requested`` is checked before each repository, once its lease
+        is taken, and once its job is claimed, immediately before the upload
+        begins. Once it is true (shutdown has begun), the cycle starts no
+        upload and returns; an upload that began before that continues.
         """
         return self._cycle(
             job_kinds=kinds & SUPPORTED_JOB_KINDS,
@@ -230,8 +232,9 @@ class HuggingFaceDelivery:
         """One commit to ``repository``: a job of ``job_kinds``, else run files.
 
         ``at_shutdown`` commits pending run files whether or not they are due.
-        ``stop_requested`` is checked again once the repository is leased, so
-        a shutdown that began while the lease was being taken starts no upload.
+        ``stop_requested`` is checked again once the repository is leased, and
+        once more after a job is claimed, immediately before its upload
+        begins; a job claimed after shutdown began is released unattempted.
         """
         lease = self.queue.claim_repository(
             repository, now=self.clock(), lease_seconds=REPOSITORY_LEASE_SECONDS
@@ -260,6 +263,11 @@ class HuggingFaceDelivery:
             hub = DatasetRepository(repository, api)
             job = self._claim_job(repository, job_kinds) if job_kinds else None
             if job is not None:
+                if stop_requested():
+                    # Shutdown began while the job was being claimed: give it
+                    # back untouched instead of starting its upload.
+                    self.queue.release_job(job)
+                    return 0
                 held.hold_job(job)
                 return int(self._deliver_job(hub, held))
             if not self._run_files_to_commit(repository, run_files, at_shutdown):

@@ -712,6 +712,23 @@ class HandoverQueue:
                 is not None
             )
 
+    def release_job(self, job: ClaimedJob) -> None:
+        """Give back ``job``'s lease without recording an attempt.
+
+        The job stays pending and due, so any emitter may claim it at once.
+        """
+        with self._sessions.begin() as session:
+            session.execute(
+                update(HandoverJob)
+                .where(
+                    HandoverJob.handover_id == job.handover_id,
+                    HandoverJob.destination == job.destination,
+                    HandoverJob.status == JOB_PENDING,
+                    HandoverJob.lease_until == job.lease_until,
+                )
+                .values(lease_until=0.0)
+            )
+
     def finish_job(
         self,
         job: ClaimedJob,
