@@ -464,6 +464,49 @@ def test_the_shutdown_commit_runs_during_a_held_collector_upload(
         shutil.rmtree(runtime_directory, ignore_errors=True)
 
 
+def test_a_held_collector_upload_leaves_the_second_shutdown_commit_its_time(
+    module_factory, collector
+):
+    """The #27 fix review's case. At shutdown a bundle upload holds the
+    staging repository, so the first shutdown commit skips its run files;
+    that upload finishes in time, while a collector upload is still held
+    past the deadline. The second shutdown commit must still send them."""
+    from dataclasses import replace
+
+    controls = module_factory.start(
+        background_workers=True,
+        clock=time.time,
+        collector_submissions=True,
+        development_collector_url=collector.origin,
+    )
+    try:
+        described_bundle_with_a_held_upload(controls)
+        bundle_upload_entered = threading.Event()
+
+        def hold_the_bundle_upload_briefly():
+            bundle_upload_entered.set()
+            time.sleep(0.5)
+
+        controls.hub.run_before_next_commit(hold_the_bundle_upload_briefly)
+        undescribed = replace(
+            bundle(controls, collector=None, run_id="uk-run-2"),
+            repository=STAGING_REPOSITORY,
+        )
+        assert stage(controls, undescribed)["status"] == "pending"
+        assert bundle_upload_entered.wait(10), "the bundle upload never started"
+        # No host tick runs here: only a shutdown commit can deliver it.
+        stage_progress(controls, flush=False)
+
+        controls.module.close(time.monotonic() + 3)
+
+        assert staging_holds(controls, "runs/staging-run-1/progress.json"), (
+            "the staging run files missed the second shutdown commit"
+        )
+    finally:
+        collector.release_uploads()
+        controls.module.close(0)
+
+
 def test_uploads_have_a_finite_write_timeout():
     from microcosm_emitter.submissions.client import UPLOAD_TIMEOUT
 
