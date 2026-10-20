@@ -142,6 +142,7 @@ class HuggingFaceDelivery:
                 "attempts": job.attempts + 1,
                 "repository": job.target,
                 "prefix": f"{job.request['prefix']}/{job.request['run_id']}",
+                "copied_files": sorted(job.files),
             },
             retry=retry,
             now=self.clock(),
@@ -149,7 +150,7 @@ class HuggingFaceDelivery:
         )
 
     def _deliver_job(self, hub: DatasetRepository, job: ClaimedJob) -> bool:
-        outcome = stage_bundle(hub, job.request)
+        outcome = stage_bundle(hub, job.request, job.files)
         if outcome.retry and outcome.error_code is not None:
             self.warn_once(
                 outcome.error_code,

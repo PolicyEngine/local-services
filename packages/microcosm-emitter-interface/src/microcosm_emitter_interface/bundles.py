@@ -8,6 +8,15 @@ digests: a repository copy of the bundle inventory (role ``staged_manifest``)
 whose ``files`` equal the outputs' digests is ``already_staged``, and a
 different one is refused as ``REMOTE_DIFFERS``.
 
+Before answering, the emitter copies the bundle's small files into its queue,
+smallest first, each of at most 32 MiB and together at most 64 MiB, after
+checking that each holds exactly its declared size and SHA-256
+(``FILE_SIZE_DIFFERS`` or ``FILE_DIGEST_DIFFERS`` otherwise). The receipt's
+``copied_files`` names them. Once the call has returned, the build may
+rewrite a copied file: the emitter uploads the bytes it copied. Every other
+file is uploaded from its path, re-hashed first, and must stay unchanged
+until the hand-over settles (``PRESERVED_BYTES_CHANGED`` otherwise).
+
 Constructing a request that breaks the rules raises ``ValueError``.
 """
 
@@ -19,7 +28,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict
+from typing import Any, Final, Literal, NotRequired, TypedDict
 
 from microcosm_emitter_interface.identifiers import (
     bare_file_name,
@@ -177,6 +186,8 @@ class DatasetBundleReceipt(TypedDict):
     attempts: int
     repository: str
     prefix: str
+    #: The files the emitter copied at hand-over; the build may rewrite them.
+    copied_files: NotRequired[list[str]]
 
 
 class WriteAccess(TypedDict):
@@ -211,6 +222,7 @@ def unavailable_bundle_receipt(request: StageDatasetBundle) -> DatasetBundleRece
         "attempts": 0,
         "repository": request.repository,
         "prefix": request.remote_prefix,
+        "copied_files": [],
     }
 
 

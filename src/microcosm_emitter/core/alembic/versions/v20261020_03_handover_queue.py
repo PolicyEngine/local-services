@@ -59,9 +59,17 @@ def upgrade() -> None:
         sa.Column("receipt", sa.Text(), nullable=False),
         sa.Column("created_at", sa.Float(), nullable=False),
     )
+    op.create_table(
+        "handover_files",
+        sa.Column("handover_id", sa.Text(), primary_key=True),
+        sa.Column("name", sa.Text(), primary_key=True),
+        sa.Column("content", sa.LargeBinary(), nullable=False),
+        sa.Column("content_sha256", sa.Text(), nullable=False),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("handover_files")
     op.drop_table("handover_jobs")
     op.drop_table("repository_commit_schedules")
     op.drop_table("staged_run_deliveries")

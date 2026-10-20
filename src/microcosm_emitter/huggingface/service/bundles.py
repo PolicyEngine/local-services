@@ -78,11 +78,21 @@ def _local_files_outcome(files: list[Mapping[str, Any]]) -> BundleOutcome | None
 
 
 def stage_bundle(
-    repository: DatasetRepository, request: Mapping[str, Any]
+    repository: DatasetRepository,
+    request: Mapping[str, Any],
+    copied: Mapping[str, bytes] | None = None,
 ) -> BundleOutcome:
-    """Write the bundle once, or report why not; never raises for the Hub."""
+    """Write the bundle once, or report why not; never raises for the Hub.
+
+    ``copied`` holds the bytes of the files copied at hand-over; they are
+    uploaded as they were then. Every other file is re-hashed from its path
+    first and never uploaded if its bytes changed.
+    """
+    copied = {} if copied is None else dict(copied)
     files = list(request["files"])
-    local = _local_files_outcome(files)
+    local = _local_files_outcome(
+        [entry for entry in files if entry["name"] not in copied]
+    )
     if local is not None:
         return local
     remote_prefix = f"{request['prefix']}/{request['run_id']}"
@@ -121,7 +131,8 @@ def stage_bundle(
             revision = repository.commit(
                 [
                     add_operation(
-                        f"{remote_prefix}/{entry['name']}", Path(entry["local_path"])
+                        f"{remote_prefix}/{entry['name']}",
+                        copied.get(entry["name"], Path(entry["local_path"])),
                     )
                     for entry in files
                 ],

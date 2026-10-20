@@ -6,9 +6,10 @@ is queued, and no exception text is returned.
 
 from __future__ import annotations
 
+import hashlib
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,11 @@ MAX_RUN_FILE_BYTES = 32 * 1024 * 1024
 MAX_HAND_OVER_BYTES = 64 * 1024 * 1024
 #: Staging contract version 1's pointer to the latest run, at the root.
 LATEST_STAGING_POINTER_PATH = "latest_staging.json"
+#: Bundle files are copied into the queue when they are handed over, smallest
+#: first, each of at most ``MAX_COPIED_FILE_BYTES`` and together at most
+#: ``MAX_COPIED_BYTES``; larger files are uploaded from their paths.
+MAX_COPIED_FILE_BYTES = 32 * 1024 * 1024
+MAX_COPIED_BYTES = 64 * 1024 * 1024
 
 
 class RequestRefusedError(ValueError):
@@ -154,13 +160,40 @@ class BundleHandOver:
     repository: str
     remote_prefix: str
     request: dict[str, Any]
+    #: The bytes of the files copied at hand-over, by name.
+    copied: dict[str, bytes] = field(default_factory=dict)
+
+
+def copy_small_files(files: Sequence[BundleFile]) -> dict[str, bytes]:
+    """Read the smallest files within the copy limits; check each digest.
+
+    A copied file must hold exactly its declared bytes now, since the build
+    may rewrite it as soon as the hand-over is answered.
+    """
+    copied: dict[str, bytes] = {}
+    total = 0
+    for item in sorted(files, key=lambda item: (item.bytes, item.name)):
+        if item.bytes > MAX_COPIED_FILE_BYTES or total + item.bytes > MAX_COPIED_BYTES:
+            break  # Every later file is at least as large.
+        try:
+            content = Path(item.local_path).read_bytes()
+        except OSError:
+            raise RequestRefusedError("LOCAL_FILE_MISSING") from None
+        if len(content) != item.bytes:
+            raise RequestRefusedError("FILE_SIZE_DIFFERS")
+        if hashlib.sha256(content).hexdigest() != item.sha256:
+            raise RequestRefusedError("FILE_DIGEST_DIFFERS")
+        copied[item.name] = content
+        total += item.bytes
+    return copied
 
 
 def parse_stage_dataset_bundle(message: Mapping[str, Any]) -> BundleHandOver:
     """Check a bundle with the interface's rules and the files' sizes.
 
-    Hashing large files waits for the worker; here only existence and size
-    are checked, so the request answers quickly.
+    Small files are copied and their digests checked now (``copy_small_files``);
+    hashing the large ones waits for the worker, so the request answers
+    quickly.
     """
     require_supported_version(message)
     entries = message.get("files")
@@ -198,10 +231,12 @@ def parse_stage_dataset_bundle(message: Mapping[str, Any]) -> BundleHandOver:
                 raise RequestRefusedError("FILE_SIZE_DIFFERS")
         except OSError:
             raise RequestRefusedError("LOCAL_FILE_MISSING") from None
+    copied = copy_small_files(request.files)
     canonical = dict(message)
     return BundleHandOver(
         handover_id=handover_identifier("dataset_bundle", canonical),
         repository=request.repository,
         remote_prefix=request.remote_prefix,
         request={key: value for key, value in canonical.items()},
+        copied=copied,
     )

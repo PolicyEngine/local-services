@@ -215,3 +215,19 @@ class HandoverJob(SpoolModel):
     lease_until: Mapped[float] = mapped_column(Float, nullable=False)
     receipt: Mapped[dict[str, Any]] = mapped_column(JsonObjectText, nullable=False)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class HandoverFile(SpoolModel):
+    """The bytes of one small hand-over file, copied when it was handed over.
+
+    The build may rewrite such a file at once (Microcosm rewrites its build
+    manifest, checksum listing and build record right after staging), so the
+    delivery uploads these bytes instead of reading the file again. The rows
+    are deleted once every destination of the hand-over has settled.
+    """
+
+    __tablename__ = "handover_files"
+    handover_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(Text, nullable=False)

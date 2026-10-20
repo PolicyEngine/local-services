@@ -87,5 +87,6 @@ def test_multiple_producers_and_local_only_survive_reopening(tmp_path):
         "staged_run_deliveries",
         "repository_commit_schedules",
         "handover_jobs",
+        "handover_files",
     }
     spool.close()

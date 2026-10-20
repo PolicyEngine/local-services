@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from fake_hugging_face import (
@@ -11,6 +12,7 @@ from fake_hugging_face import (
 )
 
 from microcosm_emitter.host.contracts import ModuleContext
+from microcosm_emitter.huggingface.service import requests as request_module
 from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
 
@@ -18,8 +20,13 @@ DATASET = b"synthetic h5 bytes"
 DIAGNOSTICS = b'{"schema_version":8}'
 
 
-def bundle_files(directory, *, dataset=DATASET, manifest_note="first"):
-    """A bundle laid out as Microcosm's write_sidecars leaves it."""
+def bundle_files(
+    directory, *, dataset=DATASET, manifest_note="first", build_record=None
+):
+    """A bundle laid out as Microcosm's write_sidecars leaves it.
+
+    ``build_record`` adds the national build's record as an output.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     outputs = {
         "microcosm_uk_2024_25.h5": ("dataset", dataset),
@@ -28,6 +35,8 @@ def bundle_files(directory, *, dataset=DATASET, manifest_note="first"):
             DIAGNOSTICS,
         ),
     }
+    if build_record is not None:
+        outputs["build_record.json"] = ("build_record", build_record)
     digests = {
         name: {"sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}
         for name, (_, content) in outputs.items()
@@ -191,8 +200,14 @@ def test_a_commit_that_loses_a_race_is_retried_on_the_new_head(hugging_face_modu
     assert len(ours) == 1
 
 
+@pytest.fixture
+def nothing_copied(monkeypatch):
+    """Every file is too large to copy, so each is uploaded from its path."""
+    monkeypatch.setattr(request_module, "MAX_COPIED_FILE_BYTES", 8)
+
+
 def test_local_bytes_changed_after_the_hand_over_are_never_uploaded(
-    hugging_face_module,
+    hugging_face_module, nothing_copied
 ):
     controls = hugging_face_module
     request, _, _ = stage_bundle(controls)
@@ -207,7 +222,9 @@ def test_local_bytes_changed_after_the_hand_over_are_never_uploaded(
     )
 
 
-def test_missing_local_files_stay_queued_until_restored(hugging_face_module):
+def test_missing_local_files_stay_queued_until_restored(
+    hugging_face_module, nothing_copied
+):
     controls = hugging_face_module
     request, _, contents = stage_bundle(controls)
     dataset = next(item for item in request.files if item.role == "dataset")
@@ -222,6 +239,99 @@ def test_missing_local_files_stay_queued_until_restored(hugging_face_module):
     controls.clock.advance(2)
     cycle(controls)
     assert receipt_of(controls, request.handover_id())["status"] == "uploaded"
+
+
+LARGE_DATASET = bytes(range(256)) * 16  # 4,096 bytes: above the test copy limit
+
+
+def rewrite_atomically(path, content):
+    """Microcosm's ``replace_manifest``: a new file renamed over the old one."""
+    temporary = path.with_name(f".{path.name}.rewrite")
+    temporary.write_bytes(content)
+    temporary.replace(path)
+
+
+def test_files_microcosm_rewrites_after_staging_are_uploaded_as_handed_over(
+    hugging_face_module, monkeypatch
+):
+    """Microcosm's ``full_build_cli`` order (at ``41209b38c``).
+
+    ``stage_dataset`` hands the bundle over and returns; the close step then
+    rewrites the build manifest (``replace_manifest``), the checksum listing
+    (``refresh_sha256sums_entry``) and, in national builds, the build record,
+    all before the worker's next cycle. The dataset stays unchanged.
+    """
+    monkeypatch.setattr(request_module, "MAX_COPIED_FILE_BYTES", 1024)
+    controls = hugging_face_module
+    request, receipt, contents = stage_bundle(
+        controls, dataset=LARGE_DATASET, build_record=b'{"build":"record"}'
+    )
+    assert receipt["status"] == "pending"
+    assert receipt["copied_files"] == sorted(
+        name for name, content in contents.items() if len(content) <= 1024
+    )
+    assert "microcosm_uk_2024_25.h5" not in receipt["copied_files"]
+    directory = controls.tmp_path / "uk-run-1"
+    rewrite_atomically(
+        directory / "rowwise_candidate_manifest.json", b'{"staging_delivery":{}}'
+    )
+    rewrite_atomically(directory / "build_record.json", b'{"staging_delivery":{}}')
+    with (directory / "sha256sums.txt").open("ab") as listing:
+        listing.write(b"0" * 64 + b"  build_record.json\n")
+    cycle(controls)
+    (commit,) = private_commits(controls)
+    assert commit.added == {
+        f"staged/uk-run-1/{name}": content for name, content in contents.items()
+    }
+    settled = receipt_of(controls, request.handover_id())
+    assert (settled["status"], settled["error_code"]) == ("uploaded", None)
+    assert settled["copied_files"] == receipt["copied_files"]
+
+
+def test_copied_bytes_are_deleted_once_the_hand_over_settles(hugging_face_module):
+    controls = hugging_face_module
+    request, receipt, contents = stage_bundle(controls)
+    queue = controls.module.queue
+    assert queue.copied_files(request.handover_id()) == {
+        name: contents[name] for name in receipt["copied_files"]
+    }
+    cycle(controls)
+    assert receipt_of(controls, request.handover_id())["status"] == "uploaded"
+    assert queue.copied_files(request.handover_id()) == {}
+
+
+def test_files_are_copied_smallest_first_within_both_limits(
+    hugging_face_module, monkeypatch
+):
+    controls = hugging_face_module
+    files, contents = bundle_files(controls.tmp_path / "limits")
+    sizes = sorted((len(content), name) for name, content in contents.items())
+    # Room for the two smallest files only.
+    monkeypatch.setattr(request_module, "MAX_COPIED_BYTES", sizes[0][0] + sizes[1][0])
+    request = StageDatasetBundle(
+        repository=PRIVATE_REPOSITORY, run_id="uk-run-1", files=files
+    )
+    receipt = controls.module.query(request.message())["receipt"]
+    assert receipt["copied_files"] == sorted(name for _, name in sizes[:2])
+
+
+def test_a_copied_file_unlike_its_declared_digest_is_refused(hugging_face_module):
+    controls = hugging_face_module
+    files, _ = bundle_files(controls.tmp_path / "bundle")
+    message = StageDatasetBundle(
+        repository=PRIVATE_REPOSITORY, run_id="uk-run-1", files=files
+    ).message()
+    checksums = next(
+        entry for entry in message["files"] if entry["role"] == "checksums"
+    )
+    Path(checksums["local_path"]).write_bytes(b"X" * checksums["bytes"])
+    receipt = controls.module.query(message)["receipt"]
+    assert (receipt["status"], receipt["error_code"]) == (
+        "refused",
+        "FILE_DIGEST_DIFFERS",
+    )
+    cycle(controls)
+    assert private_commits(controls) == []
 
 
 def test_repeating_a_hand_over_queues_it_once(hugging_face_module):

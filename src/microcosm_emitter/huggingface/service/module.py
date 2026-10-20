@@ -121,6 +121,7 @@ class HuggingFaceModule:
                 "attempts": 0,
                 "repository": repository if isinstance(repository, str) else "",
                 "prefix": "",
+                "copied_files": [],
             }
         return self.queue.enqueue_job(
             handover_id=hand_over.handover_id,
@@ -135,8 +136,10 @@ class HuggingFaceModule:
                 "attempts": 0,
                 "repository": hand_over.repository,
                 "prefix": hand_over.remote_prefix,
+                "copied_files": sorted(hand_over.copied),
             },
             now=self.clock(),
+            files=hand_over.copied,
         )
 
     def _handover_receipt(self, message: JsonObject) -> dict[str, Any] | None:

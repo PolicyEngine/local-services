@@ -21,11 +21,11 @@ import hashlib
 import json
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from microcosm_emitter.core.database import (
@@ -34,6 +34,7 @@ from microcosm_emitter.core.database import (
 )
 from microcosm_emitter.core.migrations import upgrade_spool_database
 from microcosm_emitter.core.models import (
+    HandoverFile,
     HandoverJob,
     RepositoryCommitSchedule,
     StagedRunDelivery,
@@ -86,6 +87,8 @@ class ClaimedJob:
     request: dict[str, Any]
     attempts: int
     lease_until: float
+    #: The bytes of the files copied at hand-over, by name.
+    files: dict[str, bytes] = field(default_factory=dict)
 
 
 class HandoverQueue:
@@ -492,8 +495,13 @@ class HandoverQueue:
         receipt: Mapping[str, Any],
         now: float,
         destination: str = DESTINATION_HUGGING_FACE,
+        files: Mapping[str, bytes] | None = None,
     ) -> dict[str, Any]:
-        """Durably record a hand-over once; repeating it returns its receipt."""
+        """Durably record a hand-over once; repeating it returns its receipt.
+
+        ``files`` are the bytes copied at hand-over, stored with the job in
+        one transaction and kept until every destination has settled.
+        """
         with self._sessions.begin() as session:
             existing = session.get(HandoverJob, (handover_id, destination))
             if existing is not None:
@@ -521,7 +529,25 @@ class HandoverQueue:
                     created_at=now,
                 )
             )
+            for name, content in sorted((files or {}).items()):
+                if session.get(HandoverFile, (handover_id, name)) is None:
+                    session.add(
+                        HandoverFile(
+                            handover_id=handover_id,
+                            name=name,
+                            content=content,
+                            content_sha256=sha256_bytes(content),
+                        )
+                    )
             return dict(receipt)
+
+    def copied_files(self, handover_id: str) -> dict[str, bytes]:
+        """The bytes copied when ``handover_id`` was handed over, by name."""
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(HandoverFile).where(HandoverFile.handover_id == handover_id)
+            )
+            return {row.name: row.content for row in rows}
 
     def claim_job(
         self,
@@ -569,6 +595,11 @@ class HandoverQueue:
             if claimed is None:
                 return None
             session.refresh(candidate)
+            copied = session.scalars(
+                select(HandoverFile).where(
+                    HandoverFile.handover_id == candidate.handover_id
+                )
+            )
             return ClaimedJob(
                 handover_id=candidate.handover_id,
                 destination=destination,
@@ -577,6 +608,7 @@ class HandoverQueue:
                 request=dict(candidate.request),
                 attempts=candidate.attempts,
                 lease_until=lease,
+                files={row.name: row.content for row in copied},
             )
 
     def finish_job(
@@ -608,6 +640,21 @@ class HandoverQueue:
                 row.next_attempt_at = now + retry_delay(row.attempts)
             else:
                 row.status = str(receipt["status"])
+                still_pending = session.scalar(
+                    select(HandoverJob.destination)
+                    .where(
+                        HandoverJob.handover_id == job.handover_id,
+                        HandoverJob.status == JOB_PENDING,
+                    )
+                    .limit(1)
+                )
+                if still_pending is None:
+                    # Every destination has settled: the copies are not needed.
+                    session.execute(
+                        delete(HandoverFile).where(
+                            HandoverFile.handover_id == job.handover_id
+                        )
+                    )
             if committed:
                 self._schedule(session, job.target).last_commit_at = now
 
