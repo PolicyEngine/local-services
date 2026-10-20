@@ -168,6 +168,29 @@ def test_concurrent_publications_of_one_release_both_land(hub, tmp_path):
     assert len(hub.commits(PRIVATE_REPOSITORY)) == 2
 
 
+def test_a_change_that_loses_every_race_stays_pending_with_parent_conflict(
+    hub, tmp_path
+):
+    from microcosm_emitter.huggingface.service.hub import (
+        MAX_PARENT_CONFLICT_ATTEMPTS,
+    )
+
+    # Another writer's commit lands first on every attempt.
+    hub.fail_next(
+        "create_commit",
+        FakeHubHTTPError(412, "A commit has happened since."),
+        times=MAX_PARENT_CONFLICT_ATTEMPTS,
+    )
+    request, _ = publish_request(tmp_path, FIRST_BUILD)
+    outcome = apply(hub, request)
+    assert (outcome.status, outcome.error_code, outcome.retry) == (
+        "pending",
+        "PARENT_CONFLICT",
+        True,
+    )
+    assert "releases.json" not in hub.files(PRIVATE_REPOSITORY)
+
+
 def test_current_cannot_change_while_pointer_files_exist(hub, tmp_path):
     hub.write_directly(PRIVATE_REPOSITORY, {"latest-national.json": b"{}"})
     promoting, _ = publish_request(tmp_path, FIRST_BUILD, make_current=True)

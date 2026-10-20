@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -76,6 +76,7 @@ from microcosm_emitter_interface.releases import (
     RELEASES_RECORD_PATH,
     ReleaseRecordError,
     ReleasesRecord,
+    Violation,
     add_build,
     build_folder,
     check_change,
@@ -230,9 +231,9 @@ def _commit_message(change: ReleaseChange, newest_request: float | None) -> str:
     return f"{title} [newest request {_request_time_text(newest_request)}]"
 
 
-def _first_violation(error: ReleaseRecordError) -> ReleaseOutcome:
-    first = error.violations[0]
-    return _refused(first.code, "; ".join(item.message for item in error.violations))
+def _refused_for(violations: Sequence[Violation]) -> ReleaseOutcome:
+    """Refused with the first broken rule's code and every rule's message."""
+    return _refused(violations[0].code, "; ".join(item.message for item in violations))
 
 
 def apply_release_change(
@@ -273,7 +274,7 @@ def apply_release_change(
                 None if record_bytes is None else ReleasesRecord.parse(record_bytes)
             )
         except ReleaseRecordError as error:
-            return _first_violation(error)
+            return _refused_for(error.violations)
         except Exception:
             return _pending(REPOSITORY_UNAVAILABLE)
         record = before or ReleasesRecord.empty()
@@ -314,7 +315,7 @@ def apply_release_change(
             else:
                 after = withdraw_build(record, release=release, build=build)
         except ReleaseRecordError as error:
-            return _first_violation(error)
+            return _refused_for(error.violations)
         added_paths = [*new_files, RELEASES_RECORD_PATH]
 
         def read_file(path: str, revision: str = head) -> bytes:
@@ -338,9 +339,7 @@ def apply_release_change(
         except Exception:
             return _pending(REPOSITORY_UNAVAILABLE)
         if violations:
-            return _refused(
-                violations[0].code, "; ".join(item.message for item in violations)
-            )
+            return _refused_for(violations)
         if not new_files and record_bytes == after.serialize():
             # Nothing to write (the build is already current, for example):
             # the Hub would skip an empty commit and answer with its head.
