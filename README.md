@@ -60,7 +60,28 @@ The `huggingface` module takes over the uploads Microcosm made itself. Microcosm
 
 **Where hand-overs are stored.** The module keeps its queue in its own SQLite file, the hand-over database, with its own Alembic history (`core/handover_alembic`). `HuggingFaceSettings` names it: by default it sits next to the spool database (`events.sqlite3` → `events.handovers.sqlite3`), and `handover_database_path` chooses another file, never the spool database itself. The spool database stays at revision `20261008_02`, because every emitter on a machine shares it, including the released emitters (0.2.0 to 0.4.0) that Microcosm builds pin, and those refuse a revision they don't know. Each history also refuses the other's file.
 
-**Repair for a machine that ran an earlier, unreleased build of the hand-over queue.** Before the hand-over database existed, an unreleased build kept the hand-over tables in the spool database and moved it to revision `20261020_03`. No migration history contains that revision now, so on such a machine every emitter, this one and the released ones, refuses the spool database at startup (`Can't locate revision identified by '20261020_03'`), and builds run without telemetry or hand-overs. Nothing repairs this automatically. To repair it, stop every Microcosm build and emitter on the machine, then delete the spool database: `$XDG_CACHE_HOME/microcosm/telemetry/events.sqlite3`, or `~/.cache/microcosm/telemetry/events.sqlite3` when `XDG_CACHE_HOME` is unset (or the `spool_path` the build set), together with `events.sqlite3-journal` beside it if that file exists. Deleting the file loses everything queued in it and not yet delivered: telemetry events not yet sent to the collector, graph publication jobs not yet published, and the run files and dataset bundles that the earlier build handed over and had not committed. The next emitter creates a new spool database at `20261008_02`. To keep the queued telemetry events and graph publication jobs instead, reset the file's revision with `sqlite3 <spool file> "UPDATE alembic_version SET version_num = '20261008_02'"`: the earlier build added only the five hand-over tables, which every emitter then ignores, so their undelivered hand-overs are lost either way.
+**Repair for a machine that ran an earlier, unreleased build of the hand-over queue.** Before the hand-over database existed, an unreleased build kept four or five hand-over tables in the spool database (`staged_run_files`, `staged_run_deliveries`, `repository_commit_schedules`, `handover_jobs`, and in its later form `handover_files`) and moved the spool database to revision `20261020_03`. No migration history contains that revision now. So on such a machine an emitter started with the `telemetry` or `orrery` module, this one or a released one, refuses the spool database at startup (`Can't locate revision identified by '20261020_03'`), and the build runs without that emitter's telemetry or hand-overs. An emitter started with only the `huggingface` module never opens the spool database and is not affected. Nothing repairs this automatically. To repair it, first stop every Microcosm build and emitter on the machine. The spool database is `$XDG_CACHE_HOME/microcosm/telemetry/events.sqlite3`, or `~/.cache/microcosm/telemetry/events.sqlite3` when `XDG_CACHE_HOME` is unset (or the `spool_path` the build set). Then do one of these:
+
+- **Delete it,** together with `events.sqlite3-journal` beside it if that file exists. This loses everything queued in it and not yet delivered: telemetry events not yet sent to the collector, graph publication jobs not yet published, and the run files and dataset bundles that the earlier build handed over and had not committed. The next emitter creates a new spool database at `20261008_02`.
+- **Keep the queued telemetry events and graph publication jobs** by undoing what the earlier build's migration did, as its own downgrade would have: drop its tables and set the revision back to `20261008_02`.
+
+  ```sh
+  sqlite3 -bail <spool file> <<'SQL'
+  BEGIN;
+  -- Stop here, changing nothing, unless the file is at the earlier build's revision.
+  CREATE TEMP TABLE repair_guard (revision TEXT NOT NULL CHECK (revision = '20261020_03'));
+  INSERT INTO repair_guard VALUES ((SELECT version_num FROM alembic_version));
+  DROP TABLE IF EXISTS handover_files;
+  DROP TABLE IF EXISTS handover_jobs;
+  DROP TABLE IF EXISTS repository_commit_schedules;
+  DROP TABLE IF EXISTS staged_run_deliveries;
+  DROP TABLE IF EXISTS staged_run_files;
+  UPDATE alembic_version SET version_num = '20261008_02' WHERE version_num = '20261020_03';
+  COMMIT;
+  SQL
+  ```
+
+  Unless the file's revision is `20261020_03`, the guard row is refused, `-bail` stops `sqlite3` at that error, and the open transaction is rolled back. So the command changes nothing in a spool database at any other revision, nor in the hand-over database (`events.handovers.sqlite3`), whose tables have the same names. No spool revision uses these table names. The dropped tables hold only the earlier build's undelivered hand-overs, which are lost either way.
 
 **Staging run files** (Microcosm's `staging.py` and `staging_v2.py` uploads). A build hands over its current run files; the module copies their bytes into the hand-over database before answering, so the build may rewrite them at once.
 
