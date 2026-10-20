@@ -27,7 +27,7 @@ No call raises into the build: not because the emitter is missing, slow or refus
 
 ## Compatibility
 
-A running build keeps the emitter it started with, and the next build uses whichever emitter is installed then. So the two packages are versioned separately in practice, and the socket protocol carries its own version:
+Both packages are released together with one version number, and `microcosm-emitter==X` requires `microcosm-emitter-interface==X`. A build, though, may run with a different emitter from the interface it depends on: it keeps the emitter it started with, and the next build uses whichever emitter is installed then. So the socket protocol carries its own version:
 
 - `PROTOCOL_VERSION` names the shape of every message this package sends. The emitter lists the versions it accepts in its `hello` answer, and the client refuses an emitter that does not list its version (`unsupported_protocol_version`); the build continues without it.
 - **Every emitter release must accept every protocol version that interface releases still in use send.** Adding a module or a message kind keeps the version; changing the shape of an existing message needs a new version, which emitters then accept alongside the old one.
