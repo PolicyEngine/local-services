@@ -50,6 +50,18 @@ jobs:
           name: distributions
           path: dist/*
           if-no-files-found: error
+      # push.yaml publishes each distribution from its own artifact, the
+      # interface before the emitter that requires it.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: interface-distribution
+          path: dist/microcosm_emitter_interface-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: emitter-distribution
+          path: dist/microcosm_emitter-*
+          if-no-files-found: error
 
   collector:
     needs: build-packages

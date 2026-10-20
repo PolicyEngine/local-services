@@ -116,10 +116,87 @@ def test_only_publication_holds_oidc_and_only_versioning_holds_secrets():
     assert text.count("secrets.") == 2
 
 
+#: The artifacts the verification workflow uploads for each distribution, in
+#: the order PyPI must receive them: the emitter requires the interface of
+#: the same version, so the interface is uploaded first.
+PUBLISHED_ARTIFACTS = (
+    ("interface-distribution", "dist/microcosm_emitter_interface-*"),
+    ("emitter-distribution", "dist/microcosm_emitter-*"),
+)
+
+
+def uploaded_artifacts():
+    steps = workflow("ci.yml")["jobs"]["build-packages"]["steps"]
+    return {
+        step["with"]["name"]: step["with"]
+        for step in steps
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    }
+
+
+def test_verification_uploads_each_distribution_as_its_own_artifact():
+    artifacts = uploaded_artifacts()
+    # The collector job installs both wheels from the combined artifact.
+    assert artifacts["distributions"]["path"] == "dist/*"
+    for name, path in PUBLISHED_ARTIFACTS:
+        assert artifacts[name]["path"] == path
+        assert artifacts[name]["if-no-files-found"] == "error"
+
+
+def test_emitter_artifact_pattern_excludes_the_interface():
+    from fnmatch import fnmatch
+
+    emitter_pattern = dict(PUBLISHED_ARTIFACTS)["emitter-distribution"]
+    interface_pattern = dict(PUBLISHED_ARTIFACTS)["interface-distribution"]
+    emitter_files = [
+        "dist/microcosm_emitter-1.0.0-py3-none-any.whl",
+        "dist/microcosm_emitter-1.0.0.tar.gz",
+    ]
+    interface_files = [
+        "dist/microcosm_emitter_interface-1.0.0-py3-none-any.whl",
+        "dist/microcosm_emitter_interface-1.0.0.tar.gz",
+    ]
+    assert all(fnmatch(name, emitter_pattern) for name in emitter_files)
+    assert not any(fnmatch(name, emitter_pattern) for name in interface_files)
+    assert all(fnmatch(name, interface_pattern) for name in interface_files)
+    assert not any(fnmatch(name, interface_pattern) for name in emitter_files)
+
+
 def test_pypi_receives_only_verified_artifacts():
     publish = workflow("push.yaml")["jobs"]["publish"]
-    assert publish["steps"][0]["with"]["name"] == "distributions"
+    downloads = [
+        step["with"]["name"]
+        for step in publish["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    assert downloads == [name for name, _ in PUBLISHED_ARTIFACTS]
+    assert set(downloads) <= set(uploaded_artifacts())
     assert not any("run" in step for step in publish["steps"])
+
+
+def test_publication_uploads_the_interface_first_and_can_be_rerun():
+    """A failed or partial upload must leave a release that a rerun completes.
+
+    The interface goes first, so PyPI never offers an emitter whose required
+    interface is missing. Files already on PyPI are skipped, so rerunning the
+    job after a partial upload uploads only what is missing instead of
+    stopping on "File already exists".
+    """
+    steps = workflow("push.yaml")["jobs"]["publish"]["steps"]
+    sequence = []
+    for step in steps:
+        uses = step.get("uses", "")
+        if uses.startswith("actions/download-artifact@"):
+            sequence.append(("download", step["with"]["name"], step["with"]["path"]))
+        elif uses.startswith("pypa/gh-action-pypi-publish@"):
+            assert step["with"]["skip-existing"] == "true"
+            sequence.append(("upload", step["with"]["packages-dir"]))
+    assert sequence == [
+        ("download", "interface-distribution", "dist/interface"),
+        ("upload", "dist/interface/"),
+        ("download", "emitter-distribution", "dist/emitter"),
+        ("upload", "dist/emitter/"),
+    ]
 
 
 @pytest.mark.parametrize(
