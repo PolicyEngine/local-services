@@ -275,6 +275,7 @@ def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
                 build=message.get("build"),
                 release_role=message.get("release_role"),
                 make_current=message.get("make_current"),
+                request_id=message.get("request_id"),
                 files=tuple(
                     ReleaseFile(
                         name=entry.get("name"),
@@ -292,6 +293,7 @@ def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
                 repository=message.get("repository"),
                 release=message.get("release"),
                 build=message.get("build"),
+                request_id=message.get("request_id"),
             )
         else:
             raise RequestRefusedError("INVALID_REQUEST")

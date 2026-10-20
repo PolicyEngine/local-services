@@ -123,10 +123,16 @@ def test_publication_message_names_release_build_and_each_file_role(tmp_path):
         ("release_manifest.json", "release_manifest"),
         ("microcosm_uk_2024_25.h5", "dataset"),
     ]
+    # The hand-over identity follows the request, not only its content.
+    resent = publication(tmp_path, make_current=True, request_id=request.request_id)
+    assert request.handover_id() == resent.handover_id()
     assert (
-        request.handover_id() == publication(tmp_path, make_current=True).handover_id()
+        request.handover_id() != publication(tmp_path, make_current=True).handover_id()
     )
-    assert request.handover_id() != publication(tmp_path).handover_id()
+    assert (
+        request.handover_id()
+        != publication(tmp_path, request_id=request.request_id).handover_id()
+    )
 
 
 def test_client_publishes_promotes_and_withdraws_through_the_emitter(
@@ -175,3 +181,47 @@ def test_client_without_the_module_reports_unavailable(tmp_path, in_thread_emitt
         RELEASE,
         BUILD,
     )
+
+
+@pytest.mark.parametrize("change", [PromoteBuild, WithdrawBuild])
+def test_each_request_has_its_own_request_id_unless_one_is_given(change, tmp_path):
+    """A new request object is a new request; resending one is a retry."""
+    first = change(repository=PRIVATE_REPOSITORY, release=RELEASE, build=BUILD)
+    second = change(repository=PRIVATE_REPOSITORY, release=RELEASE, build=BUILD)
+    assert first.request_id != second.request_id
+    assert first.handover_id() != second.handover_id()
+    assert first.message()["request_id"] == first.request_id
+    given = change(
+        repository=PRIVATE_REPOSITORY,
+        release=RELEASE,
+        build=BUILD,
+        request_id="operator-request-1",
+    )
+    assert given.message()["request_id"] == "operator-request-1"
+    assert (
+        given.handover_id()
+        == change(
+            repository=PRIVATE_REPOSITORY,
+            release=RELEASE,
+            build=BUILD,
+            request_id="operator-request-1",
+        ).handover_id()
+    )
+
+
+def test_publications_carry_a_request_id(tmp_path):
+    first = publication(tmp_path / "first")
+    second = publication(tmp_path / "first")
+    assert first.request_id != second.request_id
+    assert first.message()["request_id"] == first.request_id
+
+
+@pytest.mark.parametrize("request_id", ["", "../escape", "two words", 7])
+def test_a_request_id_must_be_a_safe_identifier(request_id):
+    with pytest.raises(ValueError):
+        PromoteBuild(
+            repository=PRIVATE_REPOSITORY,
+            release=RELEASE,
+            build=BUILD,
+            request_id=request_id,
+        )

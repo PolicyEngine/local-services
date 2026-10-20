@@ -42,6 +42,7 @@ def fixture_publication(directory: Path) -> PublishRelease:
         build="fixture-build",
         release_role="national_default",
         make_current=True,
+        request_id="fixture-request",
         files=tuple(
             ReleaseFile(
                 name=entry["name"],
@@ -255,6 +256,7 @@ SENT_BY: dict[str, Callable[[EmitterClient, Path], Any]] = {
             repository=FIXTURE_PRIVATE_REPOSITORY,
             release="fixture-release",
             build="fixture-build",
+            request_id="fixture-request",
         ),
         wait_seconds=0,
     ),
@@ -263,6 +265,7 @@ SENT_BY: dict[str, Callable[[EmitterClient, Path], Any]] = {
             repository=FIXTURE_PRIVATE_REPOSITORY,
             release="fixture-release",
             build="fixture-build",
+            request_id="fixture-request",
         ),
         wait_seconds=0,
     ),

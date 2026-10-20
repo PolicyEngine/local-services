@@ -122,6 +122,24 @@ class FakeHuggingFaceApi:
                 repository, {**head.files, **files}, message, parent=head.oid
             )
 
+    def delete_directly(
+        self, repository: str, paths: Iterable[str], message: str = "Delete"
+    ) -> str:
+        """Another writer's commit that deletes ``paths``."""
+        with self._lock:
+            head = self.repositories[repository].head
+            removed = set(paths)
+            return self._append_commit(
+                repository,
+                {
+                    path: content
+                    for path, content in head.files.items()
+                    if path not in removed
+                },
+                message,
+                parent=head.oid,
+            )
+
     # HfApi surface -------------------------------------------------------
 
     def _record(self, method: str, **arguments: Any) -> None:

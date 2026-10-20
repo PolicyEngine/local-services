@@ -403,3 +403,98 @@ def test_the_module_writer_uses_the_injected_policy(tmp_path, hub):
     finally:
         module.close(0)
     assert (receipt["status"], receipt["error_code"]) == ("refused", "NOT_AUTHORIZED")
+
+
+def queue_change(controls, request):
+    receipt = controls.module.query(request.message())["receipt"]
+    controls.module.delivery.run_cycle()
+    controls.clock.advance(1)
+    return controls.module.query(
+        {
+            "protocol_version": 1,
+            "command": "handover_receipt",
+            "handover_id": receipt["handover_id"],
+        }
+    )["receipt"]
+
+
+def current_of(controls):
+    return ReleasesRecord.parse(
+        controls.hub.files(PRIVATE_REPOSITORY)["releases.json"]
+    ).releases[NATIONAL]
+
+
+def promotion(build, **options):
+    return PromoteBuild(
+        repository=PRIVATE_REPOSITORY, release=NATIONAL, build=build, **options
+    )
+
+
+def withdrawal(build, **options):
+    return WithdrawBuild(
+        repository=PRIVATE_REPOSITORY, release=NATIONAL, build=build, **options
+    )
+
+
+def publish_both(controls):
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(
+            controls.tmp_path, build, make_current=build == FIRST_BUILD
+        )
+        assert queue_change(controls, request)["status"] == "published"
+
+
+def test_promoting_back_to_an_earlier_build_applies(hugging_face_module):
+    controls = hugging_face_module
+    publish_both(controls)
+    # B, then A, then B again: the second promotion of B is a new request.
+    for build in (SECOND_BUILD, FIRST_BUILD, SECOND_BUILD):
+        assert queue_change(controls, promotion(build))["status"] == "published"
+        assert current_of(controls).current == build
+
+
+def test_a_withdrawal_retried_after_another_promotion_applies(hugging_face_module):
+    controls = hugging_face_module
+    publish_both(controls)
+    refused = queue_change(controls, withdrawal(FIRST_BUILD))
+    assert (refused["status"], refused["error_code"]) == (
+        "refused",
+        "WITHDRAWING_CURRENT_BUILD",
+    )
+    assert queue_change(controls, promotion(SECOND_BUILD))["status"] == "published"
+    assert queue_change(controls, withdrawal(FIRST_BUILD))["status"] == "published"
+    assert current_of(controls).builds[FIRST_BUILD].withdrawn is True
+
+
+def test_a_refused_change_applies_when_requested_again_after_its_cause_is_gone(
+    hugging_face_module,
+):
+    controls = hugging_face_module
+    publish_both(controls)
+    controls.hub.write_directly(PRIVATE_REPOSITORY, {"latest-national.json": b"{}"})
+    refused = queue_change(controls, promotion(SECOND_BUILD))
+    assert refused["error_code"] == "POINTER_FILES_PRESENT"
+    controls.hub.delete_directly(PRIVATE_REPOSITORY, ["latest-national.json"])
+    assert queue_change(controls, promotion(SECOND_BUILD))["status"] == "published"
+    assert current_of(controls).current == SECOND_BUILD
+
+
+def test_resending_the_same_request_is_a_retry_and_is_applied_once(
+    hugging_face_module,
+):
+    controls = hugging_face_module
+    publish_both(controls)
+    request = promotion(SECOND_BUILD)
+    first = queue_change(controls, request)
+    commits = len(controls.hub.commits(PRIVATE_REPOSITORY))
+    again = queue_change(controls, request)
+    assert again == first
+    assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == commits
+
+
+def test_a_release_change_without_a_request_id_is_refused(hugging_face_module):
+    controls = hugging_face_module
+    message = promotion(FIRST_BUILD).message()
+    del message["request_id"]
+    receipt = controls.module.query(message)["receipt"]
+    assert (receipt["status"], receipt["error_code"]) == ("refused", "INVALID_REQUEST")

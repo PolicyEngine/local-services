@@ -11,11 +11,19 @@ Publication is not best-effort: the receipt says whether the change was
 ``published``, is still ``pending`` (retried from the emitter's queue) or was
 ``refused`` by a rule. Constructing a request that breaks the shape rules
 raises ``ValueError``.
+
+Every request carries a ``request_id``, a new random one unless the caller
+gives one. The emitter applies each request once: sending the same request
+again (for example after its receipt was lost) returns that request's
+receipt, while a new request is applied even if it repeats an earlier change,
+such as promoting a build back after another was promoted, or retrying a
+withdrawal or a refused change once its cause is gone.
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,10 +72,18 @@ class ReleaseFile:
             raise ValueError("bytes must be a nonnegative integer.")
 
 
-def _check_reference(repository: str, release: str, build: str) -> None:
+def new_request_id() -> str:
+    """A fresh identifier for one release change request."""
+    return uuid.uuid4().hex
+
+
+def _check_reference(
+    repository: str, release: str, build: str, request_id: str
+) -> None:
     repository_identifier(repository)
     safe_identifier(release, label="release")
     safe_identifier(build, label="build")
+    safe_identifier(request_id, label="request_id")
 
 
 @dataclass(frozen=True)
@@ -86,10 +102,11 @@ class PublishRelease:
     release_role: str
     make_current: bool
     files: Sequence[ReleaseFile]
+    request_id: str = field(default_factory=new_request_id)
     protocol_version: int = field(default=PROTOCOL_VERSION, repr=False)
 
     def __post_init__(self) -> None:
-        _check_reference(self.repository, self.release, self.build)
+        _check_reference(self.repository, self.release, self.build, self.request_id)
         role_identifier(self.release_role, label="release_role")
         if not isinstance(self.make_current, bool):
             raise ValueError("make_current must be a boolean.")
@@ -112,6 +129,7 @@ class PublishRelease:
         return {
             "protocol_version": self.protocol_version,
             "command": "publish_release",
+            "request_id": self.request_id,
             "repository": self.repository,
             "release": self.release,
             "build": self.build,
@@ -140,15 +158,17 @@ class PromoteBuild:
     repository: str
     release: str
     build: str
+    request_id: str = field(default_factory=new_request_id)
     protocol_version: int = field(default=PROTOCOL_VERSION, repr=False)
 
     def __post_init__(self) -> None:
-        _check_reference(self.repository, self.release, self.build)
+        _check_reference(self.repository, self.release, self.build, self.request_id)
 
     def message(self) -> dict[str, Any]:
         return {
             "protocol_version": self.protocol_version,
             "command": "promote_build",
+            "request_id": self.request_id,
             "repository": self.repository,
             "release": self.release,
             "build": self.build,
@@ -165,15 +185,17 @@ class WithdrawBuild:
     repository: str
     release: str
     build: str
+    request_id: str = field(default_factory=new_request_id)
     protocol_version: int = field(default=PROTOCOL_VERSION, repr=False)
 
     def __post_init__(self) -> None:
-        _check_reference(self.repository, self.release, self.build)
+        _check_reference(self.repository, self.release, self.build, self.request_id)
 
     def message(self) -> dict[str, Any]:
         return {
             "protocol_version": self.protocol_version,
             "command": "withdraw_build",
+            "request_id": self.request_id,
             "repository": self.repository,
             "release": self.release,
             "build": self.build,
