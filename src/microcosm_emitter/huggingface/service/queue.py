@@ -191,37 +191,48 @@ class HandoverQueue:
             self._schedule(session, repository).last_commit_at = now
 
     def due_repositories(
-        self, now: float, *, kinds: Iterable[str] | None = None
+        self,
+        now: float,
+        *,
+        kinds: Iterable[str] | None = None,
+        run_files: bool = True,
     ) -> list[str]:
         """Repositories with work due now that may receive a commit now.
 
         ``kinds`` limits jobs to those this emitter can deliver, so a job
-        queued by a newer emitter sharing the database waits for it.
+        queued by a newer emitter sharing the database waits for it; an empty
+        ``kinds`` leaves jobs out. ``run_files`` false leaves out run files.
         """
+        job_kinds = None if kinds is None else list(kinds)
         with self._sessions() as session:
-            run_file_repositories = set(
-                session.scalars(
-                    select(StagedRunFile.repository).where(
-                        StagedRunFile.pending.is_(True), StagedRunFile.due_at <= now
+            run_file_repositories: set[str] = set()
+            if run_files:
+                run_file_repositories = set(
+                    session.scalars(
+                        select(StagedRunFile.repository).where(
+                            StagedRunFile.pending.is_(True),
+                            StagedRunFile.due_at <= now,
+                        )
+                    )
+                ) | set(
+                    session.scalars(
+                        select(StagedRunDelivery.repository).where(
+                            StagedRunDelivery.run_index_pending.is_(True),
+                            StagedRunDelivery.run_index_due_at <= now,
+                        )
                     )
                 )
-            ) | set(
-                session.scalars(
-                    select(StagedRunDelivery.repository).where(
-                        StagedRunDelivery.run_index_pending.is_(True),
-                        StagedRunDelivery.run_index_due_at <= now,
-                    )
+            job_repositories: set[str] = set()
+            if job_kinds != []:
+                job_query = select(HandoverJob.target).where(
+                    HandoverJob.destination == DESTINATION_HUGGING_FACE,
+                    HandoverJob.status == JOB_PENDING,
+                    HandoverJob.next_attempt_at <= now,
+                    HandoverJob.lease_until <= now,
                 )
-            )
-            job_query = select(HandoverJob.target).where(
-                HandoverJob.destination == DESTINATION_HUGGING_FACE,
-                HandoverJob.status == JOB_PENDING,
-                HandoverJob.next_attempt_at <= now,
-                HandoverJob.lease_until <= now,
-            )
-            if kinds is not None:
-                job_query = job_query.where(HandoverJob.kind.in_(list(kinds)))
-            job_repositories = set(session.scalars(job_query))
+                if job_kinds is not None:
+                    job_query = job_query.where(HandoverJob.kind.in_(job_kinds))
+                job_repositories = set(session.scalars(job_query))
             due = []
             for repository in sorted(run_file_repositories | job_repositories):
                 schedule = session.get(RepositoryCommitSchedule, repository)

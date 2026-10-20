@@ -45,6 +45,8 @@ def hugging_face_module(tmp_path, hub):
         ModuleContext(os.getpid()),
         api_factory=lambda: available_api["value"],
         clock=clock,
+        # Each test runs the delivery cycles itself, on its own thread.
+        background_workers=False,
     )
     module.initialize()
     controls = SimpleNamespace(

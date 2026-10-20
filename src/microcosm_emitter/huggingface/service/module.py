@@ -1,7 +1,12 @@
 """The Hugging Face hand-over module of the local emitter host.
 
 Requests are queries: the module checks and durably records a hand-over, then
-answers with its receipt. The module's worker makes the Hugging Face commits.
+answers with its receipt. Commits happen on worker threads:
+
+- staging run-file commits, and the commit at shutdown, on the host's worker
+  thread (``tick`` and ``close``);
+- dataset bundle uploads, which can take minutes, on the module's own
+  ``DeliveryWorker``, so they never delay those (see ``workers``).
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from microcosm_emitter.host.constants import TICK_SECONDS
 from microcosm_emitter.host.contracts import JsonObject, ModuleContext
 from microcosm_emitter.huggingface.service.delivery import (
     CREDENTIAL_MISSING,
@@ -29,6 +35,7 @@ from microcosm_emitter.huggingface.service.requests import (
     require_supported_version,
     run_reference,
 )
+from microcosm_emitter.huggingface.service.workers import DeliveryWorker
 from microcosm_emitter_interface.identifiers import repository_identifier
 
 #: A read-back of a run with no file this emitter committed: nothing to compare.
@@ -58,7 +65,12 @@ def _refused_run_files_receipt(message: Mapping[str, Any], code: str) -> dict[st
 
 
 class HuggingFaceModule:
-    """Queue hand-overs on request; commit them on the worker."""
+    """Queue hand-overs on request; commit them on worker threads.
+
+    ``background_workers`` false runs every delivery on the host's ``tick``
+    instead of starting the module's own workers; tests that drive the
+    module by hand use it.
+    """
 
     def __init__(
         self,
@@ -67,11 +79,16 @@ class HuggingFaceModule:
         *,
         api_factory: Callable[[], Any | None] = hugging_face_api,
         clock: Callable[[], float] = time.time,
+        background_workers: bool = True,
+        worker_interval_seconds: float = TICK_SECONDS,
     ) -> None:
         self.configuration, self.context = configuration, context
         self.api_factory, self.clock = api_factory, clock
+        self.background_workers = background_workers
+        self.worker_interval_seconds = worker_interval_seconds
         self.queue: HandoverQueue | None = None
         self.delivery: HuggingFaceDelivery | None = None
+        self.workers: dict[str, DeliveryWorker] = {}
         self._closed = False
 
     def initialize(self) -> None:
@@ -81,6 +98,27 @@ class HuggingFaceModule:
         self.delivery = HuggingFaceDelivery(
             self.queue, api_factory=self.api_factory, clock=self.clock
         )
+        if self.background_workers:
+            self.workers = self._delivery_workers(self.delivery)
+            for worker in self.workers.values():
+                worker.start()
+
+    def _delivery_workers(
+        self, delivery: HuggingFaceDelivery
+    ) -> dict[str, DeliveryWorker]:
+        """One worker per kind of upload that can take minutes."""
+        return {
+            DATASET_BUNDLE: DeliveryWorker(
+                "dataset-bundles",
+                lambda: delivery.job_cycle(frozenset({DATASET_BUNDLE})),
+                interval_seconds=self.worker_interval_seconds,
+                on_error=self._worker_error,
+            )
+        }
+
+    def _worker_error(self) -> None:
+        if self.delivery is not None:
+            self.delivery.warn_once("worker", WORKER_ERROR_MESSAGE)
 
     def handle_message(self, message: JsonObject) -> None:
         raise ValueError("Hugging Face hand-overs are queries with receipts.")
@@ -246,25 +284,49 @@ class HuggingFaceModule:
     def tick(self, now: float) -> None:
         assert self.delivery is not None, "The host initializes modules first."
         try:
-            self.delivery.run_cycle()
+            if self.workers:
+                # Uploads that can take minutes run on the module's workers.
+                self.delivery.run_file_cycle()
+            else:
+                self.delivery.run_cycle()
         except Exception:
             # The host stops a module whose tick raises; a local queue error
             # leaves the work queued and must not end every later delivery.
-            self.delivery.warn_once("worker", WORKER_ERROR_MESSAGE)
+            self._worker_error()
 
     def parent_exited(self) -> None:
         """Queued hand-overs stay eligible for the next emitter host."""
 
     def close(self, deadline: float) -> None:
+        """Commit pending run files once more, then stop by ``deadline``.
+
+        The commit at shutdown runs first, on the calling thread, for every
+        repository a worker is not uploading to at that moment. A worker's
+        upload in progress then has until ``deadline`` to finish, and its
+        repository's run files are committed after it if time remains. An
+        upload still running at ``deadline`` is abandoned when the process
+        exits; its job lease expires and the next emitter retries the job.
+        """
         if self._closed:
             return
         self._closed = True
+        for worker in self.workers.values():
+            worker.stop()
         try:
-            if self.delivery is not None and time.monotonic() < deadline:
-                self.delivery.drain(deadline)
+            self._drain(deadline)
+            workers_stopped = all(
+                [worker.wait(deadline) for worker in self.workers.values()]
+            )
+            if self.workers and workers_stopped:
+                self._drain(deadline)
         except Exception:
-            if self.delivery is not None:
-                self.delivery.warn_once("worker", WORKER_ERROR_MESSAGE)
+            self._worker_error()
+            workers_stopped = False
         finally:
-            if self.queue is not None:
+            # A worker still uploading needs the queue to record its result.
+            if self.queue is not None and (not self.workers or workers_stopped):
                 self.queue.close()
+
+    def _drain(self, deadline: float) -> None:
+        if self.delivery is not None and time.monotonic() < deadline:
+            self.delivery.drain(deadline)

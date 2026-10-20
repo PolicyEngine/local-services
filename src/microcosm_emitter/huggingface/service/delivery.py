@@ -1,9 +1,11 @@
-"""The delivery cycle: at most one Hugging Face commit per repository per cycle.
+"""Delivery cycles: at most one Hugging Face commit per repository per cycle.
 
-Each cycle (one module tick) finds the repositories with work due, leases each
-one, and makes one commit carrying every pending staging run file of that
-repository. Failures keep the work queued and back off; nothing here raises
-into the build.
+Each cycle finds the repositories with work due, leases each one, and makes
+one commit: a due job (a dataset bundle), or every pending staging run file of
+that repository at once. The module runs the run-file cycle on the host's
+thread and each job kind's cycle on its own worker thread (see ``workers``),
+so a long upload holds only its own repository. Failures keep the work queued
+and back off; nothing here raises into the build.
 """
 
 from __future__ import annotations
@@ -140,32 +142,64 @@ class HuggingFaceDelivery:
         print(message, file=sys.stderr, flush=True)
 
     def run_cycle(self) -> int:
-        """Make at most one commit per due repository; return how many."""
+        """Every kind of work, on the calling thread; return how many commits.
+
+        A repository with a due job gets the job, and its run files wait for
+        a later cycle. Used when nothing runs the cycles below on their own
+        threads, for example a module driven by hand in tests.
+        """
+        return self._cycle(job_kinds=SUPPORTED_JOB_KINDS, run_files=True)
+
+    def run_file_cycle(self) -> int:
+        """Commit each due repository's pending run files; return how many."""
+        return self._cycle(job_kinds=frozenset(), run_files=True)
+
+    def job_cycle(self, kinds: frozenset[str]) -> int:
+        """Deliver one due job of ``kinds`` per repository; return how many."""
+        return self._cycle(job_kinds=kinds & SUPPORTED_JOB_KINDS, run_files=False)
+
+    def _cycle(self, *, job_kinds: frozenset[str], run_files: bool) -> int:
         repositories = self.queue.due_repositories(
-            self.clock(), kinds=SUPPORTED_JOB_KINDS
+            self.clock(), kinds=job_kinds, run_files=run_files
         )
         if not repositories:
             return 0
         api = self.api_factory()
         return sum(
-            self._deliver_repository(repository, api) for repository in repositories
+            self._deliver_repository(
+                repository, api, job_kinds=job_kinds, run_files=run_files
+            )
+            for repository in repositories
         )
 
     def drain(self, deadline: float) -> None:
         """At shutdown, commit every repository's pending run files once.
 
         Ignores the commit interval and spacing, but still leases each
-        repository. ``deadline`` is a ``time.monotonic`` value.
+        repository: one whose lease a worker holds, during a long upload, is
+        skipped. ``deadline`` is a ``time.monotonic`` value.
         """
         api = self.api_factory()
         for repository in self.queue.repositories_with_pending_run_files():
             if time.monotonic() >= deadline:
                 return
-            self._deliver_repository(repository, api, run_files_only=True)
+            self._deliver_repository(
+                repository, api, job_kinds=frozenset(), run_files=True, at_shutdown=True
+            )
 
     def _deliver_repository(
-        self, repository: str, api: Any | None, *, run_files_only: bool = False
+        self,
+        repository: str,
+        api: Any | None,
+        *,
+        job_kinds: frozenset[str],
+        run_files: bool,
+        at_shutdown: bool = False,
     ) -> int:
+        """One commit to ``repository``: a job of ``job_kinds``, else run files.
+
+        ``at_shutdown`` commits pending run files whether or not they are due.
+        """
         lease = self.queue.claim_repository(
             repository, now=self.clock(), lease_seconds=REPOSITORY_LEASE_SECONDS
         )
@@ -181,27 +215,38 @@ class HuggingFaceDelivery:
         ).start()
         try:
             if api is None:
-                self._credential_missing(held, run_files_only=run_files_only)
+                self._credential_missing(
+                    held,
+                    job_kinds=job_kinds,
+                    run_files=run_files,
+                    at_shutdown=at_shutdown,
+                )
                 return 0
             hub = DatasetRepository(repository, api)
-            if not run_files_only:
-                job = self._claim_job(repository)
-                if job is not None:
-                    held.hold_job(job)
-                    return int(self._deliver_job(hub, held))
-                if not self.queue.run_files_due(repository, self.clock()):
-                    return 0
+            job = self._claim_job(repository, job_kinds) if job_kinds else None
+            if job is not None:
+                held.hold_job(job)
+                return int(self._deliver_job(hub, held))
+            if not self._run_files_to_commit(repository, run_files, at_shutdown):
+                return 0
             return int(self._deliver_run_files(hub))
         finally:
             held.stop()
             self.queue.release_repository(repository, held.repository_lease)
 
-    def _claim_job(self, repository: str) -> ClaimedJob | None:
+    def _run_files_to_commit(
+        self, repository: str, run_files: bool, at_shutdown: bool
+    ) -> bool:
+        return run_files and (
+            at_shutdown or self.queue.run_files_due(repository, self.clock())
+        )
+
+    def _claim_job(self, repository: str, kinds: frozenset[str]) -> ClaimedJob | None:
         return self.queue.claim_job(
             repository,
             now=self.clock(),
             lease_seconds=REPOSITORY_LEASE_SECONDS,
-            kinds=SUPPORTED_JOB_KINDS,
+            kinds=kinds,
         )
 
     def _finish_job(
@@ -251,10 +296,17 @@ class HuggingFaceDelivery:
         )
         return outcome.committed
 
-    def _credential_missing(self, held: HeldLeases, *, run_files_only: bool) -> None:
+    def _credential_missing(
+        self,
+        held: HeldLeases,
+        *,
+        job_kinds: frozenset[str],
+        run_files: bool,
+        at_shutdown: bool,
+    ) -> None:
         repository = held.repository
         self.warn_once(CREDENTIAL_MISSING, CREDENTIAL_MISSING_MESSAGE)
-        job = None if run_files_only else self._claim_job(repository)
+        job = self._claim_job(repository, job_kinds) if job_kinds else None
         if job is not None:
             held.hold_job(job)
             held.stop()
@@ -267,9 +319,7 @@ class HuggingFaceDelivery:
                 retry=True,
             )
             return
-        if not run_files_only and not self.queue.run_files_due(
-            repository, self.clock()
-        ):
+        if not self._run_files_to_commit(repository, run_files, at_shutdown):
             return
         entries = self.queue.pending_run_files(repository)
         index_entries = self.queue.pending_run_index_entries(repository)
