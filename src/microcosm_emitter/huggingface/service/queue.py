@@ -69,7 +69,8 @@ def _entry(text: str | None) -> dict[str, Any]:
 
 
 def retry_delay(failures: int) -> float:
-    return min(MAX_RETRY_SECONDS, float(2 ** min(failures, 8)))
+    """2, 4, 8 … seconds after each failure, at most ``MAX_RETRY_SECONDS``."""
+    return min(MAX_RETRY_SECONDS, float(2 ** min(failures, 16)))
 
 
 @dataclass(frozen=True)
@@ -312,8 +313,12 @@ class HandoverQueue:
                     )
                     continue
                 if digest == row.committed_sha256:
-                    # The repository already holds exactly these bytes.
-                    row.pending, row.content = False, b""
+                    # The repository already holds exactly these bytes. If
+                    # other bytes for this path are pending, a commit of them
+                    # may be in progress: keep these bytes, which
+                    # record_run_files_committed queues again after it.
+                    row.content = content if row.pending else b""
+                    row.pending = False
                 elif not (row.pending and digest == row.content_sha256):
                     row.due_at = min(row.due_at, due_at) if row.pending else due_at
                     row.content, row.pending = content, True
@@ -446,6 +451,9 @@ class HandoverQueue:
                 row.committed_sha256 = entry.sha256
                 if row.content_sha256 == entry.sha256:
                     row.pending, row.content = False, b""
+                else:
+                    # Other bytes were handed over during this commit.
+                    row.pending = True
             counts = self._files_per_run(entries)
             index_runs = {run_id for run_id, _ in index_entries}
             for run_id in sorted(set(counts) | index_runs):

@@ -430,6 +430,10 @@ class EmitterClient:
     def _wait_until_settled(
         self, receipt: dict[str, Any], wait_seconds: float
     ) -> dict[str, Any]:
+        handover_id = receipt.get("handover_id")
+        if not isinstance(handover_id, str) or not handover_id:
+            # Nothing to ask about: return the receipt as answered.
+            return receipt
         deadline = time.monotonic() + _wait_seconds(wait_seconds)
         while (
             receipt.get("status") not in SETTLED_STATUSES
@@ -437,7 +441,7 @@ class EmitterClient:
             and time.monotonic() < deadline
         ):
             time.sleep(0.1)
-            latest = self._handover_receipt(receipt["handover_id"])
+            latest = self._handover_receipt(handover_id)
             if latest is None:
                 break
             receipt = latest
