@@ -31,6 +31,8 @@ from microcosm_emitter.huggingface.service.requests import (
 )
 from microcosm_emitter_interface.identifiers import repository_identifier
 
+#: A read-back of a run with no file this emitter committed: nothing to compare.
+NO_COMMITTED_FILES = "NO_COMMITTED_FILES"
 WORKER_ERROR_MESSAGE = (
     "Microcosm Hugging Face delivery hit a local queue error; handed-over files "
     "stay queued for a later attempt."
@@ -211,10 +213,14 @@ class HuggingFaceModule:
             return {**result, "error_code": refusal.code}
         if self.queue.run_receipt(repository, run_id)["pending_files"]:
             return {**result, "status": "pending"}
+        committed = self.queue.committed_run_files(repository, run_id)
+        if not committed:
+            # A refused hand-over, or a run this database never held: passing
+            # would claim a delivery that this emitter cannot show.
+            return {**result, "status": "failed", "error_code": NO_COMMITTED_FILES}
         api = self.api_factory()
         if api is None:
             return {**result, "status": "failed", "error_code": CREDENTIAL_MISSING}
-        committed = self.queue.committed_run_files(repository, run_id)
         hub = DatasetRepository(repository, api)
         mismatched = []
         try:

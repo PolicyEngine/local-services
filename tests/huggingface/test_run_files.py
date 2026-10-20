@@ -365,6 +365,56 @@ def test_read_back_compares_the_hub_with_the_committed_bytes(hugging_face_module
     }
 
 
+def read_back(controls, run_id):
+    return controls.module.query(
+        {
+            "protocol_version": 1,
+            "command": "read_back_run_files",
+            "repository": STAGING_REPOSITORY,
+            "run_id": run_id,
+        }
+    )["read_back"]
+
+
+NOTHING_COMMITTED = {
+    "status": "failed",
+    "files": 0,
+    "mismatched_paths": [],
+    "error_code": "NO_COMMITTED_FILES",
+}
+
+
+def test_read_back_of_a_run_this_emitter_never_committed_does_not_pass(
+    hugging_face_module,
+):
+    """For example a run handed over to another machine's emitter."""
+    controls = hugging_face_module
+    assert read_back(controls, "unknown-run") == NOTHING_COMMITTED
+
+
+def test_read_back_after_a_refused_hand_over_does_not_pass(hugging_face_module):
+    controls = hugging_face_module
+    refused = controls.module.query(
+        {
+            "protocol_version": 1,
+            "command": "stage_run_files",
+            "repository": STAGING_REPOSITORY,
+            "run_id": "run-1",
+            "prefix": "runs",
+            "files": [
+                {"relative_path": "progress.json", "local_path": "/nonexistent/p"}
+            ],
+            "latest_pointer": None,
+            "run_index_entry": None,
+            "flush": True,
+            "commit_interval_seconds": 30.0,
+        }
+    )["receipt"]
+    assert refused["status"] == "refused"
+    cycle(controls)
+    assert read_back(controls, "run-1") == NOTHING_COMMITTED
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

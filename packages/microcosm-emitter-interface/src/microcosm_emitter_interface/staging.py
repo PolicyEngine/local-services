@@ -160,7 +160,12 @@ class RunFilesReceipt(TypedDict):
 
 
 class ReadBackResult(TypedDict):
-    """Whether the Hub holds exactly the bytes the emitter committed."""
+    """Whether the Hub holds exactly the bytes the emitter committed.
+
+    ``passed`` needs at least one committed file. A run with none (its
+    hand-overs were refused, or another machine's emitter staged it) reads
+    back as ``failed`` with ``error_code`` ``NO_COMMITTED_FILES``.
+    """
 
     status: Literal["passed", "failed", "pending", "refused", "unavailable"]
     files: int
