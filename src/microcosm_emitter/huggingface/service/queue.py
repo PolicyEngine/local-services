@@ -11,7 +11,7 @@ Two record shapes share the hand-over database:
   handed-over bytes, so a commit carries the latest state of every pending
   path at once. One commit per repository per cycle replaces Microcosm's one
   ``upload_file`` commit per file.
-- **Jobs** (dataset bundles, and later releases) follow the graph queue's
+- **Jobs** (dataset bundles and release changes) follow the graph queue's
   pattern: a row per hand-over and destination, a lease while a worker holds
   it, retries with backoff, and a receipt.
 
@@ -46,11 +46,12 @@ from microcosm_emitter.core.handover_models import (
 from microcosm_emitter.core.migrations import upgrade_handover_database
 
 #: The shortest time between two commits to one repository from this machine,
-#: of run files or jobs, even for hand-overs that ask to be committed at the
-#: next cycle. A cycle checks it when it lists the repository and again once
-#: it has leased it, because another thread may have committed in between.
-#: Only the drain at shutdown ignores it; other machines' commits are not
-#: counted.
+#: of run files or dataset bundles, even for hand-overs that ask to be
+#: committed at the next cycle. A cycle checks it when it lists the
+#: repository and again once it has leased it, because another thread may
+#: have committed in between. Release changes, which are rare and which a
+#: build waits for, ignore it, as does the commit at shutdown; other
+#: machines' commits are not counted.
 MIN_COMMIT_SPACING_SECONDS = 10.0
 MAX_RETRY_SECONDS = 300.0
 DESTINATION_HUGGING_FACE = "huggingface"
