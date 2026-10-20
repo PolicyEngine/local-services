@@ -1,7 +1,11 @@
-"""Durable hand-overs, kept in the emitter's spool database.
+"""Durable hand-overs, kept in the Hugging Face module's hand-over database.
 
-Two record shapes share one SQLite database (and its Alembic history) with
-telemetry and graph jobs:
+The hand-over database is its own SQLite file, next to the spool database
+(``events.sqlite3`` → ``events.handovers.sqlite3``), with its own Alembic
+history. The shared spool database stays at a revision that released
+emitters accept: Microcosm builds pinned to one share it on the same machine.
+
+Two record shapes share the hand-over database:
 
 - **Staging run files** coalesce: each repository path keeps only the newest
   handed-over bytes, so a commit carries the latest state of every pending
@@ -32,14 +36,14 @@ from microcosm_emitter.core.database import (
     create_spool_engine,
     create_spool_session_factory,
 )
-from microcosm_emitter.core.migrations import upgrade_spool_database
-from microcosm_emitter.core.models import (
+from microcosm_emitter.core.handover_models import (
     HandoverFile,
     HandoverJob,
     RepositoryCommitSchedule,
     StagedRunDelivery,
     StagedRunFile,
 )
+from microcosm_emitter.core.migrations import upgrade_handover_database
 
 #: The shortest time between two commits to one repository from this machine,
 #: of run files or jobs, even for hand-overs that ask to be committed at the
@@ -94,7 +98,7 @@ class ClaimedJob:
 
 
 class HandoverQueue:
-    """Hand-over records in the spool database.
+    """Hand-over records in the hand-over database at ``path``.
 
     Rows are kept after delivery; nothing deletes them yet. Settled jobs keep
     their receipts, committed run files keep their path and committed digest
@@ -107,7 +111,7 @@ class HandoverQueue:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._engine = create_spool_engine(self.path)
-        upgrade_spool_database(self._engine)
+        upgrade_handover_database(self._engine)
         self._sessions = create_spool_session_factory(self._engine)
 
     def close(self) -> None:

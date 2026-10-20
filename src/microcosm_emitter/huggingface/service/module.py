@@ -75,7 +75,9 @@ class HuggingFaceModule:
         self._closed = False
 
     def initialize(self) -> None:
-        self.queue = HandoverQueue(Path(self.configuration["spool_path"]))
+        # The hand-over database, never the shared spool database (see
+        # ``HandoverQueue``); ``HuggingFaceSettings`` names it.
+        self.queue = HandoverQueue(Path(self.configuration["handover_database_path"]))
         self.delivery = HuggingFaceDelivery(
             self.queue, api_factory=self.api_factory, clock=self.clock
         )

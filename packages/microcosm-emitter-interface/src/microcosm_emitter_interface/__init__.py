@@ -12,7 +12,10 @@ from microcosm_emitter_interface.launcher import (
 )
 from microcosm_emitter_interface.orrery import OrrerySettings
 from microcosm_emitter_interface.protocol import PROTOCOL_VERSION
-from microcosm_emitter_interface.spool import default_spool_path
+from microcosm_emitter_interface.spool import (
+    default_handover_database_path,
+    default_spool_path,
+)
 from microcosm_emitter_interface.staging import (
     HuggingFaceSettings,
     RunFile,
@@ -35,5 +38,6 @@ __all__ = [
     "StageRunFiles",
     "TelemetryRun",
     "TelemetrySettings",
+    "default_handover_database_path",
     "default_spool_path",
 ]

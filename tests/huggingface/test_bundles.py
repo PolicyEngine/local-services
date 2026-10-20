@@ -480,7 +480,7 @@ def test_write_access_check_reports_reach_and_scope(
     if fail_head:
         hub.fail_next("repo_info", FakeHubHTTPError(503))
     module = HuggingFaceModule(
-        {"spool_path": str(tmp_path / "events.sqlite3")},
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
         ModuleContext(os.getpid()),
         api_factory=lambda: hub,
     )

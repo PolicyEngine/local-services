@@ -47,7 +47,7 @@ RELEASED_FIXTURE_DIGESTS = {
         "6f576285b7a87607c47755ebee00ca051694b39455812a0068ebee2c27277728"
     ),
     "protocol-v1/huggingface-configuration.json": (
-        "5a5ccd639953b24c774418e6e23735f515e46a673a68624e26d640839ef4b1c2"
+        "0ecea1a8e7ba6c4458c530b58fa90079207ee3f48da3e522479e9afde581551a"
     ),
     "protocol-v1/huggingface-read-back-run-files.json": (
         "ab643a81520cbf35fada4362d6bf08f63c84d45ed41d9ddf1a0a592855c91313"

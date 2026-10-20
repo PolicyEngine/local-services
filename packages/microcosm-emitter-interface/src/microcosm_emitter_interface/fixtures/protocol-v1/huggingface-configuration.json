@@ -3,6 +3,6 @@
   "module": "huggingface",
   "kind": "configuration",
   "body": {
-    "spool_path": "{spool_path}"
+    "handover_database_path": "{directory}/events.handovers.sqlite3"
   }
 }

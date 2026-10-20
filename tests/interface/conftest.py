@@ -117,7 +117,7 @@ def emitter_with_hub(tmp_path):
     runtime_directory = Path(tempfile.mkdtemp(prefix="pe-stage-", dir="/tmp"))
     socket_path = runtime_directory / "service.sock"
     module = HuggingFaceModule(
-        {"spool_path": str(tmp_path / "events.sqlite3")},
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
         ModuleContext(os.getpid()),
         api_factory=lambda: hub,
     )

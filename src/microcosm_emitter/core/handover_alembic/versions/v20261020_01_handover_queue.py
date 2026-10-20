@@ -1,10 +1,14 @@
-"""Add durable Hugging Face hand-overs without changing telemetry or graph jobs."""
+"""Create the hand-over database's tables.
+
+This history is separate from the spool database's, and its revision IDs
+cannot be mistaken for the spool's: each history refuses the other's file.
+"""
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "20261020_03"
-down_revision = "20261008_02"
+revision = "handovers_20261020_01"
+down_revision = None
 branch_labels = None
 depends_on = None
 

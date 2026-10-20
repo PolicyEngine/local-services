@@ -41,7 +41,7 @@ def hugging_face_module(tmp_path, hub):
     clock = ManualClock()
     available_api = {"value": hub}
     module = HuggingFaceModule(
-        {"spool_path": str(tmp_path / "events.sqlite3")},
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
         ModuleContext(os.getpid()),
         api_factory=lambda: available_api["value"],
         clock=clock,

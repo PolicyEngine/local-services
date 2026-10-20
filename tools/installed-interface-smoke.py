@@ -63,6 +63,9 @@ def main(emitter_command: str) -> None:
             )
         )
         assert staged["status"] == "recorded" and staged["pending_files"] == 1
+        # The installed module keeps hand-overs in their own database, created
+        # from the migrations shipped in the wheel, next to the spool database.
+        assert (Path.cwd() / "interface.handovers.sqlite3").is_file()
     finally:
         process = client._process
         client.close()

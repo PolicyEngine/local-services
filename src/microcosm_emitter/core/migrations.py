@@ -1,10 +1,22 @@
-"""Programmatic Alembic migration entry points for the telemetry spool."""
+"""Programmatic Alembic migration entry points for the emitter's databases.
+
+The emitter keeps two SQLite databases, each with its own migration history:
+
+- the **spool database** (telemetry events and graph publication jobs). Every
+  emitter on a machine shares it, including the released emitters that
+  Microcosm builds pin, and those refuse a revision they don't know. Its
+  history must stay at revisions that released emitters ship until they are
+  no longer in use;
+- the **hand-over database** of the Hugging Face module, next to the spool
+  database. Only emitters with that module open it.
+"""
 
 from __future__ import annotations
 
 import fcntl
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from importlib.resources import as_file, files
 from pathlib import Path
 
@@ -20,14 +32,28 @@ from microcosm_emitter.core.database import create_spool_engine
 _MIGRATION_TARGET = "head"
 
 
+@dataclass(frozen=True)
+class MigrationHistory:
+    """One database's migration scripts, in a directory of this package."""
+
+    directory: str
+    #: Names the database in the refusal of an unversioned file.
+    label: str
+
+
+SPOOL_HISTORY = MigrationHistory(directory="alembic", label="telemetry")
+HANDOVER_HISTORY = MigrationHistory(directory="handover_alembic", label="hand-over")
+
+
 @contextmanager
 def alembic_config(
     *,
     connection: Connection | None = None,
+    history: MigrationHistory = SPOOL_HISTORY,
 ) -> Iterator[Config]:
-    """Yield Alembic configuration with migrations on the filesystem."""
+    """Yield Alembic configuration with ``history``'s migrations on the filesystem."""
 
-    migration_resources = files(__package__).joinpath("alembic")
+    migration_resources = files(__package__).joinpath(history.directory)
     with as_file(migration_resources) as migration_directory:
         config = Config()
         config.set_main_option("script_location", str(migration_directory))
@@ -36,10 +62,10 @@ def alembic_config(
         yield config
 
 
-def upgrade_spool_database(engine: Engine) -> None:
-    """Apply every committed spool migration to an engine."""
+def upgrade_database(engine: Engine, history: MigrationHistory) -> None:
+    """Apply every committed migration of ``history`` to an engine."""
 
-    # All build processes share this database. Serialize migration checks and
+    # All build processes share these databases. Serialize migration checks and
     # upgrades; SQLite transaction locks alone do not serialize schema inspection.
     path = Path(engine.url.database)
     with path.with_suffix(".migration.lock").open("a") as lock:
@@ -49,19 +75,32 @@ def upgrade_spool_database(engine: Engine) -> None:
             revision = MigrationContext.configure(connection).get_current_revision()
             if names and revision is None:
                 raise RuntimeError(
-                    "Refusing an unversioned telemetry database; no changes made."
+                    f"Refusing an unversioned {history.label} database; "
+                    "no changes made."
                 )
-            with alembic_config(connection=connection) as config:
-                history = ScriptDirectory.from_config(config)
+            with alembic_config(connection=connection, history=history) as config:
+                scripts = ScriptDirectory.from_config(config)
                 if revision is not None:
-                    history.get_revision(
-                        revision
-                    )  # Reject unknown revisions before writes.
+                    # Reject unknown revisions, including the other history's,
+                    # before writes.
+                    scripts.get_revision(revision)
                 command.upgrade(config, _MIGRATION_TARGET)
 
 
+def upgrade_spool_database(engine: Engine) -> None:
+    """Apply every committed spool migration to an engine."""
+
+    upgrade_database(engine, SPOOL_HISTORY)
+
+
+def upgrade_handover_database(engine: Engine) -> None:
+    """Apply every committed hand-over migration to an engine."""
+
+    upgrade_database(engine, HANDOVER_HISTORY)
+
+
 def current_database_revision(path: Path | str) -> str | None:
-    """Return the Alembic revision recorded by one spool database."""
+    """Return the Alembic revision recorded by one emitter database."""
 
     engine = create_spool_engine(path)
     try:
@@ -71,8 +110,8 @@ def current_database_revision(path: Path | str) -> str | None:
         engine.dispose()
 
 
-def migration_head_revision() -> str | None:
-    """Return the single current head from the packaged migration history."""
+def migration_head_revision(history: MigrationHistory = SPOOL_HISTORY) -> str | None:
+    """Return the single current head from one packaged migration history."""
 
-    with alembic_config() as config:
+    with alembic_config(history=history) as config:
         return ScriptDirectory.from_config(config).get_current_head()

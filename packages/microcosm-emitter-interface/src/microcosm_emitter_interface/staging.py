@@ -25,6 +25,7 @@ from microcosm_emitter_interface.identifiers import (
 )
 from microcosm_emitter_interface.protocol import PROTOCOL_VERSION
 from microcosm_emitter_interface.serialization import wire_value
+from microcosm_emitter_interface.spool import default_handover_database_path
 
 DEFAULT_RUN_PREFIX = "runs"
 DEFAULT_COMMIT_INTERVAL_SECONDS = 30.0
@@ -32,10 +33,29 @@ DEFAULT_COMMIT_INTERVAL_SECONDS = 30.0
 
 @dataclass(frozen=True)
 class HuggingFaceSettings:
-    """Configuration for the emitter's Hugging Face module."""
+    """Configuration for the emitter's Hugging Face module.
+
+    The module keeps its queue in its own SQLite file, the hand-over database.
+    ``handover_database_path`` names it; by default it sits next to the spool
+    database (``events.sqlite3`` → ``events.handovers.sqlite3``). It can never
+    be the spool database itself, which released emitters share and which
+    must stay at a migration revision they accept.
+    """
+
+    handover_database_path: Path | None = None
 
     def configuration(self, spool_path: Path) -> dict[str, Any]:
-        return {"spool_path": str(spool_path)}
+        handover_database = (
+            Path(self.handover_database_path)
+            if self.handover_database_path is not None
+            else default_handover_database_path(spool_path)
+        )
+        if handover_database.resolve() == Path(spool_path).resolve():
+            raise ValueError(
+                "The hand-over database must be a different file from the "
+                "spool database."
+            )
+        return {"handover_database_path": str(handover_database)}
 
 
 @dataclass(frozen=True)

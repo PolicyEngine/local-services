@@ -1,4 +1,4 @@
-"""The durable hand-over queue shares the spool database and its migrations."""
+"""The durable hand-over queue, in its own database next to the spool database."""
 
 import shutil
 from pathlib import Path
@@ -22,7 +22,7 @@ OTHER_REPOSITORY = "policyengine/fake-private"
 
 @pytest.fixture
 def queue(tmp_path):
-    handle = HandoverQueue(tmp_path / "events.sqlite3")
+    handle = HandoverQueue(tmp_path / "events.handovers.sqlite3")
     yield handle
     handle.close()
 
@@ -49,17 +49,20 @@ def commit_everything(queue, *, repository=REPOSITORY, now, revision="commit-1")
     )
 
 
-def test_migration_adds_hand_over_tables_without_changing_telemetry(tmp_path):
+def test_the_hand_over_database_leaves_the_spool_database_unchanged(tmp_path):
     path = tmp_path / "events.sqlite3"
     shutil.copyfile(FIXTURES / "microcosm-1099.sqlite3", path)
+    spool_before = path.read_bytes()
+    revision_before = current_database_revision(path)
     engine = create_spool_engine(path)
     with Session(engine) as session:
         events_before = session.scalar(
             select(func.count(TelemetryEventRecord.event_id))
         )
     engine.dispose()
-    HandoverQueue(path).close()
-    assert current_database_revision(path) == "20261020_03"
+    HandoverQueue(tmp_path / "events.handovers.sqlite3").close()
+    assert path.read_bytes() == spool_before
+    assert current_database_revision(path) == revision_before
     engine = create_spool_engine(path)
     with Session(engine) as session:
         assert (
@@ -196,8 +199,8 @@ def test_repositories_are_due_independently(queue):
 
 
 def test_one_writer_holds_a_repository_at_a_time(tmp_path):
-    first = HandoverQueue(tmp_path / "events.sqlite3")
-    second = HandoverQueue(tmp_path / "events.sqlite3")
+    first = HandoverQueue(tmp_path / "events.handovers.sqlite3")
+    second = HandoverQueue(tmp_path / "events.handovers.sqlite3")
     try:
         lease = first.claim_repository(REPOSITORY, now=1000, lease_seconds=60)
         assert lease is not None
@@ -266,7 +269,7 @@ def test_receipt_counts_committed_files_and_commits_per_run(queue):
 
 
 def test_jobs_are_idempotent_by_hand_over_and_survive_a_restart(tmp_path):
-    path = tmp_path / "events.sqlite3"
+    path = tmp_path / "events.handovers.sqlite3"
     queue = HandoverQueue(path)
     request = {"repository": REPOSITORY, "run_id": "run-1"}
     first = queue.enqueue_job(
