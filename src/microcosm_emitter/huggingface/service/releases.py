@@ -17,21 +17,31 @@ Face tags or branches, no ``current/`` folder and no ``latest*.json`` file,
 and never touches existing tags or files outside the new build folder.
 
 Who may make a change is not settled; ``ReleaseChangePolicy`` is where that
-decision plugs in, and the default allows every change.
+decision plugs in. The module applies it when a change is handed over, with
+the caller's identity, and the default allows every change.
 """
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import Literal
 
 from microcosm_emitter.huggingface.service.hub import (
+    MAX_PARENT_CONFLICT_ATTEMPTS,
+    PRESERVED_BYTES_CHANGED,
+    PRESERVED_FILES_MISSING,
+    REPOSITORY_UNAVAILABLE,
+    UPLOAD_FAILED,
     DatasetRepository,
     add_operation,
     is_parent_conflict,
+)
+from microcosm_emitter.huggingface.service.queue import sha256_file
+from microcosm_emitter_interface.publication import (
+    PromoteBuild,
+    PublishRelease,
+    ReleaseChange,
 )
 from microcosm_emitter_interface.releases import (
     RELEASE_MANIFEST_NAME,
@@ -47,15 +57,32 @@ from microcosm_emitter_interface.releases import (
     withdraw_build,
 )
 
-MAX_PARENT_CONFLICT_ATTEMPTS = 5
-
-#: Returns ``None`` to allow a change, or a reason to refuse it. It receives
-#: the change's request (``command``, ``repository``, ``release``, ``build``,
-#: ...). Not settled yet: who may promote or withdraw.
-type ReleaseChangePolicy = Callable[[Mapping[str, Any]], str | None]
+PARENT_CONFLICT = "PARENT_CONFLICT"
+type ReleaseStatus = Literal["pending", "published", "refused"]
 
 
-def allow_every_change(change: Mapping[str, Any]) -> str | None:
+@dataclass(frozen=True)
+class ReleaseCaller:
+    """Who handed a release change over, as far as the emitter can tell.
+
+    ``user`` is the account the emitter runs as, which is the build's;
+    ``parent_pid`` is the build process that started this emitter host. Who
+    may promote or withdraw is not settled, so this may gain fields once it
+    is.
+    """
+
+    user: str
+    parent_pid: int
+
+
+#: Returns ``None`` to allow a change, or a reason to refuse it
+#: (``NOT_AUTHORIZED``). It runs when the change is handed over, so a refused
+#: change is never queued.
+type ReleaseChangePolicy = Callable[[ReleaseChange, ReleaseCaller], str | None]
+
+
+def allow_every_change(change: ReleaseChange, caller: ReleaseCaller) -> str | None:
+    """The default until who may change releases is decided."""
     return None
 
 
@@ -63,7 +90,7 @@ def allow_every_change(change: Mapping[str, Any]) -> str | None:
 class ReleaseOutcome:
     """One attempt's result: final unless ``retry``."""
 
-    status: str
+    status: ReleaseStatus
     error_code: str | None = None
     message: str | None = None
     commit: str | None = None
@@ -79,40 +106,30 @@ def _pending(code: str) -> ReleaseOutcome:
     return ReleaseOutcome("pending", code, retry=True)
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _preserved_files(request: Mapping[str, Any]) -> ReleaseOutcome | None:
-    for entry in request.get("files", []):
-        path = Path(entry["local_path"])
+def _preserved_files(change: PublishRelease) -> ReleaseOutcome | None:
+    for item in change.files:
         try:
-            if not path.is_file():
-                return _pending("PRESERVED_FILES_MISSING")
+            if not item.local_path.is_file():
+                return _pending(PRESERVED_FILES_MISSING)
             if (
-                path.stat().st_size != entry["bytes"]
-                or _sha256_file(path) != entry["sha256"]
+                item.local_path.stat().st_size != item.bytes
+                or sha256_file(item.local_path) != item.sha256
             ):
                 return _refused(
-                    "PRESERVED_BYTES_CHANGED",
-                    f"{entry['name']} changed after it was handed over.",
+                    PRESERVED_BYTES_CHANGED,
+                    f"{item.name} changed after it was handed over.",
                 )
         except OSError:
-            return _pending("PRESERVED_FILES_MISSING")
+            return _pending(PRESERVED_FILES_MISSING)
     return None
 
 
-def _commit_message(request: Mapping[str, Any]) -> str:
-    release, build = request["release"], request["build"]
-    command = request["command"]
-    if command == "publish_release":
-        suffix = " and make it current" if request["make_current"] else ""
+def _commit_message(change: ReleaseChange) -> str:
+    release, build = change.release, change.build
+    if isinstance(change, PublishRelease):
+        suffix = " and make it current" if change.make_current else ""
         return f"Publish build {build} of {release}{suffix}"
-    if command == "promote_build":
+    if isinstance(change, PromoteBuild):
         return f"Make build {build} the current build of {release}"
     return f"Withdraw build {build} of {release}"
 
@@ -123,26 +140,18 @@ def _first_violation(error: ReleaseRecordError) -> ReleaseOutcome:
 
 
 def apply_release_change(
-    repository: DatasetRepository,
-    request: Mapping[str, Any],
-    *,
-    published_at: str,
-    policy: ReleaseChangePolicy = allow_every_change,
+    repository: DatasetRepository, change: ReleaseChange, *, published_at: str
 ) -> ReleaseOutcome:
-    """Apply one release change, or report why it did not land."""
-    refusal = policy(request)
-    if refusal is not None:
-        return _refused("NOT_AUTHORIZED", refusal)
-    publishing = request["command"] == "publish_release"
-    if publishing:
-        preserved = _preserved_files(request)
+    """Apply one validated release change, or report why it did not land."""
+    if isinstance(change, PublishRelease):
+        preserved = _preserved_files(change)
         if preserved is not None:
             return preserved
-    release, build = request["release"], request["build"]
+    release, build = change.release, change.build
     folder = build_folder(release, build)
     new_files = {
-        f"{folder}/{entry['name']}": Path(entry["local_path"])
-        for entry in (request["files"] if publishing else [])
+        f"{folder}/{item.name}": item.local_path
+        for item in (change.files if isinstance(change, PublishRelease) else ())
     }
     for _ in range(MAX_PARENT_CONFLICT_ATTEMPTS):
         try:
@@ -158,21 +167,21 @@ def apply_release_change(
         except ReleaseRecordError as error:
             return _first_violation(error)
         except Exception:
-            return _pending("REPOSITORY_UNAVAILABLE")
+            return _pending(REPOSITORY_UNAVAILABLE)
         record = before or ReleasesRecord.empty()
         try:
-            if publishing:
+            if isinstance(change, PublishRelease):
                 if any(path.startswith(folder + "/") for path in files):
-                    return _already_published(repository, request, record, head)
+                    return _already_published(repository, change, record, head)
                 after = add_build(
                     record,
                     release=release,
                     build=build,
-                    release_role=request["release_role"],
+                    release_role=change.release_role,
                     published_at=published_at,
-                    make_current=request["make_current"],
+                    make_current=change.make_current,
                 )
-            elif request["command"] == "promote_build":
+            elif isinstance(change, PromoteBuild):
                 after = make_current(record, release=release, build=build)
             else:
                 after = withdraw_build(record, release=release, build=build)
@@ -199,7 +208,7 @@ def apply_release_change(
                 *check_repository(after, [*files, *added_paths], read_file),
             ]
         except Exception:
-            return _pending("REPOSITORY_UNAVAILABLE")
+            return _pending(REPOSITORY_UNAVAILABLE)
         if violations:
             return _refused(
                 violations[0].code, "; ".join(item.message for item in violations)
@@ -208,19 +217,19 @@ def apply_release_change(
         operations.append(add_operation(RELEASES_RECORD_PATH, after.serialize()))
         try:
             commit = repository.commit(
-                operations, message=_commit_message(request), parent_commit=head
+                operations, message=_commit_message(change), parent_commit=head
             )
         except Exception as error:
             if is_parent_conflict(error):
                 continue
-            return _pending("UPLOAD_FAILED")
+            return _pending(UPLOAD_FAILED)
         return ReleaseOutcome("published", commit=commit, committed=True)
-    return _pending("PARENT_CONFLICT")
+    return _pending(PARENT_CONFLICT)
 
 
 def _already_published(
     repository: DatasetRepository,
-    request: Mapping[str, Any],
+    change: PublishRelease,
     record: ReleasesRecord,
     head: str,
 ) -> ReleaseOutcome:
@@ -232,13 +241,11 @@ def _already_published(
     been made current since. Publishing never promotes an already published
     build; ``promote_build`` does that.
     """
-    release, build = request["release"], request["build"]
+    release, build = change.release, change.build
     entry = record.releases.get(release)
     manifest_path = f"{build_folder(release, build)}/{RELEASE_MANIFEST_NAME}"
     local_manifest = next(
-        Path(item["local_path"])
-        for item in request["files"]
-        if item["name"] == RELEASE_MANIFEST_NAME
+        item.local_path for item in change.files if item.name == RELEASE_MANIFEST_NAME
     )
     exists_message = f"{build_folder(release, build)}/ already exists."
     if entry is None or build not in entry.builds:
@@ -249,11 +256,11 @@ def _already_published(
         )
         commit = repository.last_commit(manifest_path) if same else None
     except Exception:
-        return _pending("REPOSITORY_UNAVAILABLE")
+        return _pending(REPOSITORY_UNAVAILABLE)
     if not same:
         return _refused("BUILD_FOLDER_EXISTS", exists_message)
     message = None
-    if request["make_current"] and entry.current != build:
+    if change.make_current and entry.current != build:
         message = (
             f"Build {build} of {release} was already published; the current "
             f"build is {entry.current}."

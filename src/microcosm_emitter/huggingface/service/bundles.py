@@ -9,45 +9,40 @@ commit that loses a race to another writer is checked and tried again.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from microcosm_emitter.huggingface.service.hub import (
+    MAX_PARENT_CONFLICT_ATTEMPTS,
+    PRESERVED_BYTES_CHANGED,
+    PRESERVED_FILES_MISSING,
+    REPOSITORY_UNAVAILABLE,
+    UPLOAD_FAILED,
     DatasetRepository,
     add_operation,
     is_parent_conflict,
 )
+from microcosm_emitter.huggingface.service.queue import sha256_file
 from microcosm_emitter_interface.bundles import BUNDLE_INVENTORY_ROLE, SIDECAR_ROLES
 
-MAX_PARENT_CONFLICT_ATTEMPTS = 5
-REPOSITORY_UNAVAILABLE = "REPOSITORY_UNAVAILABLE"
-UPLOAD_FAILED = "UPLOAD_FAILED"
 REMOTE_DIFFERS = "REMOTE_DIFFERS"
-PRESERVED_FILES_MISSING = "PRESERVED_FILES_MISSING"
-PRESERVED_BYTES_CHANGED = "PRESERVED_BYTES_CHANGED"
+
+
+type BundleStatus = Literal["pending", "uploaded", "already_staged", "failed"]
 
 
 @dataclass(frozen=True)
 class BundleOutcome:
     """One attempt's result: final unless ``retry``."""
 
-    status: str
+    status: BundleStatus
     error_code: str | None = None
     revision: str | None = None
     retry: bool = False
     committed: bool = False
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _same_digests(remote: Any, local: Mapping[str, str]) -> bool:
@@ -69,7 +64,7 @@ def _local_files_outcome(files: list[Mapping[str, Any]]) -> BundleOutcome | None
                 return BundleOutcome("pending", PRESERVED_FILES_MISSING, retry=True)
             if (
                 path.stat().st_size != entry["bytes"]
-                or _sha256_file(path) != entry["sha256"]
+                or sha256_file(path) != entry["sha256"]
             ):
                 return BundleOutcome("failed", PRESERVED_BYTES_CHANGED)
         except OSError:

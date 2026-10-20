@@ -159,3 +159,50 @@ assert not any(name.startswith("microcosm_emitter.") for name in sys.modules)
 assert "microcosm_emitter" not in sys.modules
 """
     subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def module_level_names(path):
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    yield target.id
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            yield node.target.id
+
+
+def test_hand_over_codes_and_limits_are_defined_once():
+    shared = {
+        "MAX_PARENT_CONFLICT_ATTEMPTS",
+        "UPLOAD_FAILED",
+        "REPOSITORY_UNAVAILABLE",
+        "PRESERVED_FILES_MISSING",
+        "PRESERVED_BYTES_CHANGED",
+        "RELEASE_CHANGE",
+    }
+    paths = [
+        *(ROOT / "src/microcosm_emitter").rglob("*.py"),
+        *(INTERFACE_SOURCE / "microcosm_emitter_interface").rglob("*.py"),
+    ]
+    defined_in = {name: [] for name in shared}
+    for path in paths:
+        for name in module_level_names(path):
+            if name in shared:
+                defined_in[name].append(path.relative_to(ROOT))
+    assert {name: len(places) for name, places in defined_in.items()} == {
+        name: 1 for name in shared
+    }, defined_in
+
+
+def test_the_credential_lookup_is_public():
+    from microcosm_emitter.core.auth import huggingface_token
+
+    assert callable(huggingface_token)
+
+
+def test_no_module_imports_the_private_credential_lookup():
+    for path in (ROOT / "src/microcosm_emitter").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom):
+                names = {alias.name for alias in node.names}
+                assert "_huggingface_token" not in names, path

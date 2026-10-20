@@ -29,6 +29,7 @@ from microcosm_emitter_interface.publication import (
     RELEASE_CHANGE,
     PromoteBuild,
     PublishRelease,
+    ReleaseChange,
     ReleaseFile,
     WithdrawBuild,
 )
@@ -252,14 +253,21 @@ def parse_stage_dataset_bundle(message: Mapping[str, Any]) -> BundleHandOver:
 @dataclass(frozen=True)
 class ReleaseHandOver:
     handover_id: str
-    repository: str
-    release: str
-    build: str
+    #: The validated change, and its canonical message, which is what is queued.
+    change: ReleaseChange
     request: dict[str, Any]
 
+    @property
+    def repository(self) -> str:
+        return self.change.repository
 
-def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
-    """Check a publication, promotion or withdrawal with the interface's rules."""
+
+def release_change_from_message(message: Mapping[str, Any]) -> ReleaseChange:
+    """The typed change a message describes; ``RequestRefusedError`` if invalid.
+
+    Only the message's shape is checked here, so the worker can rebuild the
+    typed change from the queued message.
+    """
     require_supported_version(message)
     command = message.get("command")
     try:
@@ -269,7 +277,7 @@ def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
                 not isinstance(entry, Mapping) for entry in entries
             ):
                 raise RequestRefusedError("INVALID_REQUEST")
-            request = PublishRelease(
+            return PublishRelease(
                 repository=message.get("repository"),
                 release=message.get("release"),
                 build=message.get("build"),
@@ -287,36 +295,42 @@ def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
                     for entry in entries
                 ),
             )
-        elif command in {"promote_build", "withdraw_build"}:
+        if command in {"promote_build", "withdraw_build"}:
             change = PromoteBuild if command == "promote_build" else WithdrawBuild
-            request = change(
+            return change(
                 repository=message.get("repository"),
                 release=message.get("release"),
                 build=message.get("build"),
                 request_id=message.get("request_id"),
             )
-        else:
-            raise RequestRefusedError("INVALID_REQUEST")
-    except (ValueError, TypeError) as error:
-        if isinstance(error, RequestRefusedError):
-            raise
+    except RequestRefusedError:
+        raise
+    except (ValueError, TypeError):
         raise RequestRefusedError("INVALID_REQUEST") from None
-    if command == "publish_release":
-        for entry, item in zip(message["files"], request.files, strict=True):
-            path = Path(str(entry.get("local_path")))
-            if not path.is_absolute():
+    raise RequestRefusedError("INVALID_REQUEST")
+
+
+def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
+    """Check a publication, promotion or withdrawal with the interface's rules.
+
+    The queued request is the validated change's own message, so keys the
+    rules do not know never reach the queue or the hand-over identifier.
+    """
+    change = release_change_from_message(message)
+    if isinstance(change, PublishRelease):
+        for item in change.files:
+            if not item.local_path.is_absolute():
                 raise RequestRefusedError("INVALID_REQUEST")
             try:
-                if not path.is_file():
+                if not item.local_path.is_file():
                     raise RequestRefusedError("LOCAL_FILE_MISSING")
-                if path.stat().st_size != item.bytes:
+                if item.local_path.stat().st_size != item.bytes:
                     raise RequestRefusedError("FILE_SIZE_DIFFERS")
             except OSError:
                 raise RequestRefusedError("LOCAL_FILE_MISSING") from None
+    canonical = change.message()
     return ReleaseHandOver(
-        handover_id=handover_identifier(RELEASE_CHANGE, dict(message)),
-        repository=request.repository,
-        release=request.release,
-        build=request.build,
-        request=dict(message),
+        handover_id=handover_identifier(RELEASE_CHANGE, canonical),
+        change=change,
+        request=canonical,
     )

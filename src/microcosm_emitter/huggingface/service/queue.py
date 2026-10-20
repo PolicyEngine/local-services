@@ -61,6 +61,15 @@ def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def sha256_file(path: Path) -> str:
+    """The SHA-256 of a preserved file, read in blocks."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _entry_text(entry: Mapping[str, Any]) -> str:
     """Order-preserving JSON, so the merged index keeps the build's key order."""
     return json.dumps(dict(entry), separators=(",", ":"), allow_nan=False)

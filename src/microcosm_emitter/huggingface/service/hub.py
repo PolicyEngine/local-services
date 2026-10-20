@@ -13,10 +13,19 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from microcosm_emitter.core.auth import _huggingface_token
+from microcosm_emitter.core.auth import huggingface_token
 
 #: HTTP statuses the Hub returns when ``parent_commit`` is no longer the head.
 PARENT_CONFLICT_STATUSES = frozenset({409, 412})
+#: How often a commit pinned to a head is rebuilt on the new head after
+#: another writer's commit landed first.
+MAX_PARENT_CONFLICT_ATTEMPTS = 5
+#: Error codes the hand-over receipts share. The first two are retried.
+REPOSITORY_UNAVAILABLE = "REPOSITORY_UNAVAILABLE"
+UPLOAD_FAILED = "UPLOAD_FAILED"
+#: A preserved file is missing (retried) or its bytes changed (final).
+PRESERVED_FILES_MISSING = "PRESERVED_FILES_MISSING"
+PRESERVED_BYTES_CHANGED = "PRESERVED_BYTES_CHANGED"
 #: Errors huggingface_hub raises when the Hub answered that a file is missing
 #: (``RemoteEntryNotFoundError`` from 1.0, ``EntryNotFoundError`` before).
 _MISSING_FILE_ERROR_NAMES = frozenset(
@@ -35,7 +44,7 @@ def hugging_face_api() -> Any | None:
     saved by ``hf auth login``: the same order telemetry uses. It is read again
     for every cycle, so a login during a long build is picked up.
     """
-    token = _huggingface_token()
+    token = huggingface_token()
     if not token:
         return None
     from huggingface_hub import HfApi

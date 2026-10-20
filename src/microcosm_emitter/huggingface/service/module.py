@@ -12,6 +12,7 @@ answers with its receipt. Commits happen on worker threads:
 
 from __future__ import annotations
 
+import getpass
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -22,7 +23,6 @@ from microcosm_emitter.host.contracts import JsonObject, ModuleContext
 from microcosm_emitter.huggingface.service.delivery import (
     CREDENTIAL_MISSING,
     DATASET_BUNDLE,
-    RELEASE_CHANGE,
     HuggingFaceDelivery,
 )
 from microcosm_emitter.huggingface.service.hub import (
@@ -31,6 +31,7 @@ from microcosm_emitter.huggingface.service.hub import (
 )
 from microcosm_emitter.huggingface.service.queue import HandoverQueue, sha256_bytes
 from microcosm_emitter.huggingface.service.releases import (
+    ReleaseCaller,
     ReleaseChangePolicy,
     allow_every_change,
 )
@@ -44,6 +45,7 @@ from microcosm_emitter.huggingface.service.requests import (
 )
 from microcosm_emitter.huggingface.service.workers import DeliveryWorker
 from microcosm_emitter_interface.identifiers import repository_identifier
+from microcosm_emitter_interface.publication import RELEASE_CHANGE
 
 #: A read-back of a run with no file this emitter committed: nothing to compare.
 NO_COMMITTED_FILES = "NO_COMMITTED_FILES"
@@ -108,7 +110,6 @@ class HuggingFaceModule:
             self.queue,
             api_factory=self.api_factory,
             clock=self.clock,
-            release_change_policy=self.release_change_policy,
         )
         if self.background_workers:
             self.workers = self._delivery_workers(self.delivery)
@@ -210,22 +211,36 @@ class HuggingFaceModule:
             files=hand_over.copied,
         )
 
+    def _caller(self) -> ReleaseCaller:
+        return ReleaseCaller(user=getpass.getuser(), parent_pid=self.context.parent_pid)
+
     def _release_change(self, message: JsonObject) -> dict[str, Any]:
         assert self.queue is not None
-        try:
-            hand_over = parse_release_change(message)
-        except RequestRefusedError as refusal:
+
+        def refused(
+            code: str, handover_id: str = "", reason: str | None = None
+        ) -> dict[str, Any]:
             return {
-                "handover_id": "",
+                "handover_id": handover_id,
                 "status": "refused",
-                "error_code": refusal.code,
-                "message": None,
+                "error_code": code,
+                "message": reason,
                 "commit": None,
                 "repository": str(message.get("repository") or ""),
                 "release": str(message.get("release") or ""),
                 "build": str(message.get("build") or ""),
                 "attempts": 0,
             }
+
+        try:
+            hand_over = parse_release_change(message)
+        except RequestRefusedError as refusal:
+            return refused(refusal.code)
+        # Who may change a release is decided here, when the change is handed
+        # over by its caller; a refused change is never queued.
+        reason = self.release_change_policy(hand_over.change, self._caller())
+        if reason is not None:
+            return refused("NOT_AUTHORIZED", hand_over.handover_id, str(reason))
         return self.queue.enqueue_job(
             handover_id=hand_over.handover_id,
             kind=RELEASE_CHANGE,
@@ -238,8 +253,8 @@ class HuggingFaceModule:
                 "message": None,
                 "commit": None,
                 "repository": hand_over.repository,
-                "release": hand_over.release,
-                "build": hand_over.build,
+                "release": hand_over.change.release,
+                "build": hand_over.change.build,
                 "attempts": 0,
             },
             now=self.clock(),

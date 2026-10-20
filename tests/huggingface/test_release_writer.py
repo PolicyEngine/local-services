@@ -10,10 +10,7 @@ from fake_hugging_face import PRIVATE_REPOSITORY, FakeHubHTTPError
 from microcosm_emitter.host.contracts import ModuleContext
 from microcosm_emitter.huggingface.service.hub import DatasetRepository
 from microcosm_emitter.huggingface.service.module import HuggingFaceModule
-from microcosm_emitter.huggingface.service.releases import (
-    allow_every_change,
-    apply_release_change,
-)
+from microcosm_emitter.huggingface.service.releases import apply_release_change
 from microcosm_emitter_interface.publication import (
     PromoteBuild,
     PublishRelease,
@@ -69,12 +66,9 @@ def publish_request(tmp_path, build, *, make_current=False, **options):
     )
 
 
-def apply(hub, request, *, published_at="2026-10-20T00:00:00+00:00", policy=None):
+def apply(hub, request, *, published_at="2026-10-20T00:00:00+00:00"):
     return apply_release_change(
-        DatasetRepository(PRIVATE_REPOSITORY, hub),
-        request.message(),
-        published_at=published_at,
-        policy=policy or allow_every_change,
+        DatasetRepository(PRIVATE_REPOSITORY, hub), request, published_at=published_at
     )
 
 
@@ -297,21 +291,32 @@ def test_local_bytes_changed_after_the_hand_over_are_refused(hub, tmp_path):
     assert hub.commits(PRIVATE_REPOSITORY) == []
 
 
-def test_a_change_policy_can_refuse_a_promotion(hub, tmp_path):
-    request, _ = publish_request(tmp_path, FIRST_BUILD)
-    assert apply(hub, request).status == "published"
+def test_a_change_policy_can_refuse_a_promotion(tmp_path, hub):
+    def only_listing(change, caller):
+        return None if isinstance(change, PublishRelease) else "not permitted"
 
-    def only_listing(change):
-        return None if change["command"] == "publish_release" else "not permitted"
-
-    outcome = apply(
-        hub,
-        PromoteBuild(
-            repository=PRIVATE_REPOSITORY, release=NATIONAL, build=FIRST_BUILD
-        ),
-        policy=only_listing,
+    module = HuggingFaceModule(
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+        release_change_policy=only_listing,
+        background_workers=False,
     )
-    assert (outcome.status, outcome.error_code) == ("refused", "NOT_AUTHORIZED")
+    module.initialize()
+    try:
+        request, _ = publish_request(tmp_path, FIRST_BUILD)
+        assert module.query(request.message())["receipt"]["status"] == "pending"
+        promotion_receipt = module.query(
+            PromoteBuild(
+                repository=PRIVATE_REPOSITORY, release=NATIONAL, build=FIRST_BUILD
+            ).message()
+        )["receipt"]
+    finally:
+        module.close(0)
+    assert (promotion_receipt["status"], promotion_receipt["error_code"]) == (
+        "refused",
+        "NOT_AUTHORIZED",
+    )
 
 
 def test_existing_tags_old_files_and_staged_bundles_are_untouched(hub, tmp_path):
@@ -380,29 +385,23 @@ def test_module_refuses_a_malformed_release_change_without_queueing_it(
     assert controls.hub.commits(PRIVATE_REPOSITORY) == []
 
 
-def test_the_module_writer_uses_the_injected_policy(tmp_path, hub):
+def test_a_change_the_policy_refuses_is_never_written(tmp_path, hub):
     module = HuggingFaceModule(
         {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
         ModuleContext(os.getpid()),
         api_factory=lambda: hub,
-        release_change_policy=lambda change: "refused by policy",
+        release_change_policy=lambda change, caller: "refused by policy",
         background_workers=False,
     )
     module.initialize()
     try:
         request, _ = publish_request(tmp_path, FIRST_BUILD)
-        module.query(request.message())
+        receipt = module.query(request.message())["receipt"]
         module.delivery.run_cycle()
-        receipt = module.query(
-            {
-                "protocol_version": 1,
-                "command": "handover_receipt",
-                "handover_id": request.handover_id(),
-            }
-        )["receipt"]
     finally:
         module.close(0)
     assert (receipt["status"], receipt["error_code"]) == ("refused", "NOT_AUTHORIZED")
+    assert hub.commits(PRIVATE_REPOSITORY) == []
 
 
 def queue_change(controls, request):
@@ -654,3 +653,68 @@ def test_release_changes_skip_the_commit_spacing_but_bundles_keep_it(
     controls.clock.advance(1)
     controls.module.delivery.run_cycle()
     assert receipt_status(controls, bundle.handover_id()) == "uploaded"
+
+
+def test_release_outcome_statuses_are_literal():
+    import typing
+
+    from microcosm_emitter.huggingface.service.releases import ReleaseOutcome
+
+    status = typing.get_type_hints(ReleaseOutcome)["status"]
+    assert set(typing.get_args(status.__value__)) == {"pending", "published", "refused"}
+
+
+def test_the_queued_request_is_the_validated_typed_request(hugging_face_module):
+    controls = hugging_face_module
+    request = promotion(FIRST_BUILD)
+    message = {**request.message(), "unvalidated": "extra"}
+    receipt = controls.module.query(message)["receipt"]
+    assert receipt["handover_id"] == request.handover_id()
+    job = controls.module.queue.claim_job(
+        PRIVATE_REPOSITORY, now=controls.clock(), lease_seconds=1
+    )
+    assert job.request == request.message()
+
+
+def test_the_change_policy_receives_the_typed_change_and_its_caller(tmp_path, hub):
+    import getpass
+
+    seen = []
+
+    def record_and_refuse(change, caller):
+        seen.append((change, caller))
+        return "refused by policy"
+
+    module = HuggingFaceModule(
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+        release_change_policy=record_and_refuse,
+        background_workers=False,
+    )
+    module.initialize()
+    try:
+        request = promotion(FIRST_BUILD)
+        receipt = module.query(request.message())["receipt"]
+        assert (receipt["status"], receipt["error_code"], receipt["message"]) == (
+            "refused",
+            "NOT_AUTHORIZED",
+            "refused by policy",
+        )
+        # Refused at hand-over: nothing is queued.
+        assert module.queue.job_receipt(request.handover_id()) is None
+    finally:
+        module.close(0)
+    ((change, caller),) = seen
+    assert change == request
+    assert (caller.parent_pid, caller.user) == (os.getpid(), getpass.getuser())
+
+
+def test_the_default_policy_allows_every_change(hugging_face_module):
+    from microcosm_emitter.huggingface.service.releases import (
+        ReleaseCaller,
+        allow_every_change,
+    )
+
+    caller = ReleaseCaller(user="fixture-user", parent_pid=1)
+    assert allow_every_change(promotion(FIRST_BUILD), caller) is None

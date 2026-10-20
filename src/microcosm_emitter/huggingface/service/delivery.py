@@ -20,14 +20,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from microcosm_emitter.huggingface.service.bundles import stage_bundle
-from microcosm_emitter.huggingface.service.hub import DatasetRepository
+from microcosm_emitter.huggingface.service.hub import UPLOAD_FAILED, DatasetRepository
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 from microcosm_emitter.huggingface.service.releases import (
-    ReleaseChangePolicy,
-    allow_every_change,
+    ReleaseOutcome,
     apply_release_change,
 )
+from microcosm_emitter.huggingface.service.requests import (
+    RequestRefusedError,
+    release_change_from_message,
+)
 from microcosm_emitter.huggingface.service.run_files import commit_run_files
+from microcosm_emitter_interface.publication import RELEASE_CHANGE
 
 #: How long a repository or job lease lasts without renewal. While a delivery
 #: runs, its leases are renewed every ``LEASE_RENEWAL_SECONDS``, so a long
@@ -37,13 +41,11 @@ REPOSITORY_LEASE_SECONDS = 120.0
 LEASE_RENEWAL_SECONDS = 30.0
 #: The job kinds this emitter delivers.
 DATASET_BUNDLE = "dataset_bundle"
-RELEASE_CHANGE = "release_change"
 SUPPORTED_JOB_KINDS = frozenset({DATASET_BUNDLE, RELEASE_CHANGE})
 #: Job kinds that skip the spacing between commits: release changes are rare
 #: and a build waits for them. Bundles and run files keep it.
 UNSPACED_JOB_KINDS = frozenset({RELEASE_CHANGE})
 CREDENTIAL_MISSING = "CREDENTIAL_MISSING"
-UPLOAD_FAILED = "UPLOAD_FAILED"
 CREDENTIAL_MISSING_MESSAGE = (
     "Microcosm Hugging Face uploads are paused: no Hugging Face credential was "
     "found (HF_TOKEN, HUGGINGFACE_TOKEN or `hf auth login`). Handed-over files "
@@ -141,13 +143,11 @@ class HuggingFaceDelivery:
         api_factory: Callable[[], Any | None],
         clock: Callable[[], float] = time.time,
         lease_renewal_seconds: float = LEASE_RENEWAL_SECONDS,
-        release_change_policy: ReleaseChangePolicy = allow_every_change,
     ) -> None:
         self.queue = queue
         self.api_factory = api_factory
         self.clock = clock
         self.lease_renewal_seconds = lease_renewal_seconds
-        self.release_change_policy = release_change_policy
         self._warned: set[str] = set()
         self._warning_lock = threading.Lock()
 
@@ -353,12 +353,14 @@ class HuggingFaceDelivery:
         job = held.job
         assert job is not None, "The job is claimed before delivery."
         if job.kind == RELEASE_CHANGE:
-            outcome = apply_release_change(
-                hub,
-                job.request,
-                published_at=iso_timestamp(self.clock()),
-                policy=self.release_change_policy,
-            )
+            try:
+                change = release_change_from_message(job.request)
+            except RequestRefusedError as refusal:
+                outcome = ReleaseOutcome("refused", refusal.code)
+            else:
+                outcome = apply_release_change(
+                    hub, change, published_at=iso_timestamp(self.clock())
+                )
             revision, message = outcome.commit, outcome.message
         else:
             outcome = stage_bundle(hub, job.request, job.files)

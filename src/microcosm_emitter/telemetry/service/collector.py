@@ -13,7 +13,7 @@ from microcosm_emitter.core.auth import (
     _collector_origin,
     _development_collector_url,
     _http_post,
-    _huggingface_token,
+    huggingface_token,
 )
 from microcosm_emitter.core.constants import (
     INITIAL_RETRY_SECONDS,
@@ -66,7 +66,7 @@ class CollectorDelivery:
         self.session = session or CollectorSession(
             self.collector_url,
             post=lambda *args: _http_post(*args),
-            credential=lambda: _huggingface_token(),
+            credential=lambda: huggingface_token(),
         )
         self._registered: set[str] = set()
         self._warned_no_token = False

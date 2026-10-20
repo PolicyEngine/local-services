@@ -102,7 +102,9 @@ def _http_post(
         return error.code, _decode_response(body)
 
 
-def _huggingface_token() -> str | None:
+def huggingface_token() -> str | None:
+    """The build's Hugging Face token: `HF_TOKEN`, then `HUGGINGFACE_TOKEN`, then
+    the token saved by `hf auth login`; `None` without one."""
     return (
         os.environ.get("HF_TOKEN", "").strip()
         or os.environ.get("HUGGINGFACE_TOKEN", "").strip()
@@ -118,7 +120,7 @@ class CollectorSession:
 
         self.origin = origin
         self._post = post or _http_post
-        self._credential = credential or _huggingface_token
+        self._credential = credential or huggingface_token
         self._session_token: tuple[str, float] | None = None
         self._lock = threading.Lock()
 
