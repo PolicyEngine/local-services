@@ -13,6 +13,7 @@ answers with its receipt. Commits happen on worker threads:
 from __future__ import annotations
 
 import getpass
+import os
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -71,6 +72,19 @@ def _refused_run_files_receipt(message: Mapping[str, Any], code: str) -> dict[st
         "last_commit": None,
         "refusal_code": code,
     }
+
+
+def _user_name() -> str:
+    """The account the emitter runs as, or its numeric user ID.
+
+    ``getpass.getuser()`` raises when no user name variable is set and the
+    user ID has no password-database entry, as in a container run with an
+    arbitrary user ID (Python 3.13 and later).
+    """
+    try:
+        return getpass.getuser()
+    except Exception:
+        return str(os.getuid())
 
 
 class HuggingFaceModule:
@@ -212,7 +226,7 @@ class HuggingFaceModule:
         )
 
     def _caller(self) -> ReleaseCaller:
-        return ReleaseCaller(user=getpass.getuser(), parent_pid=self.context.parent_pid)
+        return ReleaseCaller(user=_user_name(), parent_pid=self.context.parent_pid)
 
     def _release_change(self, message: JsonObject) -> dict[str, Any]:
         assert self.queue is not None
