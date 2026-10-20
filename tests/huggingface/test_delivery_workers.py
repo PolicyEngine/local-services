@@ -357,6 +357,54 @@ def test_no_bundle_upload_starts_once_shutdown_begins(tmp_path):
         test_finished.set()
 
 
+def test_a_job_claimed_as_shutdown_begins_is_released_without_an_upload(
+    hugging_face_module, monkeypatch
+):
+    """Shutdown between a job's claim and its upload: no upload starts.
+
+    The bundle cycle checks for shutdown before each repository and once the
+    repository is leased. Here shutdown begins after both checks, while the
+    job is being claimed. The cycle must start no upload, and must leave the
+    job pending, with its lease released and its attempt count unchanged, so
+    the next emitter can deliver it at once.
+    """
+    from microcosm_emitter.huggingface.service.delivery import (
+        DATASET_BUNDLE,
+        REPOSITORY_LEASE_SECONDS,
+    )
+
+    controls = hugging_face_module
+    hand_over_bundle(controls, PRIVATE_REPOSITORY, "uk-run-1")
+    queue = controls.module.queue
+    shutdown_begun = threading.Event()
+    claim_job_in_the_queue = queue.claim_job
+
+    def claim_job_as_shutdown_begins(*arguments, **options):
+        claimed = claim_job_in_the_queue(*arguments, **options)
+        shutdown_begun.set()
+        return claimed
+
+    monkeypatch.setattr(queue, "claim_job", claim_job_as_shutdown_begins)
+
+    controls.module.delivery.job_cycle(
+        frozenset({DATASET_BUNDLE}), stop_requested=shutdown_begun.is_set
+    )
+
+    assert shutdown_begun.is_set(), "the cycle never claimed the job"
+    assert controls.hub.commits(PRIVATE_REPOSITORY) == [], (
+        "a bundle upload started after shutdown began, once its job was claimed"
+    )
+    monkeypatch.undo()
+    reclaimed = queue.claim_job(
+        PRIVATE_REPOSITORY,
+        now=controls.clock(),
+        lease_seconds=REPOSITORY_LEASE_SECONDS,
+        kinds=[DATASET_BUNDLE],
+    )
+    assert reclaimed is not None, "the job's lease was kept after shutdown began"
+    assert reclaimed.attempts == 0
+
+
 # The 10-second spacing between commits to one repository, across threads.
 #
 # The host's thread (run files) and the bundle worker each build a list of due
