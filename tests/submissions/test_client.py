@@ -313,3 +313,57 @@ def test_a_session_asks_for_its_scope_and_telemetry_sessions_still_send_nothing(
     ).credential()
 
     assert exchanged == [{}, {"scope": "artifacts:submit"}]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [404, (404, "intake_not_enabled"), (404, "submission_not_found")],
+    ids=["no-code", "intake-not-enabled", "submission-not-found"],
+)
+def test_a_404_to_create_means_intake_is_not_available(
+    collector, tmp_path, answer
+) -> None:
+    """Only completion, status and receipt may say a submission is unknown."""
+    collector.create_statuses = [answer]
+    invalidations = Invalidations()
+
+    outcome = submission_client(collector, invalidations).submit(
+        planned_submission(tmp_path)
+    )
+
+    assert (outcome.status, outcome.error_code) == (
+        "pending",
+        "COLLECTOR_INTAKE_NOT_ENABLED",
+    )
+    assert outcome.retry_after == pytest.approx(3600)
+    assert invalidations.count == 1
+
+
+def test_a_404_to_completion_without_its_code_means_intake_is_not_available(
+    collector, tmp_path
+) -> None:
+    collector.complete_statuses = [404]
+
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert (outcome.status, outcome.error_code) == (
+        "pending",
+        "COLLECTOR_INTAKE_NOT_ENABLED",
+    )
+
+
+def test_an_unknown_submission_at_completion_is_created_again(
+    collector, tmp_path
+) -> None:
+    """For example after the collector's database was reset."""
+    collector.complete_statuses = [(404, "submission_not_found")]
+    client = submission_client(collector)
+    planned = planned_submission(tmp_path)
+
+    first = client.submit(planned)
+    second = client.submit(planned)
+
+    assert (first.status, first.error_code) == ("pending", "SUBMISSION_NOT_FOUND")
+    assert first.retry_after is None
+    assert second.status == "accepted"
+    assert len(collector.created) == 2

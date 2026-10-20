@@ -128,10 +128,16 @@ class FakeCollector:
             },
         )
 
+    @staticmethod
+    def _chosen(handler: Any, answer: int | tuple[int, str]) -> None:
+        """A status the test chose, optionally with an error ``code``."""
+        status, code = answer if isinstance(answer, tuple) else (answer, None)
+        handler._json(status, {"detail": "chosen", **({"code": code} if code else {})})
+
     def _create(self, handler: Any, body: dict[str, Any]) -> None:
         self.created.append(body)
         if self.create_statuses:
-            return handler._json(self.create_statuses.pop(0), {"detail": "chosen"})
+            return self._chosen(handler, self.create_statuses.pop(0))
         canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
         submission_id = "sub-" + hashlib.sha256(canonical.encode()).hexdigest()[:32]
         created = submission_id not in self.submissions
@@ -184,10 +190,13 @@ class FakeCollector:
     def _complete(self, handler: Any, submission_id: str) -> None:
         self.completed.append(submission_id)
         if self.complete_statuses:
-            return handler._json(self.complete_statuses.pop(0), {"detail": "chosen"})
+            return self._chosen(handler, self.complete_statuses.pop(0))
         submission = self.submissions.get(submission_id)
         if submission is None:
-            return handler._json(404, {"detail": "Submission was not found."})
+            return handler._json(
+                404,
+                {"detail": "Submission was not found.", "code": "submission_not_found"},
+            )
         problems = []
         for file in submission["body"]["files"]:
             stored = self.objects.get(f"submissions/{submission_id}/{file['name']}")

@@ -41,6 +41,8 @@ INTAKE_RETRY_SECONDS: Final = 3600.0
 
 CREDENTIAL_MISSING: Final = "CREDENTIAL_MISSING"
 COLLECTOR_INTAKE_NOT_ENABLED: Final = "COLLECTOR_INTAKE_NOT_ENABLED"
+#: Completion, status or receipt found no such submission: create it again.
+SUBMISSION_NOT_FOUND: Final = "SUBMISSION_NOT_FOUND"
 CREDENTIAL_REJECTED: Final = "CREDENTIAL_REJECTED"
 COLLECTOR_UNAVAILABLE: Final = "COLLECTOR_UNAVAILABLE"
 INVALID_RESPONSE: Final = "INVALID_RESPONSE"
@@ -159,8 +161,34 @@ class CollectorSubmissionClient:
         # Includes the 404 a collector answers while its intake is off.
         raise _StepFailedError(SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE))
 
-    def _settled_answer(self, response: httpx.Response) -> SubmissionOutcome:
+    @staticmethod
+    def _error_code(response: httpx.Response) -> str | None:
+        """The ``code`` of an error body, if it has one."""
+        try:
+            document = response.json()
+        except ValueError:
+            return None
+        code = document.get("code") if isinstance(document, Mapping) else None
+        return code if isinstance(code, str) else None
+
+    def _settled_answer(
+        self, response: httpx.Response, *, names_submission: bool
+    ) -> SubmissionOutcome:
+        """What a non-success answer means.
+
+        ``names_submission`` is true for the requests about one submission
+        (completion, status, receipt), where a 404 ``submission_not_found``
+        means "create it again". Every other 404, including one to create,
+        means the collector has no intake.
+        """
         status = response.status_code
+        if status == 404:
+            if (
+                names_submission
+                and self._error_code(response) == "submission_not_found"
+            ):
+                return SubmissionOutcome("pending", SUBMISSION_NOT_FOUND)
+            return self._intake_unavailable()
         if status == 401:
             self._invalidate_credential()
             return SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE)
@@ -253,7 +281,7 @@ class CollectorSubmissionClient:
             token = self._token()
             created = self._post(SUBMISSIONS_PATH, token, planned.body)
             if created.status_code not in {200, 201}:
-                return self._settled_answer(created)
+                return self._settled_answer(created, names_submission=False)
             submission_id, uploads = self._uploads(created, planned)
             for upload in uploads:
                 self._upload(upload, planned)
@@ -266,8 +294,13 @@ class CollectorSubmissionClient:
             # Something is not stored as declared: create again, upload again.
             return SubmissionOutcome("pending", FILES_INCOMPLETE, submission_id)
         if completed.status_code not in {200, 202}:
-            answer = self._settled_answer(completed)
-            return SubmissionOutcome(answer.status, answer.error_code, submission_id)
+            answer = self._settled_answer(completed, names_submission=True)
+            return SubmissionOutcome(
+                answer.status,
+                answer.error_code,
+                submission_id,
+                retry_after=answer.retry_after,
+            )
         try:
             collector_status = completed.json().get("status")
         except (ValueError, AttributeError):
