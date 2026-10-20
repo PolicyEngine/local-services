@@ -73,8 +73,35 @@ def test_downloads_read_exact_bytes_at_a_revision(hub):
     with pytest.raises(EntryNotFoundError) as missing:
         repository.download("missing.json")
     assert is_absent(missing.value)
-    assert is_absent(RevisionNotFoundError())
+    # A missing revision is not a missing file: the cycle is retried.
+    assert not is_absent(RevisionNotFoundError())
     assert not is_absent(FakeHubHTTPError(503))
+
+
+def real_http_error(error_class, status_code):
+    """A huggingface_hub HTTP error with a response; nothing is sent."""
+    import httpx
+
+    request = httpx.Request("GET", "https://hub.invalid/runs.json")
+    return error_class(
+        "synthetic", response=httpx.Response(status_code, request=request)
+    )
+
+
+def test_only_the_hub_answering_404_for_the_file_counts_as_absent():
+    """``LocalEntryNotFoundError`` subclasses ``EntryNotFoundError`` and
+    ``FileNotFoundError``, but huggingface_hub raises it when the Hub did not
+    answer: a connection error, a timeout or a 429 or 5xx response for a file
+    that is not in the local cache."""
+    from huggingface_hub import errors
+
+    assert is_absent(real_http_error(errors.RemoteEntryNotFoundError, 404))
+    assert not is_absent(errors.LocalEntryNotFoundError("connection error"))
+    assert not is_absent(real_http_error(errors.RevisionNotFoundError, 404))
+    assert not is_absent(real_http_error(errors.RepositoryNotFoundError, 404))
+    assert not is_absent(real_http_error(errors.HfHubHTTPError, 503))
+    assert not is_absent(real_http_error(errors.HfHubHTTPError, 429))
+    assert not is_absent(FileNotFoundError("local cache file vanished"))
 
 
 def test_last_commit_names_the_commit_that_last_changed_a_path(hub):

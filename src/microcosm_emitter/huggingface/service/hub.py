@@ -17,14 +17,15 @@ from microcosm_emitter.core.auth import _huggingface_token
 
 #: HTTP statuses the Hub returns when ``parent_commit`` is no longer the head.
 PARENT_CONFLICT_STATUSES = frozenset({409, 412})
-_ABSENT_ERROR_NAMES = frozenset(
-    {
-        "EntryNotFoundError",
-        "RemoteEntryNotFoundError",
-        "RevisionNotFoundError",
-        "FileNotFoundError",
-    }
+#: Errors huggingface_hub raises when the Hub answered that a file is missing
+#: (``RemoteEntryNotFoundError`` from 1.0, ``EntryNotFoundError`` before).
+_MISSING_FILE_ERROR_NAMES = frozenset(
+    {"EntryNotFoundError", "RemoteEntryNotFoundError"}
 )
+#: Raised when the Hub did not answer (a connection error, a timeout, or a 429
+#: or 5xx response for an uncached file). It subclasses ``EntryNotFoundError``
+#: and ``FileNotFoundError``, so a check by class alone mistakes it for absence.
+_NO_ANSWER_ERROR_NAME = "LocalEntryNotFoundError"
 
 
 def hugging_face_api() -> Any | None:
@@ -64,8 +65,17 @@ def is_parent_conflict(error: BaseException) -> bool:
 
 
 def is_absent(error: BaseException) -> bool:
-    """The Hub answered that the file or revision does not exist, nothing else."""
-    return bool({cls.__name__ for cls in type(error).__mro__} & _ABSENT_ERROR_NAMES)
+    """The Hub answered HTTP 404 because the file does not exist, nothing else.
+
+    Every other error, including a missing revision or repository and every
+    error raised without the Hub's answer, means the file's state is unknown.
+    """
+    names = {cls.__name__ for cls in type(error).__mro__}
+    return (
+        _NO_ANSWER_ERROR_NAME not in names
+        and bool(names & _MISSING_FILE_ERROR_NAMES)
+        and status_code(error) == 404
+    )
 
 
 class DatasetRepository:

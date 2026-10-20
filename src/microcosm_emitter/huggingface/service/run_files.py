@@ -129,6 +129,9 @@ def commit_run_files(
                     RUNS_INDEX_PATH, revision=parent
                 )
             except Exception as error:
+                # Only a repository without runs.json starts a new index. Any
+                # other error retries the cycle: starting empty would drop
+                # every other run from the index.
                 if not is_absent(error):
                     raise
                 existing = None

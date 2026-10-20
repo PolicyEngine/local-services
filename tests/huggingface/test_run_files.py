@@ -212,6 +212,41 @@ def test_staging_v1_runs_index_starts_empty_without_a_repository_copy(
     assert json.loads(commit.added["runs.json"])["runs"] == [entry]
 
 
+@pytest.mark.parametrize(
+    "transient_error",
+    ["connection error", "rate limited", "service unavailable"],
+)
+def test_a_transient_download_error_never_starts_the_runs_index_empty(
+    hugging_face_module, transient_error
+):
+    """huggingface_hub reports each of these as ``LocalEntryNotFoundError``."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    controls = hugging_face_module
+    other_run = {"run_id": "run-older", "updated_at": "2026-10-01T00:00:00+00:00"}
+    controls.hub.write_directly(
+        STAGING_REPOSITORY,
+        {
+            "runs.json": json.dumps(
+                {"schema_version": 1, "updated_at": "x", "runs": [other_run]}, indent=1
+            ).encode()
+        },
+    )
+    before = len(commits(controls))
+    controls.hub.fail_next("hf_hub_download", LocalEntryNotFoundError(transient_error))
+    entry = {"run_id": "us-run", "updated_at": "2026-10-20T00:00:00+00:00"}
+    hand_over(controls, "us-run", {"progress.json": b"{}"}, run_index_entry=entry)
+    cycle(controls)
+    assert len(commits(controls)) == before
+    receipt = controls.module.queue.run_receipt(STAGING_REPOSITORY, "us-run")
+    assert receipt["last_error_code"] == "UPLOAD_FAILED"
+    assert receipt["pending_files"] == 2
+    controls.clock.advance(2)
+    cycle(controls)
+    index = json.loads(controls.hub.files(STAGING_REPOSITORY)["runs.json"])
+    assert index["runs"] == [entry, other_run]
+
+
 def test_runs_index_written_by_another_build_meanwhile_is_kept(hugging_face_module):
     controls = hugging_face_module
     concurrent_run = {"run_id": "concurrent", "updated_at": "2026-10-19T00:00:00Z"}
