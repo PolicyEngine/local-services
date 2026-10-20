@@ -43,6 +43,10 @@ CREDENTIAL_MISSING: Final = "CREDENTIAL_MISSING"
 COLLECTOR_INTAKE_NOT_ENABLED: Final = "COLLECTOR_INTAKE_NOT_ENABLED"
 #: Completion, status or receipt found no such submission: create it again.
 SUBMISSION_NOT_FOUND: Final = "SUBMISSION_NOT_FOUND"
+#: A final status the collector reports without a rejection code.
+COLLECTOR_REJECTED: Final = "COLLECTOR_REJECTED"
+#: Final statuses that mean the submission will not succeed.
+UNSUCCESSFUL_STATUSES: Final = frozenset({"rejected", "failed"})
 CREDENTIAL_REJECTED: Final = "CREDENTIAL_REJECTED"
 COLLECTOR_UNAVAILABLE: Final = "COLLECTOR_UNAVAILABLE"
 INVALID_RESPONSE: Final = "INVALID_RESPONSE"
@@ -302,13 +306,25 @@ class CollectorSubmissionClient:
                 retry_after=answer.retry_after,
             )
         try:
-            collector_status = completed.json().get("status")
-        except (ValueError, AttributeError):
+            document = completed.json()
+        except ValueError:
+            document = None
+        if not isinstance(document, Mapping):
+            document = {}
+        collector_status = document.get("status")
+        if not isinstance(collector_status, str):
             collector_status = None
+        if collector_status in UNSUCCESSFUL_STATUSES:
+            # For example ``stored_object_mismatch``: stored objects are never
+            # replaced, so repeating the submission cannot succeed.
+            rejection = document.get("rejection")
+            code = rejection.get("code") if isinstance(rejection, Mapping) else None
+            return SubmissionOutcome(
+                "failed",
+                code if isinstance(code, str) and code else COLLECTOR_REJECTED,
+                submission_id,
+                collector_status,
+            )
         return SubmissionOutcome(
-            "accepted",
-            submission_id=submission_id,
-            collector_status=collector_status
-            if isinstance(collector_status, str)
-            else None,
+            "accepted", submission_id=submission_id, collector_status=collector_status
         )

@@ -34,6 +34,10 @@ class FakeCollector:
         self.intake = "on"
         self.create_statuses: list[int] = []
         self.complete_statuses: list[int] = []
+        #: Whole completion answers the tests choose: (status, document).
+        self.complete_answers: list[tuple[int, dict[str, Any]]] = []
+        #: Store each upload with its bytes reversed, so its SHA-256 differs.
+        self.corrupt_uploads = False
         self.sign_stored_files = False
         self.upload_origin: str | None = None
         #: Each issued session token and its scope.
@@ -142,7 +146,8 @@ class FakeCollector:
         submission_id = "sub-" + hashlib.sha256(canonical.encode()).hexdigest()[:32]
         created = submission_id not in self.submissions
         self.submissions.setdefault(
-            submission_id, {"body": body, "status": "awaiting_upload"}
+            submission_id,
+            {"body": body, "status": "awaiting_upload", "job": None, "rejection": None},
         )
         submission = self.submissions[submission_id]
         uploads = []
@@ -170,12 +175,33 @@ class FakeCollector:
                 )
         handler._json(
             201 if created else 200,
-            {
-                "submission_id": submission_id,
-                "status": submission["status"],
-                "uploads": uploads,
-            },
+            {**self._status_document(submission_id), "uploads": uploads},
         )
+
+    def _status_document(self, submission_id: str) -> dict[str, Any]:
+        """The contract's status document for one submission."""
+        submission = self.submissions[submission_id]
+        files = sorted(
+            (
+                {key: file[key] for key in ("name", "role", "size", "sha256")}
+                for file in submission["body"]["files"]
+            ),
+            key=lambda file: file["name"],
+        )
+        canonical = json.dumps(files, sort_keys=True, separators=(",", ":"))
+        return {
+            "contract_version": 1,
+            "submission_id": submission_id,
+            "kind": submission["body"]["kind"],
+            "status": submission["status"],
+            "files_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "created_at": "2026-10-20T09:00:00.000000+00:00",
+            "updated_at": "2026-10-20T09:00:00.000000+00:00",
+            "accepted_at": None,
+            "finished_at": None,
+            "job": submission["job"],
+            "rejection": submission["rejection"],
+        }
 
     def _store(self, handler: Any, object_name: str, body: bytes) -> None:
         self.uploads.append(object_name)
@@ -184,11 +210,13 @@ class FakeCollector:
             return handler._json(400, {"detail": "size"})
         if object_name in self.objects:
             return handler._json(412, {"detail": "exists"})
-        self.objects[object_name] = body
+        self.objects[object_name] = body[::-1] if self.corrupt_uploads else body
         handler._json(200, {})
 
     def _complete(self, handler: Any, submission_id: str) -> None:
         self.completed.append(submission_id)
+        if self.complete_answers:
+            return handler._json(*self.complete_answers.pop(0))
         if self.complete_statuses:
             return self._chosen(handler, self.complete_statuses.pop(0))
         submission = self.submissions.get(submission_id)
@@ -197,16 +225,37 @@ class FakeCollector:
                 404,
                 {"detail": "Submission was not found.", "code": "submission_not_found"},
             )
+        if submission["status"] in {"rejected", "failed", "succeeded"}:
+            return handler._json(200, self._status_document(submission_id))
         problems = []
+        mismatched = []
         for file in submission["body"]["files"]:
             stored = self.objects.get(f"submissions/{submission_id}/{file['name']}")
             if stored is None:
                 problems.append({"name": file["name"], "problem": "missing"})
             elif hashlib.sha256(stored).hexdigest() != file["sha256"]:
-                problems.append({"name": file["name"], "problem": "sha256_mismatch"})
+                mismatched.append(file["name"])
         if problems:
             return handler._json(
-                409, {"detail": "Some files are not stored.", "problems": problems}
+                409,
+                {
+                    "detail": "Some files are not stored.",
+                    "code": "files_missing",
+                    "problems": problems,
+                },
             )
+        if mismatched:
+            # Stored objects are never replaced: the submission is rejected.
+            submission["status"] = "rejected"
+            submission["rejection"] = {
+                "code": "stored_object_mismatch",
+                "message": f"{mismatched[0]} has another recorded SHA-256.",
+            }
+            return handler._json(200, self._status_document(submission_id))
         submission["status"] = "queued"
-        handler._json(202, {"submission_id": submission_id, "status": "queued"})
+        submission["job"] = {
+            "job_id": "job-" + submission_id.removeprefix("sub-"),
+            "processing_round": 1,
+            "attempts": 0,
+        }
+        handler._json(202, self._status_document(submission_id))

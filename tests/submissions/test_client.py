@@ -367,3 +367,55 @@ def test_an_unknown_submission_at_completion_is_created_again(
     assert first.retry_after is None
     assert second.status == "accepted"
     assert len(collector.created) == 2
+
+
+def test_a_stored_object_with_another_digest_fails_the_submission(
+    collector, tmp_path
+) -> None:
+    """Completion answers 200 ``rejected`` with ``stored_object_mismatch``."""
+    collector.corrupt_uploads = True
+
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert (outcome.status, outcome.error_code) == (
+        "failed",
+        "stored_object_mismatch",
+    )
+    assert outcome.collector_status == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("final_status", "code"),
+    [("rejected", "content_mismatch"), ("failed", "worker_error")],
+)
+def test_a_final_completion_answer_that_did_not_succeed_fails(
+    collector, tmp_path, final_status, code
+) -> None:
+    collector.complete_answers = [
+        (
+            200,
+            {
+                "contract_version": 1,
+                "submission_id": "sub-chosen",
+                "status": final_status,
+                "rejection": {"code": code, "message": "chosen"},
+            },
+        )
+    ]
+
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert (outcome.status, outcome.error_code, outcome.collector_status) == (
+        "failed",
+        code,
+        final_status,
+    )
+
+
+def test_a_queued_completion_is_accepted_with_its_status(collector, tmp_path) -> None:
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert (outcome.status, outcome.collector_status) == ("accepted", "queued")
+    document = collector._status_document(outcome.submission_id)
+    assert document["job"]["processing_round"] == 1
+    assert len(document["files_sha256"]) == 64
