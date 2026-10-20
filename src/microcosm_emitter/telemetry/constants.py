@@ -2,8 +2,11 @@
 
 from typing import Final
 
+from microcosm_emitter_interface.telemetry import (
+    DEFAULT_HEARTBEAT_SECONDS as DEFAULT_HEARTBEAT_SECONDS,
+)
+
 TELEMETRY_MODULE: Final = "telemetry"
-DEFAULT_HEARTBEAT_SECONDS: Final = 60.0
 SERVICE_START_WARNING: Final = "Local telemetry emitter service failed to start ({error_type}); the build will continue."
 QUEUE_WARNING: Final = (
     "Telemetry could not be queued ({error_type}); the build will continue."

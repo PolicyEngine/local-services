@@ -7,9 +7,11 @@ equal ``microcosm_emitter.orrery.contracts``.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 type PublicationFileRole = Literal[
     "graph",
@@ -84,3 +86,67 @@ def unavailable_receipt(
         "status": "failed",
         "error_code": error_code,
     }
+
+
+# The Orrery module's requests. Both this package's client and the emitter's
+# in-process client build them here, inside their error handling, so the two
+# send the same messages and neither raises on an unconvertible argument.
+
+
+def inventory_message(
+    directory: str | os.PathLike[str],
+    roles: Mapping[str, PublicationFileRole],
+    publication_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "command": "inventory",
+        "directory": str(Path(directory).resolve()),
+        "roles": dict(roles),
+        "publication_id": publication_id,
+    }
+
+
+def enqueue_message(
+    directory: str | os.PathLike[str], inventory: PublicationInventory
+) -> dict[str, Any]:
+    return {
+        "command": "enqueue",
+        "directory": str(Path(directory).resolve()),
+        "inventory": inventory,
+    }
+
+
+def receipt_message(publication_id: str) -> dict[str, Any]:
+    return {"command": "receipt", "publication_id": publication_id}
+
+
+def retry_message(publication_id: str) -> dict[str, Any]:
+    return {"command": "retry", "publication_id": publication_id}
+
+
+def publication_id_of(inventory: Any) -> str | None:
+    """The inventory's publication identifier, or None if it has none."""
+    try:
+        value = inventory["publication_id"]
+    except Exception:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def answered_inventory(answer: Mapping[str, Any] | None) -> PublicationInventory | None:
+    """The inventory in the module's answer, if it holds one."""
+    value = None if answer is None else answer.get("inventory")
+    return cast(PublicationInventory, value) if isinstance(value, dict) else None
+
+
+def answered_receipt(
+    answer: Mapping[str, Any] | None,
+    publication_id: str | None,
+    *,
+    error_code: str = "local_service_unavailable",
+) -> PublicationReceipt:
+    """The receipt in the module's answer, or an unavailable receipt."""
+    value = None if answer is None else answer.get("receipt")
+    if isinstance(value, dict):
+        return cast(PublicationReceipt, value)
+    return unavailable_receipt(publication_id, error_code=error_code)

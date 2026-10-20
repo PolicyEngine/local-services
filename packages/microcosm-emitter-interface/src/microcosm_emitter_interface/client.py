@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from microcosm_emitter_interface.launcher import (
     EmitterProcess,
@@ -29,6 +29,13 @@ from microcosm_emitter_interface.orrery import (
     PublicationFileRole,
     PublicationInventory,
     PublicationReceipt,
+    answered_inventory,
+    answered_receipt,
+    enqueue_message,
+    inventory_message,
+    publication_id_of,
+    receipt_message,
+    retry_message,
     unavailable_receipt,
 )
 from microcosm_emitter_interface.protocol import (
@@ -38,6 +45,7 @@ from microcosm_emitter_interface.protocol import (
     STARTUP_TIMEOUT_SECONDS,
     TELEMETRY_MODULE,
 )
+from microcosm_emitter_interface.spool import default_spool_path
 from microcosm_emitter_interface.telemetry import (
     TelemetryCommand,
     TelemetryRecorder,
@@ -75,13 +83,6 @@ class RequestFailure:
     kind: str
     reason: RequestFailureReason
     error_type: str | None = None
-
-
-def default_spool_path() -> Path:
-    """The emitter's existing queue location, so queued work survives upgrades."""
-    configured = os.environ.get("XDG_CACHE_HOME", "").strip()
-    root = Path(configured).expanduser() if configured else Path.home() / ".cache"
-    return root / "microcosm" / "telemetry" / "events.sqlite3"
 
 
 class EmitterClient:
@@ -251,16 +252,10 @@ class EmitterClient:
         """Ask the emitter to measure the selected preserved Orrery input files."""
         response = self._query(
             ORRERY_MODULE,
-            lambda: {
-                "command": "inventory",
-                "directory": str(Path(directory).resolve()),
-                "roles": dict(roles),
-                "publication_id": publication_id,
-            },
+            lambda: inventory_message(directory, roles, publication_id),
             kind="Orrery",
         )
-        value = None if response is None else response.get("inventory")
-        return cast(PublicationInventory, value) if isinstance(value, dict) else None
+        return answered_inventory(response)
 
     def hand_over_orrery_inputs(
         self,
@@ -270,17 +265,12 @@ class EmitterClient:
         wait_seconds: float = 30.0,
     ) -> PublicationReceipt:
         """Queue the inventoried files; wait only after the durable enqueue."""
-        publication_id = _publication_id(inventory)
+        publication_id = publication_id_of(inventory)
         if publication_id is None:
             self._fail("Orrery", "invalid_arguments")
             return unavailable_receipt(None, error_code="invalid_arguments")
         receipt = self._orrery_receipt_request(
-            lambda: {
-                "command": "enqueue",
-                "directory": str(Path(directory).resolve()),
-                "inventory": inventory,
-            },
-            publication_id,
+            lambda: enqueue_message(directory, inventory), publication_id
         )
         deadline = time.monotonic() + _wait_seconds(wait_seconds)
         while (
@@ -295,16 +285,14 @@ class EmitterClient:
 
     def orrery_receipt(self, publication_id: str) -> PublicationReceipt:
         return self._orrery_receipt_request(
-            lambda: {"command": "receipt", "publication_id": publication_id},
-            publication_id,
+            lambda: receipt_message(publication_id), publication_id
         )
 
     def retry_orrery_inputs(
         self, publication_id: str, *, wait_seconds: float = 0
     ) -> PublicationReceipt:
         receipt = self._orrery_receipt_request(
-            lambda: {"command": "retry", "publication_id": publication_id},
-            publication_id,
+            lambda: retry_message(publication_id), publication_id
         )
         previous_attempts = receipt.get("attempts", 0)
         deadline = time.monotonic() + _wait_seconds(wait_seconds)
@@ -322,10 +310,7 @@ class EmitterClient:
         self, build_message: MessageBuilder, publication_id: str | None
     ) -> PublicationReceipt:
         response = self._query(ORRERY_MODULE, build_message, kind="Orrery")
-        value = None if response is None else response.get("receipt")
-        if isinstance(value, dict):
-            return cast(PublicationReceipt, value)
-        return unavailable_receipt(publication_id, error_code=self._error_code())
+        return answered_receipt(response, publication_id, error_code=self._error_code())
 
     def close(self) -> None:
         """Ask the emitter to drain and stop; repeated calls do nothing."""
@@ -337,15 +322,6 @@ class EmitterClient:
                 self._process.close()
             except Exception as error:
                 self._fail("close", "not_accepted", error)
-
-
-def _publication_id(inventory: Any) -> str | None:
-    """The inventory's publication identifier, or None if it has none."""
-    try:
-        value = inventory["publication_id"]
-    except Exception:
-        return None
-    return value if isinstance(value, str) else None
 
 
 def _wait_seconds(value: Any) -> float:
