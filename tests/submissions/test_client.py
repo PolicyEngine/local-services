@@ -493,21 +493,31 @@ def slow_link_collector():
 
 
 def slow_link_client(collector) -> CollectorSubmissionClient:
-    """A client with a small send buffer; it trusts the fake's TLS uploads."""
+    """A client with a small send buffer. With the fake's TLS uploads, it
+    sends ``https://`` requests over the fake's Unix socket and trusts it."""
     session = CollectorSession(
         collector.origin, credential=lambda: "hf_synthetic", scope=SUBMIT_SCOPE
     )
     small_send_buffer = (socket.SOL_SOCKET, socket.SO_SNDBUF, SMALL_SOCKET_BUFFER_BYTES)
-    tls_verification = collector.client_tls_context or True
+    tls_uploads = (
+        {}
+        if collector.upload_socket_path is None
+        else {
+            "https://": httpx.HTTPTransport(
+                uds=collector.upload_socket_path,
+                verify=collector.client_tls_context,
+                socket_options=[small_send_buffer],
+            )
+        }
+    )
     return CollectorSubmissionClient(
         collector.origin,
         credential=session.credential,
         invalidate_credential=session.invalidate,
         http=httpx.Client(
             follow_redirects=False,
-            transport=httpx.HTTPTransport(
-                verify=tls_verification, socket_options=[small_send_buffer]
-            ),
+            transport=httpx.HTTPTransport(socket_options=[small_send_buffer]),
+            mounts=tls_uploads,
         ),
         allow_loopback_uploads=True,
         clock=ManualClock(),

@@ -16,20 +16,28 @@ For slow links: ``receive_buffer_bytes`` gives each connection a small
 receive buffer, so the client's sends wait for the fake to read, and
 ``upload_read_pace`` makes it read an upload's body a few bytes at a time.
 
-``tls_uploads`` signs upload URLs for a second loopback server that speaks
-TLS, as Cloud Storage does, while the collector itself stays plain HTTP. A
-TLS send writes its whole buffer before it returns, so a slow reader shows
-how long each piece of an upload takes. The server has no certificate: it
-and ``client_tls_context`` use only anonymous cipher suites, which is
-enough to put a TLS socket under the client and needs no key material.
+``tls_uploads`` adds a second server for uploads that speaks TLS, as Cloud
+Storage does, while the collector itself stays plain HTTP. A TLS send writes
+its whole buffer before it returns, so a slow reader shows how long each
+piece of an upload takes. The server has no certificate: it and
+``client_tls_context`` use only anonymous cipher suites, which is enough to
+put a TLS socket under the client and needs no key material. It listens on a
+Unix socket (``upload_socket_path``), which a test client connects the
+``https://127.0.0.1`` upload URLs to: a loopback TCP connection on macOS
+grows its receive buffer to hundreds of KiB whatever ``SO_RCVBUF`` says,
+which hides the pace of reads, and a Unix socket keeps the buffer it is
+given.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
+import socketserver
 import ssl
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -166,19 +174,40 @@ class FakeCollector:
             server.server_activate()
             return server
 
+        server_tls_context = anonymous_tls_context(ssl.PROTOCOL_TLS_SERVER)
+
+        class UnixTlsServer(socketserver.ThreadingUnixStreamServer):
+            daemon_threads = True
+
+            def get_request(self) -> tuple[ssl.SSLSocket, tuple[str, int]]:
+                connection, _ = self.socket.accept()
+                if receive_buffer_bytes is not None:
+                    connection.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes
+                    )
+                # The handler expects a (host, port) client address.
+                return (
+                    server_tls_context.wrap_socket(connection, server_side=True),
+                    ("127.0.0.1", 0),
+                )
+
         self._server = loopback_server()
         self.origin = f"http://127.0.0.1:{self._server.server_address[1]}"
-        self._servers = [self._server]
+        self._servers: list[socketserver.BaseServer] = [self._server]
         #: The client side of ``tls_uploads``; ``None`` without it.
         self.client_tls_context: ssl.SSLContext | None = None
+        #: The Unix socket the TLS upload server listens on.
+        self.upload_socket_path: str | None = None
+        self._socket_directory: str | None = None
         if tls_uploads:
-            storage = loopback_server()
-            storage.socket = anonymous_tls_context(ssl.PROTOCOL_TLS_SERVER).wrap_socket(
-                storage.socket, server_side=True
+            # A short path: Unix socket paths are limited to about 100 bytes.
+            self._socket_directory = tempfile.mkdtemp(
+                prefix="fake-storage-", dir="/tmp"
             )
-            self.upload_origin = f"https://127.0.0.1:{storage.server_address[1]}"
+            self.upload_socket_path = os.path.join(self._socket_directory, "tls.sock")
+            self._servers.append(UnixTlsServer(self.upload_socket_path, Handler))
+            self.upload_origin = "https://127.0.0.1"
             self.client_tls_context = anonymous_tls_context(ssl.PROTOCOL_TLS_CLIENT)
-            self._servers.append(storage)
         self._threads = [
             threading.Thread(
                 target=server.serve_forever,
@@ -204,6 +233,9 @@ class FakeCollector:
         for server in self._servers:
             server.shutdown()
             server.server_close()
+        if self.upload_socket_path is not None and self._socket_directory:
+            os.unlink(self.upload_socket_path)
+            os.rmdir(self._socket_directory)
 
     def _intake_not_available(self, handler: Any) -> None:
         if self.intake == "off":
