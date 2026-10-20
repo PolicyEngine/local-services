@@ -981,3 +981,136 @@ def test_a_plain_publication_carries_the_newest_request_time_forward(hub, tmp_pa
     )
     older = apply_requested_at(hub, promotion(SECOND_BUILD), 200.0)
     assert (older.status, older.error_code) == ("refused", "NEWER_CHANGE_LANDED")
+
+
+# Order is kept per release. One repository holds several releases (plan
+# section 7, item 2): changes to different releases cannot undo each other,
+# so neither may be refused because of the other, and two publications that
+# land at once both keep their builds (plan section 7, item 5).
+
+DENSE = "microcosm-uk-2024-25-dense"
+DENSE_BUILD = "uk-frs-calibration-attempt-20261019T090000Z-0d0e0f10"
+
+
+def dense_publication(tmp_path, *, make_current=False):
+    files, _ = release_files(tmp_path / "dense" / DENSE_BUILD, DENSE, DENSE_BUILD)
+    return PublishRelease(
+        repository=PRIVATE_REPOSITORY,
+        release=DENSE,
+        build=DENSE_BUILD,
+        release_role="dense",
+        make_current=make_current,
+        files=files,
+    )
+
+
+def dense_promotion():
+    return PromoteBuild(repository=PRIVATE_REPOSITORY, release=DENSE, build=DENSE_BUILD)
+
+
+def test_a_promotion_is_not_refused_for_a_newer_change_to_another_release(
+    hub, tmp_path
+):
+    """The #24 fix review's test: the record names another release's newer
+    change, which cannot be undone by this one."""
+    national, _ = publish_request(tmp_path, FIRST_BUILD)
+    assert apply_requested_at(hub, national, 100.0).status == "published"
+    assert apply_requested_at(hub, dense_publication(tmp_path), 100.0).status == (
+        "published"
+    )
+    assert apply_requested_at(hub, dense_promotion(), 300.0).status == "published"
+
+    outcome = apply_requested_at(hub, promotion(FIRST_BUILD), 200.0)
+
+    assert (outcome.status, outcome.error_code) == ("published", None)
+    record = record_of(hub)
+    assert record.releases[NATIONAL].current == FIRST_BUILD
+    assert record.releases[DENSE].current == DENSE_BUILD
+
+
+def test_a_queued_promotion_is_not_refused_for_a_later_change_to_another_release(
+    hugging_face_module,
+):
+    """The #24 fix review's trigger A: on one machine, a promotion waits after
+    a transient error while a later change to another release lands."""
+    controls = hugging_face_module
+    publish_both(controls)
+    dense_receipt = queue_change(controls, dense_publication(controls.tmp_path))
+    assert dense_receipt["status"] == "published"
+    queued = queue_a_promotion_that_fails_once(controls, SECOND_BUILD)
+    controls.clock.advance(1)
+    later = dense_promotion()
+    hand_over(controls, later)
+    controls.module.delivery.run_cycle()
+    assert status_of(receipt_of(controls, later)) == ("published", None)
+
+    controls.clock.advance(600)
+    controls.module.delivery.run_cycle()
+
+    assert status_of(receipt_of(controls, queued)) == ("published", None)
+    assert current_of(controls).current == SECOND_BUILD
+
+
+def test_concurrent_publications_to_two_releases_both_make_their_builds_current(
+    hub, tmp_path
+):
+    """The #24 fix review's trigger B: the dense publication, requested later,
+    lands while the national one is uploading; the national commit is then
+    refused for its stale parent and applied again."""
+    national, _ = publish_request(tmp_path, FIRST_BUILD, make_current=True)
+    hub.run_before_next_commit(
+        lambda: apply_requested_at(
+            hub, dense_publication(tmp_path, make_current=True), 300.0
+        )
+    )
+
+    outcome = apply_requested_at(hub, national, 200.0)
+
+    assert (outcome.status, outcome.error_code) == ("published", None)
+    record = record_of(hub)
+    assert set(record.releases[NATIONAL].builds) == {FIRST_BUILD}
+    assert record.releases[NATIONAL].current == FIRST_BUILD
+    assert record.releases[DENSE].current == DENSE_BUILD
+
+
+@pytest.mark.parametrize("newer_lands_first", [True, False])
+def test_concurrent_publications_to_one_release_keep_both_builds(
+    hub, tmp_path, newer_lands_first
+):
+    """Both publications make their build current; both builds are listed,
+    and the build of the newer request is current, whichever lands first."""
+    older, _ = publish_request(tmp_path, FIRST_BUILD, make_current=True)
+    newer, _ = publish_request(tmp_path, SECOND_BUILD, make_current=True)
+    if newer_lands_first:
+        hub.run_before_next_commit(lambda: apply_requested_at(hub, newer, 300.0))
+        outcome = apply_requested_at(hub, older, 200.0)
+    else:
+        hub.run_before_next_commit(lambda: apply_requested_at(hub, older, 200.0))
+        outcome = apply_requested_at(hub, newer, 300.0)
+
+    assert outcome.status == "published", outcome
+    record = record_of(hub)
+    assert set(record.releases[NATIONAL].builds) == {FIRST_BUILD, SECOND_BUILD}
+    assert record.releases[NATIONAL].current == SECOND_BUILD
+
+
+def test_a_stale_promotion_is_refused_after_a_later_commit_to_another_release(
+    hub, tmp_path
+):
+    """Another release's later commit carries this release's newest request
+    forward, so the original order fix still holds."""
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, 100.0).status == "published"
+    assert apply_requested_at(hub, dense_publication(tmp_path), 100.0).status == (
+        "published"
+    )
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), 300.0).status == (
+        "published"
+    )
+    assert apply_requested_at(hub, dense_promotion(), 350.0).status == "published"
+
+    stale = apply_requested_at(hub, promotion(SECOND_BUILD), 200.0)
+
+    assert (stale.status, stale.error_code) == ("refused", "NEWER_CHANGE_LANDED")
+    assert record_of(hub).releases[NATIONAL].current == FIRST_BUILD
