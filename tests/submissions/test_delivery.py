@@ -503,3 +503,65 @@ def test_a_collector_cycle_starts_no_submission_after_its_time_budget(
 
     assert controls.module.collector_delivery.run_cycle() == 1
     assert controls.module.collector_delivery.run_cycle() == 1
+
+
+# Collector problems stay out of the Hugging Face path ---------------------
+
+
+def test_a_collector_queue_error_leaves_the_bundle_answer_alone(
+    submitting_module, capsys
+):
+    controls = submitting_module
+
+    def locked_database(*arguments, **options):
+        raise RuntimeError("database is locked")
+
+    controls.module.collector_delivery.enqueue_for_bundle = locked_database
+    request = bundle(controls)
+
+    receipt = stage(controls, request)
+
+    assert (receipt["status"], receipt["handover_id"]) == (
+        "pending",
+        request.handover_id(),
+    )
+    warning = capsys.readouterr().err
+    assert "collector" in warning and "database is locked" not in warning
+
+
+def test_an_unusable_collector_setting_switches_submissions_off(module_factory, capsys):
+    controls = module_factory.start(
+        collector_submissions=True,
+        development_collector_url="https://collector.example.test",
+    )
+    try:
+        assert controls.module.collector_delivery is None
+        assert stage(controls, bundle(controls))["status"] == "pending"
+        controls.module.delivery.run_cycle()
+        assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
+    finally:
+        controls.module.close(0)
+    assert "collector submissions are off" in capsys.readouterr().err
+
+
+def test_an_unexpected_error_in_a_submission_releases_its_row(
+    submitting_module,
+):
+    controls = submitting_module
+    request = bundle(controls)
+    stage(controls, request)
+    controls.module.delivery.run_cycle()
+
+    def unexpected(planned):
+        raise RuntimeError("synthetic")
+
+    controls.module.collector_delivery.client.submit = unexpected
+    controls.module.collector_delivery.run_cycle()
+
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == ("pending", "LOCAL_ERROR")
+    # Retried after the usual backoff, not after the hour-long lease.
+    controls.clock.advance(5)
+    del controls.module.collector_delivery.client.submit
+    assert controls.module.collector_delivery.run_cycle() == 1
+    assert collector_receipt(controls, request)["status"] == "submitted"
