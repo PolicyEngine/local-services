@@ -15,6 +15,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +54,8 @@ class FakeCommit:
     message: str
     files: dict[str, bytes]
     added: dict[str, bytes]
+    #: The Hub's date for the commit, in seconds; ``None`` when undated.
+    date: float | None = None
 
 
 @dataclass
@@ -87,6 +90,9 @@ class FakeHuggingFaceApi:
         self._lock = threading.RLock()
         self._download_directory = Path(tempfile.mkdtemp(prefix="fake-hub-"))
         self._sequence = 0
+        #: The Hub's own clock. When set, each commit is dated with it and
+        #: ``get_paths_info`` reports that date; otherwise commits are undated.
+        self.commit_clock: Callable[[], float] | None = None
 
     # Test controls -------------------------------------------------------
 
@@ -183,8 +189,9 @@ class FakeHuggingFaceApi:
     ) -> str:
         self._sequence += 1
         oid = hashlib.sha1(f"{repository}:{self._sequence}".encode()).hexdigest()
+        date = None if self.commit_clock is None else self.commit_clock()
         self.repositories[repository].commits.append(
-            FakeCommit(oid, parent, message, files, dict(added or {}))
+            FakeCommit(oid, parent, message, files, dict(added or {}), date)
         )
         return oid
 
@@ -292,7 +299,13 @@ class FakeHuggingFaceApi:
                     SimpleNamespace(
                         path=path,
                         last_commit=SimpleNamespace(
-                            oid=last.oid, title=last.message.split("\n", 1)[0]
+                            oid=last.oid,
+                            title=last.message.split("\n", 1)[0],
+                            date=(
+                                None
+                                if last.date is None
+                                else datetime.fromtimestamp(last.date, UTC)
+                            ),
                         ),
                     )
                 )

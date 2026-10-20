@@ -1353,3 +1353,81 @@ def test_every_release_receipt_names_the_build_that_is_current(
     )
     assert "current" in refused, NO_CURRENT_FIELD
     assert refused["current"] is None
+
+
+# Request times come from each machine's clock, and the Hub dates every
+# commit with its own. A request time well after the Hub's date for the
+# commit that carries it can only come from a clock that runs fast. One such
+# machine must neither drop other releases' times from the commit titles
+# (which would turn off the order check for them) nor block later changes to
+# its own release on other machines until real time catches up.
+
+HUB_NOW = 100_000.0
+THREE_HOURS_SECONDS = 3 * 3600
+
+
+@pytest.fixture
+def dated_hub(hub):
+    hub.commit_clock = lambda: HUB_NOW
+    return hub
+
+
+def test_a_fast_clock_leaves_other_releases_order_checked(dated_hub, tmp_path):
+    """The #24 round-2 review's CODE QUALITY 1: a machine three hours fast
+    promotes the dense build; a stale national promotion is still refused."""
+    hub = dated_hub
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, HUB_NOW - 600).status == "published"
+    dense = dense_publication(tmp_path)
+    assert apply_requested_at(hub, dense, HUB_NOW - 600).status == "published"
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), HUB_NOW - 300).status == (
+        "published"
+    )
+    fast_machine = apply_requested_at(
+        hub, dense_promotion(), HUB_NOW + THREE_HOURS_SECONDS
+    )
+    assert fast_machine.status == "published"
+
+    stale = apply_requested_at(hub, promotion(SECOND_BUILD), HUB_NOW - 400)
+
+    assert (stale.status, stale.error_code) == ("refused", "NEWER_CHANGE_LANDED"), (
+        "a fast clock on another release's change turned off the order check "
+        "for this release"
+    )
+    assert record_of(hub).releases[NATIONAL].current == FIRST_BUILD
+
+
+def test_a_fast_clock_does_not_block_its_release_on_other_machines(dated_hub, tmp_path):
+    hub = dated_hub
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, HUB_NOW - 600).status == "published"
+    fast_machine = apply_requested_at(
+        hub, promotion(SECOND_BUILD), HUB_NOW + THREE_HOURS_SECONDS
+    )
+    assert fast_machine.status == "published"
+
+    # Requested on another machine once the fast machine's commit had landed.
+    later = apply_requested_at(hub, promotion(FIRST_BUILD), HUB_NOW)
+
+    assert (later.status, later.error_code) == ("published", None), (
+        "a fast clock blocked a later promotion of its release on another machine"
+    )
+    assert record_of(hub).releases[NATIONAL].current == FIRST_BUILD
+
+
+def test_a_time_slightly_after_the_hub_date_still_orders_changes(dated_hub, tmp_path):
+    """A clock a minute fast stays within the tolerance: its change still
+    refuses an older one."""
+    hub = dated_hub
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, HUB_NOW - 600).status == "published"
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), HUB_NOW + 60).status == (
+        "published"
+    )
+
+    older = apply_requested_at(hub, promotion(SECOND_BUILD), HUB_NOW - 100)
+
+    assert (older.status, older.error_code) == ("refused", "NEWER_CHANGE_LANDED")
