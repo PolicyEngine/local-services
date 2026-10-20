@@ -69,6 +69,59 @@ def test_migration_adds_hand_over_tables_without_changing_telemetry(tmp_path):
     engine.dispose()
 
 
+HAND_OVER_TABLES = {
+    "staged_run_files",
+    "staged_run_deliveries",
+    "repository_commit_schedules",
+    "handover_jobs",
+    "handover_files",
+}
+
+
+def test_a_new_hand_over_database_starts_empty_and_migrates_on_first_open(tmp_path):
+    from alembic import command
+    from sqlalchemy import inspect
+
+    from microcosm_emitter.core.migrations import (
+        HANDOVER_HISTORY,
+        alembic_config,
+        migration_head_revision,
+    )
+
+    path = tmp_path / "events.handovers.sqlite3"
+    assert not path.exists()
+    queue = HandoverQueue(path)
+    try:
+        assert current_database_revision(path) == migration_head_revision(
+            HANDOVER_HISTORY
+        )
+        assert set(inspect(queue._engine).get_table_names()) == HAND_OVER_TABLES | {
+            "alembic_version"
+        }
+        assert queue.repositories_with_pending_run_files() == []
+        with (
+            queue._engine.begin() as connection,
+            alembic_config(connection=connection, history=HANDOVER_HISTORY) as config,
+        ):
+            command.check(config)
+    finally:
+        queue.close()
+    reopened = HandoverQueue(path)
+    reopened.close()
+    assert current_database_revision(path) == migration_head_revision(HANDOVER_HISTORY)
+
+
+def test_a_spool_database_is_refused_as_a_hand_over_database(tmp_path):
+    from microcosm_emitter.telemetry.service.spool import EventSpool
+
+    path = tmp_path / "events.sqlite3"
+    EventSpool(path).close()
+    revision = current_database_revision(path)
+    with pytest.raises(Exception, match="revision"):
+        HandoverQueue(path)
+    assert current_database_revision(path) == revision
+
+
 def test_latest_bytes_for_a_path_replace_earlier_pending_bytes(queue):
     stage(queue, "runs/run-1/progress.json", b'{"stage":"created"}', now=100)
     stage(queue, "runs/run-1/progress.json", b'{"stage":"calibrating"}', now=101)

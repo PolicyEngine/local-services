@@ -6,7 +6,11 @@ import pytest
 from fake_hugging_face import STAGING_REPOSITORY
 
 from microcosm_emitter_interface.client import EmitterClient
-from microcosm_emitter_interface.staging import RunFile, StageRunFiles
+from microcosm_emitter_interface.staging import (
+    HuggingFaceSettings,
+    RunFile,
+    StageRunFiles,
+)
 from microcosm_emitter_interface.transport import SocketTransport
 
 
@@ -52,6 +56,32 @@ def test_requests_that_could_leave_the_run_folder_cannot_be_built(
 ):
     with pytest.raises(ValueError):
         build_request(tmp_path / "progress.json")
+
+
+def test_the_hand_over_database_is_named_next_to_the_spool_database(tmp_path):
+    spool_path = tmp_path / "events.sqlite3"
+    assert HuggingFaceSettings().configuration(spool_path) == {
+        "handover_database_path": str(tmp_path / "events.handovers.sqlite3")
+    }
+
+
+def test_settings_can_name_their_own_hand_over_database(tmp_path):
+    chosen = tmp_path / "elsewhere" / "handovers.sqlite3"
+    settings = HuggingFaceSettings(handover_database_path=chosen)
+    assert settings.configuration(tmp_path / "events.sqlite3") == {
+        "handover_database_path": str(chosen)
+    }
+
+
+def test_the_spool_database_cannot_be_the_hand_over_database(tmp_path):
+    spool_path = tmp_path / "events.sqlite3"
+    settings = HuggingFaceSettings(handover_database_path=spool_path)
+    with pytest.raises(ValueError, match="spool"):
+        settings.configuration(spool_path)
+    client = EmitterClient.start(hugging_face=settings, spool_path=spool_path)
+    assert not client.available
+    assert client.startup_error.reason == "invalid_configuration"
+    assert not spool_path.exists()
 
 
 def test_message_names_each_file_by_its_absolute_local_path(tmp_path, monkeypatch):
