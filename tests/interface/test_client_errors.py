@@ -252,3 +252,72 @@ def test_unconvertible_spool_path_starts_an_unavailable_client():
     )
     assert not client.available
     assert client.startup_error.reason == "invalid_configuration"
+
+
+def hugging_face_client() -> tuple[EmitterClient, RecordingTransport]:
+    transport = RecordingTransport()
+    process = EmitterProcess(
+        process=None,
+        transport=transport,
+        runtime_directory=Path("/nonexistent"),
+        description={"modules": ["huggingface"], "protocol_versions": [1]},
+    )
+    return EmitterClient(process), transport
+
+
+@pytest.mark.parametrize("running", [True, False], ids=["running", "no-emitter"])
+def test_unconvertible_staging_arguments_report_failure(running):
+    from microcosm_emitter_interface.staging import StageRunFiles
+
+    client, transport = hugging_face_client() if running else (EmitterClient(), None)
+    request = StageRunFiles(
+        repository="policyengine/fixture-staging",
+        run_id="run-1",
+        run_index_entry={"run_id": "run-1", "loss": MultiElementArray()},
+    )
+    receipt = client.stage_run_files(request)
+    assert receipt["status"] == "unavailable"
+    assert receipt["run_id"] == "run-1"
+    invalid_run = client.run_files_receipt("policyengine/fixture-staging", "../run")
+    assert invalid_run["status"] == "unavailable"
+    read_back = client.read_back_run_files("no-owner", "run-1", wait_seconds=0)
+    assert read_back["status"] == "unavailable"
+    access = client.check_write_access("no-owner")
+    assert access["status"] == "unavailable"
+    if running:
+        assert transport.requests == []
+        assert client.last_failure.reason == "invalid_arguments"
+
+
+@pytest.mark.parametrize("running", [True, False], ids=["running", "no-emitter"])
+def test_unconvertible_bundle_arguments_report_failure(running, tmp_path):
+    import hashlib
+
+    from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
+
+    client, transport = hugging_face_client() if running else (EmitterClient(), None)
+
+    def bundle_file(name, role, local_path):
+        return BundleFile(
+            name=name,
+            role=role,
+            local_path=local_path,
+            sha256=hashlib.sha256(b"").hexdigest(),
+            bytes=0,
+        )
+
+    request = StageDatasetBundle(
+        repository="policyengine/fixture-staging",
+        run_id="run-1",
+        files=(
+            bundle_file("dataset.h5", "dataset", UnresolvablePath()),
+            bundle_file("staged_manifest.json", "staged_manifest", tmp_path / "m"),
+        ),
+    )
+    receipt = client.stage_dataset_bundle(request, wait_seconds=0)
+    assert receipt["status"] == "unavailable"
+    assert receipt["repository"] == "policyengine/fixture-staging"
+    assert receipt["prefix"] == "staged/run-1"
+    if running:
+        assert transport.requests == []
+        assert client.last_failure.reason == "invalid_arguments"

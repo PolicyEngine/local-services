@@ -195,8 +195,16 @@ class WriteAccess(TypedDict):
 
 
 def unavailable_bundle_receipt(request: StageDatasetBundle) -> DatasetBundleReceipt:
+    """No emitter accepted the bundle; built without converting its files.
+
+    ``handover_id`` is empty when the request's files cannot be converted.
+    """
+    try:
+        handover_id = request.handover_id()
+    except Exception:
+        handover_id = ""
     return {
-        "handover_id": request.handover_id(),
+        "handover_id": handover_id,
         "status": "unavailable",
         "error_code": None,
         "revision": None,

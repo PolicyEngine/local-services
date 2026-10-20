@@ -354,10 +354,9 @@ class EmitterClient:
         The emitter copies the files' bytes before answering, so the build
         may rewrite them immediately afterwards.
         """
-        message = request.message()
         response = self._query(
             HUGGING_FACE_MODULE,
-            lambda: message,
+            request.message,
             kind="staging",
             timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
         )
@@ -367,10 +366,9 @@ class EmitterClient:
         return unavailable_run_files_receipt(request.repository, request.run_id)
 
     def run_files_receipt(self, repository: str, run_id: str) -> RunFilesReceipt:
-        message = run_reference_message("run_files_receipt", repository, run_id)
         response = self._query(
             HUGGING_FACE_MODULE,
-            lambda: message,
+            lambda: run_reference_message("run_files_receipt", repository, run_id),
             kind="staging",
             timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
         )
@@ -388,11 +386,15 @@ class EmitterClient:
         whose files are still pending then reads back as ``pending``.
         """
         if HUGGING_FACE_MODULE not in self.modules:
+            self._fail("staging", "emitter_unavailable")
             return unavailable_read_back()
-        receipt = self.stage_run_files(
-            StageRunFiles(repository=repository, run_id=run_id, flush=True)
-        )
-        deadline = time.monotonic() + max(0, wait_seconds)
+        try:
+            flush = StageRunFiles(repository=repository, run_id=run_id, flush=True)
+        except Exception as error:
+            self._fail("staging", "invalid_arguments", error)
+            return unavailable_read_back()
+        receipt = self.stage_run_files(flush)
+        deadline = time.monotonic() + _wait_seconds(wait_seconds)
         while (
             receipt["status"] == "recorded"
             and receipt["pending_files"]
@@ -400,10 +402,9 @@ class EmitterClient:
         ):
             time.sleep(0.1)
             receipt = self.run_files_receipt(repository, run_id)
-        message = run_reference_message("read_back_run_files", repository, run_id)
         response = self._query(
             HUGGING_FACE_MODULE,
-            lambda: message,
+            lambda: run_reference_message("read_back_run_files", repository, run_id),
             kind="staging",
             timeout=READ_BACK_TIMEOUT_SECONDS,
         )
@@ -429,7 +430,7 @@ class EmitterClient:
     def _wait_until_settled(
         self, receipt: dict[str, Any], wait_seconds: float
     ) -> dict[str, Any]:
-        deadline = time.monotonic() + max(0, wait_seconds)
+        deadline = time.monotonic() + _wait_seconds(wait_seconds)
         while (
             receipt.get("status") not in SETTLED_STATUSES
             and receipt.get("status") != "unavailable"
@@ -450,10 +451,9 @@ class EmitterClient:
         Returns once the hand-over is durably queued (``pending``), or after
         it settles if that happens within ``wait_seconds``.
         """
-        message = request.message()
         response = self._query(
             HUGGING_FACE_MODULE,
-            lambda: message,
+            request.message,
             kind="staging",
             timeout=FILE_REQUEST_TIMEOUT_SECONDS,
         )
@@ -467,14 +467,13 @@ class EmitterClient:
 
     def check_write_access(self, repository: str) -> WriteAccess:
         """Whether the build's credential can reach and write ``repository``."""
-        message = {
-            "protocol_version": PROTOCOL_VERSION,
-            "command": "check_write_access",
-            "repository": repository_identifier(repository),
-        }
         response = self._query(
             HUGGING_FACE_MODULE,
-            lambda: message,
+            lambda: {
+                "protocol_version": PROTOCOL_VERSION,
+                "command": "check_write_access",
+                "repository": repository_identifier(repository),
+            },
             kind="staging",
             timeout=READ_BACK_TIMEOUT_SECONDS,
         )
