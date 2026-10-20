@@ -35,8 +35,9 @@ COLLECTOR_SUBMISSION: Final = "collector_submission"
 SUBMISSION_LEASE_SECONDS: Final = 3600.0
 MAX_JOBS_PER_CYCLE: Final = 8
 #: How long one cycle keeps starting submissions. The budget never stops a
-#: submission in progress: an upload that keeps making progress runs to its
-#: end, and only a stalled request or upload fails (see ``client``).
+#: submission in progress: an upload at or above the minimum rate described
+#: at ``client.UPLOAD_TIMEOUT`` runs to its end, and only a request that gets
+#: no answer, or an upload slower than that, fails.
 MAX_CYCLE_SECONDS: Final = 600.0
 STAGED_STATUSES: Final = frozenset({"uploaded", "already_staged"})
 NOT_STAGED_STATUSES: Final = frozenset({"failed", "refused"})

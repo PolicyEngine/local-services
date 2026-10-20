@@ -477,7 +477,7 @@ def test_an_instruction_whose_host_differs_from_its_url_is_refused(
 # client's sends wait for the fake collector to read the body.
 
 SMALL_SOCKET_BUFFER_BYTES = 16 * 1024
-#: Three pieces of at most 1 MiB (``UPLOAD_CHUNK_BYTES``).
+#: Large enough to fill both small buffers many times over.
 LARGE_FILE_BYTES = 5 * 1024 * 1024 // 2
 
 

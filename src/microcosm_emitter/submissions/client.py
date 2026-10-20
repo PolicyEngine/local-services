@@ -33,14 +33,21 @@ SUBMISSIONS_PATH: Final = "/v1/submissions"
 STORAGE_HOST: Final = "storage.googleapis.com"
 REQUEST_TIMEOUT_SECONDS: Final = 30.0
 #: An upload may wait 60 seconds to connect and for the answer. The write
-#: timeout applies to each send to the connection: a send that has had no
-#: byte accepted for 60 seconds fails, so a stalled upload fails within about
-#: a minute. An upload that keeps making progress has no limit on its total
-#: time, however large the file or slow the link: a signed upload is one
-#: ``PUT`` that stores nothing unless it completes, so stopping it early
-#: would only start it again from zero.
+#: timeout applies to each send of one ``UPLOAD_CHUNK_BYTES`` piece to the
+#: connection. Over HTTPS (every Cloud Storage upload) CPython's ``ssl``
+#: writes a piece whole, under one timeout, so each 64 KiB piece must be
+#: written within 60 seconds: an average of at least 1,093 bytes a second
+#: (about 8.7 kbit/s) over each piece. Over plain HTTP (a loopback
+#: collector) a send returns once the kernel takes any bytes, so it fails
+#: only after 60 seconds in which no byte was accepted. Either way a stalled
+#: upload fails within about a minute, and an upload at or above that rate
+#: has no limit on its total time, however large the file: a signed upload
+#: is one ``PUT`` that stores nothing unless it completes, so stopping it
+#: early would only start it again from zero.
 UPLOAD_TIMEOUT: Final = httpx.Timeout(60.0)
-UPLOAD_CHUNK_BYTES: Final = 1024 * 1024
+#: Small enough to keep that HTTPS minimum low; httpx reads files in pieces
+#: of the same size.
+UPLOAD_CHUNK_BYTES: Final = 64 * 1024
 RETRYABLE_STATUSES: Final = frozenset({408, 429})
 #: After the collector shows it has no intake, how long to wait before
 #: exchanging again; no submission request goes to it meanwhile.
