@@ -60,9 +60,9 @@ class FakeCollector:
                 self.end_headers()
                 self.wfile.write(encoded)
 
-            def _authorized(self) -> bool:
+            def _token_scope(self) -> str | None:
                 token = self.headers.get("Authorization", "").removeprefix("Bearer ")
-                return token in collector._tokens
+                return collector._tokens.get(token)
 
             def do_POST(self) -> None:
                 body = self._body()
@@ -71,8 +71,12 @@ class FakeCollector:
                         return collector._exchange(self, body)
                     if collector.intake != "on":
                         return collector._intake_not_available(self)
-                    if not self._authorized():
+                    scope = self._token_scope()
+                    if scope is None:
                         return self._json(401, {"detail": "invalid"})
+                    if scope != "artifacts:submit":
+                        # The token's scope does not allow the request.
+                        return self._json(403, {"detail": "scope"})
                     if self.path == "/v1/submissions":
                         return collector._create(self, json.loads(body))
                     if self.path.endswith("/complete"):

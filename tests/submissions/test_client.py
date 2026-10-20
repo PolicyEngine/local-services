@@ -192,14 +192,42 @@ def test_a_rejected_credential_fails_the_submission(collector, tmp_path) -> None
     assert outcome.error_code == "CREDENTIAL_REJECTED"
 
 
-@pytest.mark.parametrize("status", [403, 413, 422])
-def test_a_submission_the_collector_refuses_fails(collector, tmp_path, status) -> None:
-    collector.create_statuses = [status]
+@pytest.mark.parametrize(
+    "answer", [(403, "submission_owned_by_another_user"), 413, 422]
+)
+def test_a_submission_the_collector_refuses_fails(collector, tmp_path, answer) -> None:
+    collector.create_statuses = [answer]
 
     outcome = submission_client(collector).submit(planned_submission(tmp_path))
 
+    status = answer[0] if isinstance(answer, tuple) else answer
     assert outcome.status == "failed"
     assert outcome.error_code == f"COLLECTOR_REFUSED_{status}"
+    assert len(collector.exchange_requests) == 1
+
+
+@pytest.mark.parametrize("step", ["create", "complete"])
+def test_a_403_without_a_code_exchanges_again_for_the_submit_scope(
+    collector, tmp_path, step
+) -> None:
+    """The token's scope did not allow the request; a fresh token does."""
+    setattr(collector, f"{step}_statuses", [403])
+
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert outcome.status == "accepted"
+    assert collector.exchange_requests == [{"scope": "artifacts:submit"}] * 2
+
+
+def test_a_fresh_token_refused_the_same_way_fails_the_submission(
+    collector, tmp_path
+) -> None:
+    collector.create_statuses = [403, 403]
+
+    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+
+    assert (outcome.status, outcome.error_code) == ("failed", "COLLECTOR_REFUSED_403")
+    assert len(collector.exchange_requests) == 2
 
 
 @pytest.mark.parametrize("status", [429, 500, 503])

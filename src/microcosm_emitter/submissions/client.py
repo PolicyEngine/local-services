@@ -213,6 +213,23 @@ class CollectorSubmissionClient:
                 SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE)
             ) from None
 
+    def _post_in_scope(
+        self, path: str, token: str, body: Any = None
+    ) -> tuple[httpx.Response, str]:
+        """Post, and once more with a fresh token after a 403 without a code.
+
+        A 403 without a ``code`` means the token's scope does not allow the
+        request; a fresh ``artifacts:submit`` token is tried once, and a second
+        such refusal is final. A 403 with a code (for example
+        ``submission_owned_by_another_user``) is final at once.
+        """
+        response = self._post(path, token, body)
+        if response.status_code == 403 and self._error_code(response) is None:
+            self._invalidate_credential()
+            token = self._token()
+            response = self._post(path, token, body)
+        return response, token
+
     def _uploads(self, response: httpx.Response, planned: PlannedSubmission) -> tuple:
         try:
             document = response.json()
@@ -283,13 +300,13 @@ class CollectorSubmissionClient:
             return waiting
         try:
             token = self._token()
-            created = self._post(SUBMISSIONS_PATH, token, planned.body)
+            created, token = self._post_in_scope(SUBMISSIONS_PATH, token, planned.body)
             if created.status_code not in {200, 201}:
                 return self._settled_answer(created, names_submission=False)
             submission_id, uploads = self._uploads(created, planned)
             for upload in uploads:
                 self._upload(upload, planned)
-            completed = self._post(
+            completed, token = self._post_in_scope(
                 f"{SUBMISSIONS_PATH}/{submission_id}/complete", token
             )
         except _StepFailedError as failure:
