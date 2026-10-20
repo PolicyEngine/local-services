@@ -337,6 +337,9 @@ class CollectorSubmissionClient:
             submission_id, uploads = self._uploads(created, planned)
             for upload in uploads:
                 self._upload(upload, planned)
+            # The uploads can outlast the token. Ask the session again: it
+            # exchanges for a new token only when this one is about to expire.
+            token = self._token()
             completed, token = self._post_in_scope(
                 f"{SUBMISSIONS_PATH}/{submission_id}/complete", token
             )
