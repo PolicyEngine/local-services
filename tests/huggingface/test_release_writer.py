@@ -718,3 +718,163 @@ def test_the_default_policy_allows_every_change(hugging_face_module):
 
     caller = ReleaseCaller(user="fixture-user", parent_pid=1)
     assert allow_every_change(promotion(FIRST_BUILD), caller) is None
+
+
+THIRD_BUILD = "uk-frs-calibration-attempt-20261020T101500Z-0a1b2c3d"
+TWO_DAYS_SECONDS = 2 * 24 * 3600
+
+
+def hand_over(controls, request):
+    return controls.module.query(request.message())["receipt"]
+
+
+def receipt_of(controls, request):
+    return controls.module.query(
+        {
+            "protocol_version": 1,
+            "command": "handover_receipt",
+            "handover_id": request.handover_id(),
+        }
+    )["receipt"]
+
+
+def status_of(receipt):
+    return receipt["status"], receipt["error_code"]
+
+
+def queue_a_promotion_that_fails_once(controls, build):
+    """Hand over a promotion whose first commit fails; it stays pending."""
+    controls.hub.fail_next("create_commit", FakeHubHTTPError(503))
+    request = promotion(build)
+    hand_over(controls, request)
+    controls.module.delivery.run_cycle()
+    assert status_of(receipt_of(controls, request)) == ("pending", "UPLOAD_FAILED")
+    return request
+
+
+def test_a_promotion_queued_before_another_machine_changed_current_is_refused(
+    hugging_face_module,
+):
+    """The #24 review's case: another machine's later change landed first."""
+    controls = hugging_face_module
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(controls.tmp_path, build)
+        assert queue_change(controls, request)["status"] == "published"
+    queued = queue_a_promotion_that_fails_once(controls, SECOND_BUILD)
+    controls.clock.advance(1)
+    other_machine = apply_release_change(
+        DatasetRepository(PRIVATE_REPOSITORY, controls.hub),
+        promotion(FIRST_BUILD),
+        published_at="2026-10-20T00:00:00+00:00",
+    )
+    assert other_machine.status == "published"
+    assert current_of(controls).current == FIRST_BUILD
+
+    controls.clock.advance(600)
+    controls.module.delivery.run_cycle()
+
+    assert current_of(controls).current == FIRST_BUILD
+    assert status_of(receipt_of(controls, queued)) == (
+        "refused",
+        "NEWER_CHANGE_LANDED",
+    )
+
+
+def test_an_older_promotion_never_lands_after_a_newer_one_from_this_machine(
+    hugging_face_module,
+):
+    """The newer promotion changes nothing (its build is already current)."""
+    controls = hugging_face_module
+    publish_both(controls)
+    older = queue_a_promotion_that_fails_once(controls, SECOND_BUILD)
+    controls.clock.advance(1)
+    assert queue_change(controls, promotion(FIRST_BUILD))["status"] == "published"
+
+    controls.clock.advance(600)
+    controls.module.delivery.run_cycle()
+
+    assert current_of(controls).current == FIRST_BUILD
+    assert status_of(receipt_of(controls, older)) == (
+        "refused",
+        "NEWER_CHANGE_LANDED",
+    )
+
+
+def test_a_change_pending_for_days_is_refused_after_a_login_not_applied(
+    hugging_face_module,
+):
+    controls = hugging_face_module
+    publish_both(controls)
+    controls.remove_credential()
+    request = promotion(SECOND_BUILD)
+    hand_over(controls, request)
+    controls.module.delivery.run_cycle()
+    assert status_of(receipt_of(controls, request)) == (
+        "pending",
+        "CREDENTIAL_MISSING",
+    )
+
+    controls.clock.advance(TWO_DAYS_SECONDS)
+    controls.restore_credential()
+    controls.module.delivery.run_cycle()
+
+    assert status_of(receipt_of(controls, request)) == ("refused", "REQUEST_EXPIRED")
+    assert current_of(controls).current == FIRST_BUILD
+
+
+def test_a_change_that_cannot_land_becomes_final_once_it_expires(
+    hugging_face_module,
+):
+    controls = hugging_face_module
+    publish_both(controls)
+    controls.remove_credential()
+    request = promotion(SECOND_BUILD)
+    hand_over(controls, request)
+    controls.module.delivery.run_cycle()
+
+    controls.clock.advance(TWO_DAYS_SECONDS)
+    controls.module.delivery.run_cycle()
+
+    assert status_of(receipt_of(controls, request)) == ("refused", "REQUEST_EXPIRED")
+
+
+def test_changes_handed_over_in_order_on_this_machine_all_apply(
+    hugging_face_module,
+):
+    controls = hugging_face_module
+    publish_both(controls)
+    first = promotion(SECOND_BUILD)
+    hand_over(controls, first)
+    controls.clock.advance(1)
+    second = promotion(FIRST_BUILD)
+    hand_over(controls, second)
+
+    for _ in range(2):
+        controls.module.delivery.run_cycle()
+        controls.clock.advance(1)
+
+    assert status_of(receipt_of(controls, first)) == ("published", None)
+    assert status_of(receipt_of(controls, second)) == ("published", None)
+    assert current_of(controls).current == FIRST_BUILD
+
+
+def test_a_publication_queued_before_a_newer_change_still_lands(
+    hugging_face_module,
+):
+    """Adding a build undoes no newer change, and two publications must both
+    land (plan item 5), so a plain publication is never refused for order."""
+    controls = hugging_face_module
+    publish_both(controls)
+    controls.hub.fail_next("create_commit", FakeHubHTTPError(503))
+    third, _ = publish_request(controls.tmp_path, THIRD_BUILD)
+    hand_over(controls, third)
+    controls.module.delivery.run_cycle()
+    controls.clock.advance(1)
+    assert queue_change(controls, promotion(SECOND_BUILD))["status"] == "published"
+
+    controls.clock.advance(600)
+    controls.module.delivery.run_cycle()
+
+    assert status_of(receipt_of(controls, third)) == ("published", None)
+    assert THIRD_BUILD in current_of(controls).builds
+    assert current_of(controls).current == SECOND_BUILD
