@@ -140,6 +140,28 @@ class HandoverQueue:
             )
             return lease if claimed is not None else None
 
+    def renew_repository(self, repository: str, lease: float, renewed: float) -> bool:
+        """Extend this writer's lease to ``renewed``; False if it was lost."""
+        with self._sessions.begin() as session:
+            return (
+                session.scalar(
+                    update(RepositoryCommitSchedule)
+                    .where(
+                        RepositoryCommitSchedule.repository == repository,
+                        RepositoryCommitSchedule.lease_until == lease,
+                    )
+                    .values(lease_until=renewed)
+                    .returning(RepositoryCommitSchedule.repository)
+                )
+                is not None
+            )
+
+    def repository_lease(self, repository: str) -> float:
+        """When the repository's current lease expires; 0.0 when none is held."""
+        with self._sessions() as session:
+            schedule = session.get(RepositoryCommitSchedule, repository)
+            return 0.0 if schedule is None else schedule.lease_until
+
     def release_repository(self, repository: str, lease: float) -> None:
         with self._sessions.begin() as session:
             session.execute(
@@ -609,6 +631,24 @@ class HandoverQueue:
                 attempts=candidate.attempts,
                 lease_until=lease,
                 files={row.name: row.content for row in copied},
+            )
+
+    def renew_job(self, job: ClaimedJob, renewed: float) -> bool:
+        """Extend ``job``'s lease to ``renewed``; False if it was lost."""
+        with self._sessions.begin() as session:
+            return (
+                session.scalar(
+                    update(HandoverJob)
+                    .where(
+                        HandoverJob.handover_id == job.handover_id,
+                        HandoverJob.destination == job.destination,
+                        HandoverJob.status == JOB_PENDING,
+                        HandoverJob.lease_until == job.lease_until,
+                    )
+                    .values(lease_until=renewed)
+                    .returning(HandoverJob.handover_id)
+                )
+                is not None
             )
 
     def finish_job(
