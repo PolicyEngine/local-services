@@ -136,7 +136,7 @@ The collector's artifact intake (PolicyEngine/microcosm-collector, `docs/artifac
   - A 404 `submission_not_found` at completion means the collector lost the submission: the next attempt creates it again.
   - A 403 without a `code` means the token's scope does not allow the request: the module exchanges again once, and only a second such refusal is final. A 403 `submission_owned_by_another_user` is final.
   - Completion answering `rejected` or `failed` (for example `stored_object_mismatch`) is `failed`, with the rejection's code. Outages are retried with backoff; other refusals are `failed`; success is `submitted`, with each submission's ID and status. `collector_submission_receipt` reports it. The module does not poll the submission's status or fetch its receipt yet.
-- **Off by default.** Nothing is submitted unless the module configuration sets `collector_submissions` to `true`, which no interface release does yet. `development_collector_url` points the module at a loopback collector. Switching submissions on for production builds is a separate emitter change.
+- **Off by default.** Nothing is submitted unless the module configuration sets `collector_submissions` to `true`, which no interface release does yet. `development_collector_url` points the module at a loopback collector. Collector settings it cannot use switch submissions off with one warning, and an error queueing a bundle for the collector is printed once; neither stops Hugging Face uploads or changes the bundle's answer. Switching submissions on for production builds is a separate emitter change.
 
 ## Development
 

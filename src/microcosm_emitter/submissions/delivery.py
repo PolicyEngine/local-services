@@ -39,6 +39,8 @@ NOT_STAGED_STATUSES: Final = frozenset({"failed", "refused"})
 WAITING_FOR_HUGGING_FACE: Final = "WAITING_FOR_HUGGING_FACE"
 NOT_STAGED_ON_HUGGING_FACE: Final = "NOT_STAGED_ON_HUGGING_FACE"
 COLLECTOR_FOLDER_TOO_LONG: Final = "COLLECTOR_FOLDER_TOO_LONG"
+#: The emitter hit an unexpected error of its own during an attempt.
+LOCAL_ERROR: Final = "LOCAL_ERROR"
 
 
 class CollectorSubmissionDelivery:
@@ -119,7 +121,15 @@ class CollectorSubmissionDelivery:
             )
             if job is None:
                 break
-            self._attempt(job)
+            try:
+                self._attempt(job)
+            except Exception:
+                # Record the attempt, so the row is retried after the usual
+                # backoff instead of staying leased for the whole lease.
+                earlier = (self.receipt(job.handover_id) or {}).get("submissions")
+                self._finish(
+                    job, "pending", LOCAL_ERROR, list(earlier or []), retry=True
+                )
             attempted += 1
         return attempted
 

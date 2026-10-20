@@ -75,6 +75,14 @@ COLLECTOR_WORKER_ERROR_MESSAGE = (
     "Microcosm collector submission hit a local queue error; handed-over files "
     "stay queued for a later attempt."
 )
+COLLECTOR_QUEUE_ERROR_MESSAGE = (
+    "A bundle could not be queued for the collector ({error_type}); its Hugging "
+    "Face upload is queued as usual."
+)
+COLLECTOR_SETTING_MESSAGE = (
+    "Microcosm collector submissions are off: the collector settings are "
+    "unusable ({error_type}). Hugging Face uploads continue."
+)
 
 
 def _refused_run_files_receipt(message: Mapping[str, Any], code: str) -> dict[str, Any]:
@@ -158,7 +166,14 @@ class HuggingFaceModule:
             "collector_submissions", COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT
         )
         if enabled is True:
-            self.collector_delivery = self._collector_delivery(self.queue)
+            try:
+                self.collector_delivery = self._collector_delivery(self.queue)
+            except ValueError as error:
+                # A collector setting never stops the Hugging Face module.
+                self.delivery.warn_once(
+                    "collector settings",
+                    COLLECTOR_SETTING_MESSAGE.format(error_type=type(error).__name__),
+                )
         if self.background_workers:
             self.workers = self._delivery_workers(self.delivery)
             for worker in self.workers.values():
@@ -299,9 +314,18 @@ class HuggingFaceModule:
         if self.collector_delivery is not None and wants_collector_submission(
             hand_over.request
         ):
-            self.collector_delivery.enqueue_for_bundle(
-                hand_over.handover_id, hand_over.request, hand_over.copied
-            )
+            try:
+                self.collector_delivery.enqueue_for_bundle(
+                    hand_over.handover_id, hand_over.request, hand_over.copied
+                )
+            except Exception as error:
+                # The Hugging Face row is queued: answer with its receipt.
+                self.delivery.warn_once(
+                    "collector queue",
+                    COLLECTOR_QUEUE_ERROR_MESSAGE.format(
+                        error_type=type(error).__name__
+                    ),
+                )
         return receipt
 
     def _caller(self) -> ReleaseCaller:
