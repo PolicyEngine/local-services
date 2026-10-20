@@ -45,6 +45,11 @@ UPLOAD_FAILED_MESSAGE = (
 )
 
 
+def never_stop() -> bool:
+    """The stop check of a cycle that no worker runs: it is never stopped."""
+    return False
+
+
 def iso_timestamp(seconds: float) -> str:
     """Microcosm ``staging._now()`` format, at ``seconds``."""
     return datetime.fromtimestamp(seconds, UTC).replace(microsecond=0).isoformat()
@@ -154,23 +159,48 @@ class HuggingFaceDelivery:
         """Commit each due repository's pending run files; return how many."""
         return self._cycle(job_kinds=frozenset(), run_files=True)
 
-    def job_cycle(self, kinds: frozenset[str]) -> int:
-        """Deliver one due job of ``kinds`` per repository; return how many."""
-        return self._cycle(job_kinds=kinds & SUPPORTED_JOB_KINDS, run_files=False)
+    def job_cycle(
+        self,
+        kinds: frozenset[str],
+        *,
+        stop_requested: Callable[[], bool] = never_stop,
+    ) -> int:
+        """Deliver one due job of ``kinds`` per repository; return how many.
 
-    def _cycle(self, *, job_kinds: frozenset[str], run_files: bool) -> int:
+        Once ``stop_requested`` turns true (shutdown has begun), the cycle
+        starts no new upload and returns.
+        """
+        return self._cycle(
+            job_kinds=kinds & SUPPORTED_JOB_KINDS,
+            run_files=False,
+            stop_requested=stop_requested,
+        )
+
+    def _cycle(
+        self,
+        *,
+        job_kinds: frozenset[str],
+        run_files: bool,
+        stop_requested: Callable[[], bool] = never_stop,
+    ) -> int:
         repositories = self.queue.due_repositories(
             self.clock(), kinds=job_kinds, run_files=run_files
         )
         if not repositories:
             return 0
         api = self.api_factory()
-        return sum(
-            self._deliver_repository(
-                repository, api, job_kinds=job_kinds, run_files=run_files
+        delivered = 0
+        for repository in repositories:
+            if stop_requested():
+                break
+            delivered += self._deliver_repository(
+                repository,
+                api,
+                job_kinds=job_kinds,
+                run_files=run_files,
+                stop_requested=stop_requested,
             )
-            for repository in repositories
-        )
+        return delivered
 
     def drain(self, deadline: float) -> None:
         """At shutdown, commit every repository's pending run files once.
@@ -195,10 +225,13 @@ class HuggingFaceDelivery:
         job_kinds: frozenset[str],
         run_files: bool,
         at_shutdown: bool = False,
+        stop_requested: Callable[[], bool] = never_stop,
     ) -> int:
         """One commit to ``repository``: a job of ``job_kinds``, else run files.
 
         ``at_shutdown`` commits pending run files whether or not they are due.
+        ``stop_requested`` is checked again once the repository is leased, so
+        a shutdown that began while the lease was being taken starts no upload.
         """
         lease = self.queue.claim_repository(
             repository, now=self.clock(), lease_seconds=REPOSITORY_LEASE_SECONDS
@@ -214,6 +247,8 @@ class HuggingFaceDelivery:
             renewal_seconds=self.lease_renewal_seconds,
         ).start()
         try:
+            if stop_requested():
+                return 0
             if api is None:
                 self._credential_missing(
                     held,

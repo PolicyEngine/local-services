@@ -12,6 +12,10 @@ A worker's upload then never delays run-file commits to another repository,
 the commit at shutdown, or a read-back. Two writers never commit to one
 repository at once: each delivery first leases its repository in the
 hand-over database, and one that finds it leased tries again next cycle.
+
+Once shutdown begins (``stop``), a worker starts no new upload: its cycle
+receives ``stop_requested`` and checks it before each repository, so only
+an upload already under way when ``stop`` was called can still be running.
 """
 
 from __future__ import annotations
@@ -24,14 +28,16 @@ from collections.abc import Callable
 class DeliveryWorker:
     """Runs ``cycle`` on its own thread every ``interval_seconds`` until stopped.
 
-    An exception from ``cycle`` is reported through ``on_error``; the work it
+    ``cycle`` is called with ``stop_requested``, which turns true once
+    ``stop`` is called; a cycle checks it before it starts each upload. An
+    exception from ``cycle`` is reported through ``on_error``; the work it
     was doing stays queued, and the next cycle tries again.
     """
 
     def __init__(
         self,
         name: str,
-        cycle: Callable[[], object],
+        cycle: Callable[[Callable[[], bool]], object],
         *,
         interval_seconds: float,
         on_error: Callable[[], None],
@@ -52,8 +58,12 @@ class DeliveryWorker:
         self._thread.start()
 
     def stop(self) -> None:
-        """Start no further cycle; a cycle in progress runs on."""
+        """Start no further cycle or upload; an upload under way runs on."""
         self._stopping.set()
+
+    def stop_requested(self) -> bool:
+        """Whether ``stop`` was called: the cycle then starts no new upload."""
+        return self._stopping.is_set()
 
     def wait(self, deadline: float) -> bool:
         """After ``stop``, wait for a cycle in progress until ``deadline``.
@@ -78,6 +88,6 @@ class DeliveryWorker:
                 if self._stopping.is_set():
                     return
                 try:
-                    self.cycle()
+                    self.cycle(self.stop_requested)
                 except Exception:
                     self.on_error()

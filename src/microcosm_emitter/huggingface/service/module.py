@@ -110,7 +110,9 @@ class HuggingFaceModule:
         return {
             DATASET_BUNDLE: DeliveryWorker(
                 "dataset-bundles",
-                lambda: delivery.job_cycle(frozenset({DATASET_BUNDLE})),
+                lambda stop_requested: delivery.job_cycle(
+                    frozenset({DATASET_BUNDLE}), stop_requested=stop_requested
+                ),
                 interval_seconds=self.worker_interval_seconds,
                 on_error=self._worker_error,
             )
@@ -301,11 +303,12 @@ class HuggingFaceModule:
         """Commit pending run files once more, then stop by ``deadline``.
 
         The commit at shutdown runs first, on the calling thread, for every
-        repository a worker is not uploading to at that moment. A worker's
-        upload in progress then has until ``deadline`` to finish, and its
-        repository's run files are committed after it if time remains. An
-        upload still running at ``deadline`` is abandoned when the process
-        exits; its job lease expires and the next emitter retries the job.
+        repository a worker is not uploading to at that moment. Once stopped,
+        a worker starts no new upload. Its upload in progress has until
+        ``deadline`` to finish, and that repository's run files are committed
+        after it if time remains. An upload still running at ``deadline`` is
+        abandoned when the process exits; its job lease expires and the next
+        emitter retries the job.
         """
         if self._closed:
             return
