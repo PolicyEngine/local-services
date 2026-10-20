@@ -28,12 +28,15 @@ from microcosm_emitter.submissions.planning import (
 COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT: Final = False
 DESTINATION_COLLECTOR: Final = "collector"
 COLLECTOR_SUBMISSION: Final = "collector_submission"
-#: Long enough to upload large native evidence files in one attempt.
+#: Long enough to upload large native evidence files in one attempt on most
+#: links. It is not renewed during an attempt: an attempt that outlasts it (a
+#: very large file on a slow link) can be claimed again by another emitter
+#: on this machine, and the later result is the one recorded.
 SUBMISSION_LEASE_SECONDS: Final = 3600.0
 MAX_JOBS_PER_CYCLE: Final = 8
-#: How long one cycle keeps starting submissions. A submission in progress
-#: then runs to its end; each of its requests and uploads has its own time
-#: limit (see ``client``), so a cycle's length is bounded.
+#: How long one cycle keeps starting submissions. The budget never stops a
+#: submission in progress: an upload that keeps making progress runs to its
+#: end, and only a stalled request or upload fails (see ``client``).
 MAX_CYCLE_SECONDS: Final = 600.0
 STAGED_STATUSES: Final = frozenset({"uploaded", "already_staged"})
 NOT_STAGED_STATUSES: Final = frozenset({"failed", "refused"})

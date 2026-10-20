@@ -552,24 +552,6 @@ def test_uploads_have_a_finite_write_timeout():
     assert UPLOAD_TIMEOUT.write is not None and UPLOAD_TIMEOUT.write > 0
 
 
-def test_an_upload_stops_once_it_outlasts_its_time_limit():
-    from microcosm_emitter.submissions import client as client_module
-
-    assert client_module.upload_time_limit(1) == client_module.MIN_UPLOAD_SECONDS
-    big = 100 * client_module.MIN_UPLOAD_BYTES_PER_SECOND
-    assert client_module.upload_time_limit(big) == max(
-        100.0, client_module.MIN_UPLOAD_SECONDS
-    )
-    readings = iter([0.0, 1.0, 5.0])
-    chunks = client_module.chunks_until(
-        [b"first", b"second", b"third"], deadline=2.0, clock=lambda: next(readings)
-    )
-    assert next(chunks) == b"first"
-    assert next(chunks) == b"second"
-    with pytest.raises(client_module.UploadTimeLimitError):
-        next(chunks)
-
-
 def test_a_collector_cycle_starts_no_submission_after_its_time_budget(
     submitting_module, monkeypatch
 ):
