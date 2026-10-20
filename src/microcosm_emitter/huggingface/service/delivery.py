@@ -26,7 +26,7 @@ from microcosm_emitter.huggingface.service.releases import (
     ReleaseOutcome,
     apply_release_change,
     expired_change,
-    is_ordered,
+    sets_current,
 )
 from microcosm_emitter.huggingface.service.requests import (
     RequestRefusedError,
@@ -394,13 +394,13 @@ class HuggingFaceDelivery:
             change,
             published_at=iso_timestamp(self.clock()),
             requested_at=job.created_at,
-            newest_local_requests=self._newest_ordered_changes_landed(job.target),
+            newest_local_requests=self._newest_current_changes_landed(job.target),
         )
 
-    def _newest_ordered_changes_landed(self, repository: str) -> dict[str, float]:
-        """For each release, when the newest ordered change to it (see
-        ``is_ordered``) that this machine landed on ``repository`` was handed
-        over."""
+    def _newest_current_changes_landed(self, repository: str) -> dict[str, float]:
+        """For each release, when the newest change to its ``current`` (see
+        ``sets_current``) that this machine landed on ``repository`` was
+        handed over."""
         newest_requests: dict[str, float] = {}
         for created_at, request in self.queue.requests_with_status(
             repository, kind=RELEASE_CHANGE, status="published"
@@ -409,7 +409,7 @@ class HuggingFaceDelivery:
                 change = release_change_from_message(request)
             except RequestRefusedError:
                 continue
-            if is_ordered(change):
+            if sets_current(change):
                 newest_requests[change.release] = max(
                     newest_requests.get(change.release, created_at), created_at
                 )

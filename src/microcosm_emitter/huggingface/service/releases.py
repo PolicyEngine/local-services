@@ -28,22 +28,27 @@ each other. So:
 - A change still pending ``RELEASE_CHANGE_EXPIRY_SECONDS`` after it was handed
   over is final: ``refused`` with ``REQUEST_EXPIRED``. It never lands days
   later, for example after ``hf auth login``.
-- An ordered change (a promotion, a withdrawal, or a publication that makes
-  its build current) is overtaken when an ordered change to the same release,
-  requested after it, has already landed. An overtaken promotion or
-  withdrawal is refused with ``NEWER_CHANGE_LANDED``. An overtaken
+- A change that sets ``current`` (a promotion, or a publication that makes
+  its build current; see ``sets_current``) is overtaken when such a change
+  to the same release, requested after it, has already landed. An overtaken
+  promotion is refused with ``NEWER_CHANGE_LANDED``. An overtaken
   publication still adds its build but leaves ``current`` as the newer
   change set it, so two publications that land at once both keep their
   builds and the newer request's build is current (plan item 5).
 - The writer knows which changes landed from two places: this machine's
-  queue (its own ordered changes that landed, including ones that left the
-  record unchanged), and the title of the commit that last changed
-  ``releases.json``, which ends ``[newest requests: <release>=<time>; ...]``:
-  for each release, the newest request time of the ordered changes applied
-  to it. Every writer commit carries those times forward, dropping a
-  release's time once it is ``ORDER_WINDOW_SECONDS`` older than the newest
-  time listed, by which point every change requested before it has expired.
-- A publication that only adds a build is never overtaken and adds no time.
+  queue (its own changes that set ``current`` and landed, including ones
+  that left the record unchanged), and the title of the commit that last
+  changed ``releases.json``, which ends
+  ``[newest requests: <release>=<time>; ...]``: for each release, the newest
+  request time of the changes applied to it that set ``current``. Every
+  writer commit carries those times forward, dropping a release's time once
+  it is ``ORDER_WINDOW_SECONDS`` older than the newest time listed, by which
+  point every change requested before it has expired.
+- A withdrawal, and a publication that only adds a build, never change
+  ``current``: they are never overtaken, never count as newer, and add no
+  time. A withdrawal cannot conflict with a change to ``current`` either:
+  ``withdraw_build`` refuses the current build and ``make_current`` refuses
+  a withdrawn one, whichever lands first.
 
 What this cannot see: a newer change on another machine that left
 ``releases.json`` unchanged (promoting the build that is already current)
@@ -93,7 +98,8 @@ from microcosm_emitter_interface.releases import (
 )
 
 PARENT_CONFLICT = "PARENT_CONFLICT"
-#: A change to the same release requested after this one has already landed.
+#: A change to the same release's ``current``, requested after this one, has
+#: already landed.
 NEWER_CHANGE_LANDED = "NEWER_CHANGE_LANDED"
 #: The change was still pending ``RELEASE_CHANGE_EXPIRY_SECONDS`` after it
 #: was handed over.
@@ -107,7 +113,8 @@ RELEASE_CHANGE_EXPIRY_SECONDS = 3600.0
 #: this long before a change that has since landed, so it has expired, unless
 #: the two machines' clocks differ by more than the window minus the expiry.
 ORDER_WINDOW_SECONDS = 2 * RELEASE_CHANGE_EXPIRY_SECONDS
-#: Ends the title of a writer commit once any ordered change has been applied.
+#: Ends the title of a writer commit once any change that sets ``current``
+#: has been applied.
 _NEWEST_REQUESTS = re.compile(r" \[newest requests: (?P<entries>[^\]]+)\]$")
 type ReleaseStatus = Literal["pending", "published", "refused"]
 
@@ -264,14 +271,19 @@ def _within_order_window(newest_requests: Mapping[str, float]) -> dict[str, floa
     }
 
 
-def is_ordered(change: ReleaseChange) -> bool:
-    """Whether the change sets ``current`` or withdraws a build.
+def sets_current(change: ReleaseChange) -> bool:
+    """Whether the change sets the release's ``current``: a promotion, or a
+    publication that makes its build current.
 
     Only such changes to one release can undo each other, so only they are
     overtaken by a newer one that landed first, and only they count as newer
-    changes.
+    changes. A withdrawal never changes ``current``, and the record's rules
+    refuse whichever of a withdrawal and a promotion of the same build lands
+    second, so withdrawals are not ordered.
     """
-    return not (isinstance(change, PublishRelease) and not change.make_current)
+    return isinstance(change, PromoteBuild) or (
+        isinstance(change, PublishRelease) and change.make_current
+    )
 
 
 def _commit_message(
@@ -324,8 +336,8 @@ def apply_release_change(
 
     ``requested_at`` is when the change was handed over (now, by default).
     ``newest_local_requests`` gives, for each release, the newest request time
-    of this machine's ordered changes (see ``is_ordered``) to it that landed
-    on the repository.
+    of this machine's changes to it that set ``current`` (see
+    ``sets_current``) and landed on the repository.
     """
     requested = _as_written(time.time() if requested_at is None else requested_at)
     if isinstance(change, PublishRelease):
@@ -365,13 +377,13 @@ def apply_release_change(
             return _pending(REPOSITORY_UNAVAILABLE)
         newest_requests = _newest_per_release(on_record, newest_local_requests or {})
         newest_for_release = newest_requests.get(release)
-        ordered = is_ordered(change)
+        changes_current = sets_current(change)
         overtaken = (
-            ordered
+            changes_current
             and newest_for_release is not None
             and newest_for_release > requested
         )
-        if overtaken and not isinstance(change, PublishRelease):
+        if overtaken and isinstance(change, PromoteBuild):
             return _refused(
                 NEWER_CHANGE_LANDED,
                 f"A change to {release} requested after this one has already "
@@ -427,7 +439,7 @@ def apply_release_change(
             return ReleaseOutcome("published", commit=head)
         operations = [add_operation(path, local) for path, local in new_files.items()]
         operations.append(add_operation(RELEASES_RECORD_PATH, after.serialize()))
-        if ordered and not overtaken:
+        if changes_current and not overtaken:
             newest_requests[release] = requested
         message = _commit_message(
             change,
