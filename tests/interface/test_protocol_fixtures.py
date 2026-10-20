@@ -5,8 +5,13 @@ accept every protocol version that interface releases still in use send. The
 fixtures are those messages; released fixtures are never edited, only added.
 """
 
+import json
 import os
 import shutil
+import socket
+import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +19,7 @@ import pytest
 
 from microcosm_emitter.compatibility import SUPPORTED_PROTOCOL_VERSIONS
 from microcosm_emitter.host.contracts import ModuleContext
+from microcosm_emitter.host.runtime import ServiceRuntime
 from microcosm_emitter.orrery.service.module import OrreryModule
 from microcosm_emitter.telemetry.service.module import TelemetryModule
 from microcosm_emitter_interface.launcher import DEFAULT_COMMAND, start_emitter
@@ -26,8 +32,23 @@ from microcosm_emitter_interface.protocol_fixtures import (
 #: SHA-256 of each released fixture file. A changed digest means a released
 #: message changed shape: add a fixture or a protocol version instead.
 RELEASED_FIXTURE_DIGESTS = {
+    "protocol-v1/host-close.json": (
+        "68fa81b4116852f91f3c0dab3716a1974a8150039fb2b238f79efc094d9b0f6f"
+    ),
     "protocol-v1/host-hello.json": (
         "36fcac377b69a9103b7c1cfd884d2ff667e030463edc9da349a379bb4868b927"
+    ),
+    "protocol-v1/host-launch.json": (
+        "cb67b2cc3e8e709ca177c0f05b7b412fec4fbf7ffb1ae9b5028e3c3cbcb15a1c"
+    ),
+    "protocol-v1/host-message-envelope.json": (
+        "21b5e6b22019cd82b2e4b57363c123ed2628bee86f4f4ee1f08c3ca7bac6cc12"
+    ),
+    "protocol-v1/host-ping.json": (
+        "b4b6ba4668a29fcb79160a245f3b92b0191cd98e9a611a2713f65523e40434a4"
+    ),
+    "protocol-v1/host-query-envelope.json": (
+        "dd364ff5c91f1a81778245a8453c1b0eee8434c9824898f36327204e032d22e8"
     ),
     "protocol-v1/orrery-configuration.json": (
         "956b5e1ca4c65a9fc0282f648b45d00ae697ac72e50147269e365a52d16f141a"
@@ -155,13 +176,142 @@ def test_orrery_module_answers_each_query_fixture_in_order(tmp_path):
 
 
 def test_installed_command_answers_the_hello_fixture(tmp_path):
+    """The answer has at least the recorded keys; a newer emitter may add more."""
     (fixture,) = fixtures_of("host", "hello")
     process = start_emitter(
         {"orrery": configuration_of("orrery", tmp_path)},
         command=shutil.which(DEFAULT_COMMAND),
     )
     try:
-        assert set(process.description) == set(fixture.response_keys)
+        assert set(fixture.response_keys) <= set(process.description)
     finally:
         process.close()
     assert process.process.wait(timeout=20) == 0
+
+
+def raw_request(socket_path: Path, body: dict, *, timeout: float = 5.0) -> bytes:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+        peer.settimeout(timeout)
+        peer.connect(str(socket_path))
+        peer.sendall(json.dumps(body).encode() + b"\n")
+        response = bytearray()
+        while not response.endswith(b"\n"):
+            part = peer.recv(65_536)
+            if not part:
+                break
+            response.extend(part)
+    return bytes(response)
+
+
+@pytest.fixture
+def socket_directory():
+    # Short paths are necessary for macOS's Unix-socket path limit.
+    directory = Path(tempfile.mkdtemp(prefix="pe-fixture-", dir="/tmp"))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_installed_command_starts_from_the_launch_fixture(tmp_path, socket_directory):
+    """The recorded arguments and standard input start this emitter's host."""
+    (launch,) = fixtures_of("host", "launch")
+    socket_path = socket_directory / "service.sock"
+    launched = materialize(
+        launch,
+        directory=tmp_path,
+        spool_path=tmp_path / "events.sqlite3",
+        socket_path=socket_path,
+        parent_pid=os.getpid(),
+    )
+    process = subprocess.Popen(
+        [shutil.which(DEFAULT_COMMAND), *launched["arguments"]],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        process.stdin.write(json.dumps(launched["standard_input"]).encode())
+        process.stdin.close()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            assert process.poll() is None, "the host refused the launch fixture"
+            try:
+                if raw_request(socket_path, {"action": "ping"}) == b"ok\n":
+                    break
+            except OSError:
+                time.sleep(0.05)
+        hello = json.loads(raw_request(socket_path, {"action": "hello"}))
+        assert hello["modules"] == sorted(launched["standard_input"])
+        assert raw_request(socket_path, {"action": "close"}) == b"ok\n"
+        assert process.wait(timeout=20) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+class RecordingModule:
+    """Records the messages and queries the host routes to it."""
+
+    def __init__(self):
+        self.messages: list[dict] = []
+        self.queries: list[dict] = []
+
+    def initialize(self):
+        pass
+
+    def handle_message(self, message):
+        self.messages.append(dict(message))
+
+    def query(self, message):
+        self.queries.append(dict(message))
+        return {"receipt": None}
+
+    def tick(self, now):
+        pass
+
+    def parent_exited(self):
+        pass
+
+    def close(self, deadline):
+        pass
+
+
+def test_host_answers_each_envelope_fixture(socket_directory):
+    """The host parses each recorded envelope and routes it to its module."""
+    modules = {"orrery": RecordingModule(), "telemetry": RecordingModule()}
+    socket_path = socket_directory / "service.sock"
+    runtime = ServiceRuntime(
+        socket_path,
+        modules=modules,
+        is_parent_alive=lambda: True,
+        tick_seconds=0.01,
+        description={"modules": sorted(modules)},
+    )
+    thread = threading.Thread(target=runtime.run)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not socket_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        envelopes = fixtures_of("host", "envelope")
+        assert envelopes
+        for fixture in envelopes:
+            response = raw_request(socket_path, fixture.body)
+            if fixture.response == "acknowledgement":
+                assert response == b"ok\n", fixture.name
+            else:
+                assert fixture.response == "answer", fixture.name
+                assert isinstance(json.loads(response), dict), fixture.name
+            body = fixture.body
+            if body["action"] == "message":
+                assert modules[body["module"]].messages == [body["message"]]
+            elif body["action"] == "query":
+                assert modules[body["module"]].queries == [body["message"]]
+        assert envelopes[-1].body == {"action": "close"}
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the close envelope did not stop the host"
+    finally:
+        runtime.stop()
+        thread.join(timeout=10)

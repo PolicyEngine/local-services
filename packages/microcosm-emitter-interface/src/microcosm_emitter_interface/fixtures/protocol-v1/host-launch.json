@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "module": "host",
+  "kind": "launch",
+  "body": {
+    "arguments": [
+      "host",
+      "--socket",
+      "{socket_path}",
+      "--parent-pid",
+      "{parent_pid}",
+      "--skip-unavailable-modules"
+    ],
+    "standard_input": {
+      "orrery": {
+        "spool_path": "{spool_path}",
+        "development_collector_url": "http://127.0.0.1:1",
+        "publication_origin": "http://127.0.0.1:1"
+      }
+    }
+  }
+}

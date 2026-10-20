@@ -9,14 +9,21 @@ a new message shape gets a new fixture, and an incompatible one a new version.
 Each file holds:
 
 - ``protocol_version`` and ``module`` (``telemetry``, ``orrery`` or ``host``);
-- ``kind``: ``message`` (acknowledged), ``query`` (answered), ``configuration``
-  (a module's startup settings) or ``hello`` (the host's description);
-- ``sequence``: the order within a module, for queries that build on earlier
+- ``kind``:
+  - ``message`` (acknowledged) or ``query`` (answered): a module's message;
+  - ``configuration``: a module's startup settings;
+  - ``hello``: the request for the host's description;
+  - ``launch``: how the command is started, as ``arguments`` after the command
+    and the ``standard_input`` object (module name to its configuration);
+  - ``envelope``: one whole socket request, as the host receives it;
+- ``sequence``: the order within a module, for requests that build on earlier
   ones;
-- ``body``: the message, with the placeholders ``{directory}`` and
-  ``{spool_path}`` in string values;
+- ``body``: the message, with the placeholders ``{directory}``,
+  ``{spool_path}``, ``{socket_path}`` and ``{parent_pid}`` in string values;
 - ``files``: text files to create in ``{directory}`` before sending;
-- ``response_keys``: the keys an answer must contain.
+- ``response_keys``: the keys an answer must contain (at least);
+- ``response``: for an envelope, ``acknowledgement`` (``ok``) or ``answer``
+  (a JSON object).
 """
 
 from __future__ import annotations
@@ -32,8 +39,13 @@ from typing import Any, Literal
 FIXTURE_ROOT = "fixtures"
 DIRECTORY_PLACEHOLDER = "{directory}"
 SPOOL_PATH_PLACEHOLDER = "{spool_path}"
+SOCKET_PATH_PLACEHOLDER = "{socket_path}"
+PARENT_PID_PLACEHOLDER = "{parent_pid}"
 
-type FixtureKind = Literal["message", "query", "configuration", "hello"]
+type FixtureKind = Literal[
+    "message", "query", "configuration", "hello", "launch", "envelope"
+]
+type EnvelopeResponse = Literal["acknowledgement", "answer"]
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,7 @@ class ProtocolFixture:
     sequence: int = 0
     files: dict[str, str] = field(default_factory=dict)
     response_keys: tuple[str, ...] = ()
+    response: EnvelopeResponse | None = None
 
 
 def _fixture_files() -> list[tuple[str, Traversable]]:
@@ -78,6 +91,7 @@ def protocol_fixtures(version: int | None = None) -> list[ProtocolFixture]:
             sequence=document.get("sequence", 0),
             files=dict(document.get("files", {})),
             response_keys=tuple(document.get("response_keys", ())),
+            response=document.get("response"),
         )
         if relative_path.split("/", 1)[0] != f"protocol-v{fixture.protocol_version}":
             raise ValueError(f"{relative_path} is filed under the wrong version.")
@@ -95,15 +109,28 @@ def fixture_digests() -> dict[str, str]:
 
 
 def materialize(
-    fixture: ProtocolFixture, *, directory: Path, spool_path: Path
+    fixture: ProtocolFixture,
+    *,
+    directory: Path,
+    spool_path: Path,
+    socket_path: Path | None = None,
+    parent_pid: int | None = None,
 ) -> dict[str, Any]:
     """The fixture's body with its placeholders replaced."""
+    replacements = {
+        DIRECTORY_PLACEHOLDER: str(directory),
+        SPOOL_PATH_PLACEHOLDER: str(spool_path),
+    }
+    if socket_path is not None:
+        replacements[SOCKET_PATH_PLACEHOLDER] = str(socket_path)
+    if parent_pid is not None:
+        replacements[PARENT_PID_PLACEHOLDER] = str(parent_pid)
 
     def replace(value: Any) -> Any:
         if isinstance(value, str):
-            return value.replace(DIRECTORY_PLACEHOLDER, str(directory)).replace(
-                SPOOL_PATH_PLACEHOLDER, str(spool_path)
-            )
+            for placeholder, replacement in replacements.items():
+                value = value.replace(placeholder, replacement)
+            return value
         if isinstance(value, dict):
             return {key: replace(item) for key, item in value.items()}
         if isinstance(value, list):

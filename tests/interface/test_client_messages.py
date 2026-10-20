@@ -145,8 +145,20 @@ CONFIGURED_BY: dict[str, Callable[[Path], dict[str, Any]]] = {
 }
 
 
+#: Host fixtures: the launch and each socket envelope, sent in
+#: test_host_protocol.py.
+HOST_FIXTURES = {
+    "host-close",
+    "host-hello",
+    "host-launch",
+    "host-message-envelope",
+    "host-ping",
+    "host-query-envelope",
+}
+
+
 def test_every_fixture_has_a_typed_call_that_produces_it():
-    covered = set(SENT_BY) | set(CONFIGURED_BY) | {"host-hello"}
+    covered = set(SENT_BY) | set(CONFIGURED_BY) | HOST_FIXTURES
     assert {fixture.name for fixture in protocol_fixtures()} == covered
 
 
