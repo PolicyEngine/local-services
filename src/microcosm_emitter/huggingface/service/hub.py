@@ -162,11 +162,26 @@ class DatasetRepository:
 
     def last_commit(self, path_in_repo: str) -> str | None:
         """The commit that last changed ``path_in_repo``, when the Hub reports it."""
+        oid = self._last_commit_field(path_in_repo, "oid", revision=None)
+        return str(oid) if oid else None
+
+    def last_commit_title(
+        self, path_in_repo: str, *, revision: str | None = None
+    ) -> str | None:
+        """The first line of the message of the commit that last changed
+        ``path_in_repo`` at ``revision``, when the Hub reports it."""
+        title = self._last_commit_field(path_in_repo, "title", revision=revision)
+        return title if isinstance(title, str) else None
+
+    def _last_commit_field(
+        self, path_in_repo: str, name: str, *, revision: str | None
+    ) -> Any:
         entries = self.api.get_paths_info(
             repo_id=self.repo_id,
             paths=[path_in_repo],
             expand=True,
             repo_type="dataset",
+            revision=revision,
         )
         for entry in entries or []:
             commit = (
@@ -174,13 +189,13 @@ class DatasetRepository:
                 if isinstance(entry, Mapping)
                 else getattr(entry, "last_commit", None)
             )
-            oid = (
-                commit.get("oid")
+            value = (
+                commit.get(name)
                 if isinstance(commit, Mapping)
-                else getattr(commit, "oid", None)
+                else getattr(commit, name, None)
             )
-            if oid:
-                return str(oid)
+            if value:
+                return value
         return None
 
     def _access_token(self) -> Mapping[str, Any] | None:

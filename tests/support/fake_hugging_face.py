@@ -285,11 +285,16 @@ class FakeHuggingFaceApi:
             for commit in repository.commits:
                 content = commit.files.get(path)
                 if content is not None and content != previous:
-                    last = commit.oid
+                    last = commit
                 previous = content
             if last is not None:
                 entries.append(
-                    SimpleNamespace(path=path, last_commit=SimpleNamespace(oid=last))
+                    SimpleNamespace(
+                        path=path,
+                        last_commit=SimpleNamespace(
+                            oid=last.oid, title=last.message.split("\n", 1)[0]
+                        ),
+                    )
                 )
         return entries
 

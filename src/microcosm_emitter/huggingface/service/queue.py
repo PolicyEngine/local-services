@@ -107,6 +107,8 @@ class ClaimedJob:
     lease_until: float
     #: The bytes of the files copied at hand-over, by name.
     files: dict[str, bytes] = field(default_factory=dict)
+    #: When the job was handed over, by this machine's clock.
+    created_at: float = 0.0
 
 
 class HandoverQueue:
@@ -717,6 +719,7 @@ class HandoverQueue:
                 attempts=candidate.attempts,
                 lease_until=lease,
                 files={row.name: row.content for row in copied},
+                created_at=candidate.created_at,
             )
 
     def renew_job(self, job: ClaimedJob, renewed: float) -> bool:
@@ -800,6 +803,27 @@ class HandoverQueue:
                     )
             if committed:
                 self._schedule(session, job.target).last_commit_at = now
+
+    def requests_with_status(
+        self,
+        target: str,
+        *,
+        kind: str,
+        status: str,
+        destination: str = DESTINATION_HUGGING_FACE,
+    ) -> list[tuple[float, dict[str, Any]]]:
+        """When each job of ``kind`` for ``target`` now at ``status`` was
+        handed over, with its request."""
+        with self._sessions() as session:
+            rows = session.execute(
+                select(HandoverJob.created_at, HandoverJob.request).where(
+                    HandoverJob.destination == destination,
+                    HandoverJob.target == target,
+                    HandoverJob.kind == kind,
+                    HandoverJob.status == status,
+                )
+            )
+            return [(created_at, dict(request)) for created_at, request in rows]
 
     def job_receipt(
         self, handover_id: str, destination: str = DESTINATION_HUGGING_FACE

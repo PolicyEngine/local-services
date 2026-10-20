@@ -126,7 +126,9 @@ def test_a_published_build_can_become_current_in_the_same_commit(hub, tmp_path):
     assert apply(hub, request).status == "published"
     assert record_of(hub).releases[NATIONAL].current == FIRST_BUILD
     (commit,) = hub.commits(PRIVATE_REPOSITORY)
-    assert commit.message.endswith("and make it current")
+    title, newest_request = commit.message.split(" [newest request ")
+    assert title.endswith("and make it current")
+    assert newest_request.endswith("+00:00]")
 
 
 def test_publication_refuses_a_build_whose_folder_exists(hub, tmp_path):
@@ -878,3 +880,50 @@ def test_a_publication_queued_before_a_newer_change_still_lands(
     assert status_of(receipt_of(controls, third)) == ("published", None)
     assert THIRD_BUILD in current_of(controls).builds
     assert current_of(controls).current == SECOND_BUILD
+
+
+def apply_requested_at(hub, request, requested_at):
+    return apply_release_change(
+        DatasetRepository(PRIVATE_REPOSITORY, hub),
+        request,
+        published_at="2026-10-20T00:00:00+00:00",
+        requested_at=requested_at,
+    )
+
+
+def test_the_record_orders_changes_by_request_time_not_landing_order(hub, tmp_path):
+    """Each writer commit's title records the newest request it has applied,
+    so another machine's older request is refused after it."""
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, 100.0).status == "published"
+    # Requested at 300, landing first; then an older request (200) arrives.
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), 300.0).status == (
+        "published"
+    )
+    older = apply_requested_at(hub, promotion(SECOND_BUILD), 200.0)
+    assert (older.status, older.error_code) == ("refused", "NEWER_CHANGE_LANDED")
+    # A request newer than every landed one still lands.
+    assert apply_requested_at(hub, promotion(SECOND_BUILD), 400.0).status == (
+        "published"
+    )
+    assert record_of(hub).releases[NATIONAL].current == SECOND_BUILD
+    assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
+        "[newest request 1970-01-01T00:06:40.000000+00:00]"
+    )
+
+
+def test_a_plain_publication_carries_the_newest_request_time_forward(hub, tmp_path):
+    for build in (FIRST_BUILD, SECOND_BUILD):
+        request, _ = publish_request(tmp_path, build)
+        assert apply_requested_at(hub, request, 100.0).status == "published"
+    assert apply_requested_at(hub, promotion(FIRST_BUILD), 300.0).status == (
+        "published"
+    )
+    third, _ = publish_request(tmp_path, THIRD_BUILD)
+    assert apply_requested_at(hub, third, 50.0).status == "published"
+    assert hub.commits(PRIVATE_REPOSITORY)[-1].message.endswith(
+        "[newest request 1970-01-01T00:05:00.000000+00:00]"
+    )
+    older = apply_requested_at(hub, promotion(SECOND_BUILD), 200.0)
+    assert (older.status, older.error_code) == ("refused", "NEWER_CHANGE_LANDED")

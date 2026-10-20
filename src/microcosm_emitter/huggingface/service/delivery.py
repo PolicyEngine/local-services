@@ -25,6 +25,8 @@ from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueu
 from microcosm_emitter.huggingface.service.releases import (
     ReleaseOutcome,
     apply_release_change,
+    expired_change,
+    is_ordered,
 )
 from microcosm_emitter.huggingface.service.requests import (
     RequestRefusedError,
@@ -353,14 +355,7 @@ class HuggingFaceDelivery:
         job = held.job
         assert job is not None, "The job is claimed before delivery."
         if job.kind == RELEASE_CHANGE:
-            try:
-                change = release_change_from_message(job.request)
-            except RequestRefusedError as refusal:
-                outcome = ReleaseOutcome("refused", refusal.code)
-            else:
-                outcome = apply_release_change(
-                    hub, change, published_at=iso_timestamp(self.clock())
-                )
+            outcome = self._release_outcome(hub, job)
             revision, message = outcome.commit, outcome.message
         else:
             outcome = stage_bundle(hub, job.request, job.files)
@@ -383,6 +378,40 @@ class HuggingFaceDelivery:
         )
         return outcome.committed
 
+    def _release_outcome(
+        self, hub: DatasetRepository, job: ClaimedJob
+    ) -> ReleaseOutcome:
+        """Apply a queued release change, unless it has waited too long."""
+        expired = expired_change(job.created_at, self.clock())
+        if expired is not None:
+            return expired
+        try:
+            change = release_change_from_message(job.request)
+        except RequestRefusedError as refusal:
+            return ReleaseOutcome("refused", refusal.code)
+        return apply_release_change(
+            hub,
+            change,
+            published_at=iso_timestamp(self.clock()),
+            requested_at=job.created_at,
+            newest_local_request=self._newest_ordered_change_landed(job.target),
+        )
+
+    def _newest_ordered_change_landed(self, repository: str) -> float | None:
+        """When the newest ordered release change (see ``is_ordered``) this
+        machine landed on ``repository`` was handed over."""
+        handed_over = []
+        for created_at, request in self.queue.requests_with_status(
+            repository, kind=RELEASE_CHANGE, status="published"
+        ):
+            try:
+                change = release_change_from_message(request)
+            except RequestRefusedError:
+                continue
+            if is_ordered(change):
+                handed_over.append(created_at)
+        return max(handed_over, default=None)
+
     def _credential_missing(
         self,
         held: HeldLeases,
@@ -398,6 +427,22 @@ class HuggingFaceDelivery:
             held.hold_job(job)
             held.stop()
             assert held.job is not None
+            expired = (
+                expired_change(job.created_at, self.clock())
+                if job.kind == RELEASE_CHANGE
+                else None
+            )
+            if expired is not None:
+                # Final even without a credential: a later login must not
+                # apply a change requested long before.
+                self._finish_job(
+                    held.job,
+                    status=expired.status,
+                    error_code=expired.error_code,
+                    retry=False,
+                    message=expired.message,
+                )
+                return
             self._finish_job(
                 held.job, status="pending", error_code=CREDENTIAL_MISSING, retry=True
             )

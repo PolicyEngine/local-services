@@ -215,7 +215,11 @@ class ReleaseReceipt(TypedDict):
     last attempt's ``error_code`` (``REPOSITORY_UNAVAILABLE``,
     ``UPLOAD_FAILED``, ``PARENT_CONFLICT``, ``CREDENTIAL_MISSING``,
     ``PRESERVED_FILES_MISSING``). A refusal's ``error_code`` names the broken
-    rule, for example ``BUILD_FOLDER_EXISTS`` or ``POINTER_FILES_PRESENT``.
+    rule, for example ``BUILD_FOLDER_EXISTS`` or ``POINTER_FILES_PRESENT``;
+    ``REQUEST_EXPIRED`` when the change was still pending an hour after it was
+    handed over; ``NEWER_CHANGE_LANDED`` when a change to ``current`` or a
+    withdrawal requested after it landed first. Request such a change again
+    if it is still wanted.
     """
 
     handover_id: str
