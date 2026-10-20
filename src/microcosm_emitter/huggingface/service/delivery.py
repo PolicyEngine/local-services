@@ -39,6 +39,9 @@ LEASE_RENEWAL_SECONDS = 30.0
 DATASET_BUNDLE = "dataset_bundle"
 RELEASE_CHANGE = "release_change"
 SUPPORTED_JOB_KINDS = frozenset({DATASET_BUNDLE, RELEASE_CHANGE})
+#: Job kinds that skip the spacing between commits: release changes are rare
+#: and a build waits for them. Bundles and run files keep it.
+UNSPACED_JOB_KINDS = frozenset({RELEASE_CHANGE})
 CREDENTIAL_MISSING = "CREDENTIAL_MISSING"
 UPLOAD_FAILED = "UPLOAD_FAILED"
 CREDENTIAL_MISSING_MESSAGE = (
@@ -195,7 +198,10 @@ class HuggingFaceDelivery:
         stop_requested: Callable[[], bool] = never_stop,
     ) -> int:
         repositories = self.queue.due_repositories(
-            self.clock(), kinds=job_kinds, run_files=run_files
+            self.clock(),
+            kinds=job_kinds,
+            unspaced_kinds=UNSPACED_JOB_KINDS,
+            run_files=run_files,
         )
         if not repositories:
             return 0
@@ -294,9 +300,16 @@ class HuggingFaceDelivery:
         )
 
     def _claim_job(self, repository: str, kinds: frozenset[str]) -> ClaimedJob | None:
+        """The next due job of ``kinds``; within the commit spacing, only a
+        release change."""
+        now = self.clock()
+        if not self.queue.commit_spacing_elapsed(repository, now):
+            kinds = kinds & UNSPACED_JOB_KINDS
+        if not kinds:
+            return None
         return self.queue.claim_job(
             repository,
-            now=self.clock(),
+            now=now,
             lease_seconds=REPOSITORY_LEASE_SECONDS,
             kinds=kinds,
         )

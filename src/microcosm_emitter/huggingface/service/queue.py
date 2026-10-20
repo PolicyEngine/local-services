@@ -198,6 +198,7 @@ class HandoverQueue:
         now: float,
         *,
         kinds: Iterable[str] | None = None,
+        unspaced_kinds: Iterable[str] = (),
         run_files: bool = True,
     ) -> list[str]:
         """Repositories with work due now that may receive a commit now.
@@ -205,8 +206,11 @@ class HandoverQueue:
         ``kinds`` limits jobs to those this emitter can deliver, so a job
         queued by a newer emitter sharing the database waits for it; an empty
         ``kinds`` leaves jobs out. ``run_files`` false leaves out run files.
+        Every commit waits ``MIN_COMMIT_SPACING_SECONDS`` after this machine's
+        last commit to the repository, except jobs of ``unspaced_kinds``.
         """
         job_kinds = None if kinds is None else list(kinds)
+        unspaced = set(unspaced_kinds)
         with self._sessions() as session:
             run_file_repositories: set[str] = set()
             if run_files:
@@ -225,9 +229,10 @@ class HandoverQueue:
                         )
                     )
                 )
-            job_repositories: set[str] = set()
+            spaced_job_repositories: set[str] = set()
+            unspaced_job_repositories: set[str] = set()
             if job_kinds != []:
-                job_query = select(HandoverJob.target).where(
+                job_query = select(HandoverJob.target, HandoverJob.kind).where(
                     HandoverJob.destination == DESTINATION_HUGGING_FACE,
                     HandoverJob.status == JOB_PENDING,
                     HandoverJob.next_attempt_at <= now,
@@ -235,15 +240,28 @@ class HandoverQueue:
                 )
                 if job_kinds is not None:
                     job_query = job_query.where(HandoverJob.kind.in_(job_kinds))
-                job_repositories = set(session.scalars(job_query))
+                for target, kind in session.execute(job_query):
+                    if kind in unspaced:
+                        unspaced_job_repositories.add(target)
+                    else:
+                        spaced_job_repositories.add(target)
             due = []
-            for repository in sorted(run_file_repositories | job_repositories):
+            for repository in sorted(
+                run_file_repositories
+                | spaced_job_repositories
+                | unspaced_job_repositories
+            ):
                 schedule = session.get(RepositoryCommitSchedule, repository)
                 if schedule is not None and schedule.lease_until > now:
                     continue
-                if repository in job_repositories or (
-                    repository in run_file_repositories
-                    and self._run_files_allowed(schedule, now)
+                spaced = self._spacing_elapsed(schedule, now)
+                if (
+                    repository in unspaced_job_repositories
+                    or (repository in spaced_job_repositories and spaced)
+                    or (
+                        repository in run_file_repositories
+                        and self._run_files_allowed(schedule, now)
+                    )
                 ):
                     due.append(repository)
             return due
@@ -253,7 +271,8 @@ class HandoverQueue:
         """Whether this machine's last commit to the repository is far enough back.
 
         The spacing keeps bursts of commits, each starting the dataset
-        repository's webhook, from reaching the Hub.
+        repository's webhook, from reaching the Hub; only release changes,
+        which are rare and explicit, skip it.
         """
         return (
             schedule is None

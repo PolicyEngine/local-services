@@ -572,3 +572,85 @@ def test_a_deeply_nested_local_manifest_is_refused_not_retried(hub, tmp_path):
         False,
     )
     assert hub.commits(PRIVATE_REPOSITORY) == []
+
+
+def hand_over_private_run_file(controls):
+    from microcosm_emitter_interface.staging import RunFile, StageRunFiles
+
+    local = controls.tmp_path / "run-files" / "progress.json"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(b"{}")
+    controls.module.query(
+        StageRunFiles(
+            repository=PRIVATE_REPOSITORY,
+            run_id="uk-run-1",
+            files=(RunFile("progress.json", local),),
+            flush=True,
+        ).message()
+    )
+
+
+def bundle_request(controls):
+    from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
+
+    directory = controls.tmp_path / "bundle"
+    directory.mkdir(parents=True, exist_ok=True)
+    files = []
+    for name, role, content in (
+        ("dataset.h5", "dataset", b"rows"),
+        ("staged_manifest.json", "staged_manifest", b'{"files": {}}'),
+    ):
+        (directory / name).write_bytes(content)
+        files.append(
+            BundleFile(
+                name=name,
+                role=role,
+                local_path=directory / name,
+                sha256=hashlib.sha256(content).hexdigest(),
+                bytes=len(content),
+            )
+        )
+    return StageDatasetBundle(
+        repository=PRIVATE_REPOSITORY, run_id="uk-run-1", files=tuple(files)
+    )
+
+
+def receipt_status(controls, handover_id):
+    return controls.module.query(
+        {
+            "protocol_version": 1,
+            "command": "handover_receipt",
+            "handover_id": handover_id,
+        }
+    )["receipt"]["status"]
+
+
+def test_release_changes_skip_the_commit_spacing_but_bundles_keep_it(
+    hugging_face_module,
+):
+    from microcosm_emitter.huggingface.service.queue import (
+        MIN_COMMIT_SPACING_SECONDS,
+    )
+
+    controls = hugging_face_module
+    hand_over_private_run_file(controls)
+    controls.module.delivery.run_cycle()
+    assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
+    bundle = bundle_request(controls)
+    controls.module.query(bundle.message())
+    controls.clock.advance(1)
+    controls.module.delivery.run_cycle()
+    # Within the spacing, nothing but a release change may commit.
+    assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
+    assert receipt_status(controls, bundle.handover_id()) == "pending"
+    publication, _ = publish_request(controls.tmp_path, FIRST_BUILD)
+    controls.module.query(publication.message())
+    controls.module.delivery.run_cycle()
+    assert receipt_status(controls, publication.handover_id()) == "published"
+    assert receipt_status(controls, bundle.handover_id()) == "pending"
+    controls.clock.advance(MIN_COMMIT_SPACING_SECONDS - 1)
+    controls.module.delivery.run_cycle()
+    assert receipt_status(controls, bundle.handover_id()) == "pending"
+    controls.clock.advance(1)
+    controls.module.delivery.run_cycle()
+    assert receipt_status(controls, bundle.handover_id()) == "uploaded"

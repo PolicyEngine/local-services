@@ -116,6 +116,7 @@ releases/<release>/<build>/...                 the build's files, with their rol
 - It creates no Hugging Face tags or branches, no `current/` folder and no mutable root file, and leaves existing tags and files untouched. It does not port `release.py`'s staging branch, release tag or pointer-file commit, which this layout replaces.
 - Each request carries a `request_id`, a new random one unless the caller gives one, and the emitter applies each request once. Sending the same request again returns its receipt; a new request is applied even if it repeats an earlier change (promoting a build back after another was promoted, or retrying a withdrawal or a refused change once its cause is gone).
 - A publication of a build already listed with a byte-identical `release_manifest.json` reports `published` with the commit that wrote it, as when a retried attempt finds that its earlier commit landed, even if another build has been made current since. It never makes that build current; `promote_build` does. Hub failures stay `pending` and are retried; broken rules are `refused` with the rule's code.
+- A release change goes at the next cycle, even within 10 seconds of this machine's last commit to the repository; bundles and run files keep that spacing. Each cycle still makes at most one commit per repository.
 - `release_change_policy` is where a decision on who may promote or withdraw will plug in; by default every change is allowed. `current` may stay `null`, for a release that is never promoted.
 
 ## Development
