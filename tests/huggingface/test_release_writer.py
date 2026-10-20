@@ -526,3 +526,49 @@ def test_republishing_a_published_build_does_not_promote_it(hub, tmp_path):
     assert outcome.status == "published"
     assert record_of(hub).releases[NATIONAL].current is None
     assert len(hub.commits(PRIVATE_REPOSITORY)) == 1
+
+
+DEEPLY_NESTED = b"[" * 100_000 + b"]" * 100_000
+
+
+def test_a_deeply_nested_record_in_the_repository_is_refused_not_retried(hub, tmp_path):
+    hub.write_directly(PRIVATE_REPOSITORY, {"releases.json": DEEPLY_NESTED})
+    request, _ = publish_request(tmp_path, FIRST_BUILD)
+    outcome = apply(hub, request)
+    assert (outcome.status, outcome.error_code, outcome.retry) == (
+        "refused",
+        "INVALID_RECORD",
+        False,
+    )
+
+
+def test_a_deeply_nested_local_manifest_is_refused_not_retried(hub, tmp_path):
+    request, _ = publish_request(tmp_path, FIRST_BUILD)
+    manifest = next(item for item in request.files if item.role == "release_manifest")
+    manifest.local_path.write_bytes(DEEPLY_NESTED)
+    nested = PublishRelease(
+        repository=request.repository,
+        release=request.release,
+        build=request.build,
+        release_role=request.release_role,
+        make_current=False,
+        files=tuple(
+            ReleaseFile(
+                name=item.name,
+                role=item.role,
+                local_path=item.local_path,
+                sha256=hashlib.sha256(DEEPLY_NESTED).hexdigest(),
+                bytes=len(DEEPLY_NESTED),
+            )
+            if item is manifest
+            else item
+            for item in request.files
+        ),
+    )
+    outcome = apply(hub, nested)
+    assert (outcome.status, outcome.error_code, outcome.retry) == (
+        "refused",
+        "MANIFEST_MISMATCH",
+        False,
+    )
+    assert hub.commits(PRIVATE_REPOSITORY) == []

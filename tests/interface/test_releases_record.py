@@ -366,3 +366,35 @@ def test_current_cannot_change_while_pointer_files_exist():
             after=first_record_with_current,
         )
     ) == {"POINTER_FILES_PRESENT"}
+
+
+DEEPLY_NESTED = b"[" * 100_000 + b"]" * 100_000
+
+
+def test_a_deeply_nested_record_is_refused_as_invalid():
+    """``json.loads`` raises ``RecursionError`` for it, not ``ValueError``."""
+    with pytest.raises(ReleaseRecordError) as refusal:
+        ReleasesRecord.parse(DEEPLY_NESTED)
+    assert codes(refusal.value.violations) == {"INVALID_RECORD"}
+
+
+def test_a_record_above_the_size_limit_is_refused_as_invalid():
+    from microcosm_emitter_interface.releases import MAX_RECORD_BYTES
+
+    padded = json.dumps(
+        {**DOCUMENTED_EXAMPLE, "padding": "x" * MAX_RECORD_BYTES}
+    ).encode()
+    with pytest.raises(ReleaseRecordError) as refusal:
+        ReleasesRecord.parse(padded)
+    assert codes(refusal.value.violations) == {"INVALID_RECORD"}
+    assert "bytes" in refusal.value.violations[0].message
+
+
+def test_a_deeply_nested_manifest_does_not_name_its_build():
+    record = documented_record()
+    files = repository_files(record)
+    newer_folder = build_folder(NATIONAL, NEWER_BUILD)
+    nested = {**files, f"{newer_folder}/release_manifest.json": DEEPLY_NESTED}
+    assert codes(check_repository(record, nested, nested.__getitem__)) == {
+        "MANIFEST_MISMATCH"
+    }

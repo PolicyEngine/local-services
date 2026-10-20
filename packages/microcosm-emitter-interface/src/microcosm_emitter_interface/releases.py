@@ -39,6 +39,12 @@ RELEASE_MANIFEST_NAME: Final = "release_manifest.json"
 #: ``latest-evidence.json``, ...). No write may create one, and ``current``
 #: may not change while any still exists.
 POINTER_FILE_PATTERN: Final = "latest*.json"
+#: The largest ``releases.json`` accepted. A record lists a few hundred bytes
+#: per build, so this leaves room for thousands of builds.
+MAX_RECORD_BYTES: Final = 4 * 1024 * 1024
+#: What ``json.loads`` raises for bytes that are not a usable JSON document:
+#: invalid JSON or text, and nesting too deep to decode (``RecursionError``).
+_UNREADABLE_JSON_ERRORS: Final = (ValueError, UnicodeDecodeError, RecursionError)
 
 _RECORD_KEYS: Final = {"schema_version", "default", "releases"}
 _RELEASE_KEYS: Final = {"role", "current", "builds"}
@@ -91,10 +97,17 @@ class ReleasesRecord:
 
     @classmethod
     def parse(cls, content: bytes) -> ReleasesRecord:
+        if len(content) > MAX_RECORD_BYTES:
+            raise _refuse(
+                "INVALID_RECORD",
+                f"releases.json is larger than {MAX_RECORD_BYTES} bytes.",
+            )
         try:
             document = json.loads(content)
-        except (ValueError, UnicodeDecodeError):
-            raise _refuse("INVALID_RECORD", "releases.json is not JSON.") from None
+        except _UNREADABLE_JSON_ERRORS:
+            raise _refuse(
+                "INVALID_RECORD", "releases.json is not a readable JSON document."
+            ) from None
         record = cls._from_document(document)
         violations = check_record(record)
         if violations:
@@ -345,9 +358,10 @@ def check_repository(
                     Violation("MANIFEST_MISSING", f"{manifest_path} is missing.")
                 )
                 continue
+            content = read_file(manifest_path)
             try:
-                manifest = json.loads(read_file(manifest_path))
-            except (ValueError, UnicodeDecodeError):
+                manifest = json.loads(content)
+            except _UNREADABLE_JSON_ERRORS:
                 manifest = None
             if (
                 not isinstance(manifest, dict)
