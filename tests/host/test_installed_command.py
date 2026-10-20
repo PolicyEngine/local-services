@@ -164,14 +164,18 @@ def test_host_without_a_parent_creation_time_reads_it_from_its_own_parent(
         textwrap.dedent(
             """
             import json, os, socket, subprocess, sys, time
+            import psutil
             command, socket_path, spool_path = sys.argv[1:4]
             reader, writer = socket.socketpair()
             with reader, writer:
+                # The host must not inherit this script's output pipes: the
+                # test reads them to the end, which would otherwise wait for
+                # the host to exit and hide whether it outlives this script.
                 host = subprocess.Popen(
                     [command, "host", "--socket", socket_path,
                      "--parent-pid", str(os.getpid())],
                     stdin=reader, stdout=subprocess.DEVNULL,
-                    start_new_session=True,
+                    stderr=subprocess.DEVNULL, start_new_session=True,
                 )
                 writer.sendall(json.dumps({"orrery": {
                     "spool_path": spool_path,
@@ -189,7 +193,11 @@ def test_host_without_a_parent_creation_time_reads_it_from_its_own_parent(
                         ready = peer.recv(16) == b"ok\\n"
                 except OSError:
                     time.sleep(0.05)
-            print(json.dumps({"pid": host.pid, "ready": ready}), flush=True)
+            print(json.dumps({
+                "pid": host.pid,
+                "created_at": psutil.Process(host.pid).create_time(),
+                "ready": ready,
+            }), flush=True)
             """
         )
     )
@@ -211,8 +219,11 @@ def test_host_without_a_parent_creation_time_reads_it_from_its_own_parent(
     assert started["ready"], "the host did not answer while its parent ran"
     try:
         host = psutil.Process(started["pid"])
+        is_same_host = host.create_time() == started["created_at"]
     except psutil.NoSuchProcess:
         return  # Already exited after its parent.
+    if not is_same_host:
+        return  # Exited, and an unrelated process now has its process ID.
     gone, alive = psutil.wait_procs([host], timeout=20)
     for process in alive:
         process.kill()
