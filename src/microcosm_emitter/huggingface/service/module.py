@@ -207,6 +207,7 @@ class HuggingFaceModule:
             credential=session.credential,
             invalidate_credential=session.invalidate,
             allow_loopback_uploads=bool(development_url),
+            clock=self.clock,
         )
         return CollectorSubmissionDelivery(queue, client, clock=self.clock)
 

@@ -63,7 +63,17 @@ class Invalidations:
         self.count += 1
 
 
-def submission_client(collector, invalidations=None) -> CollectorSubmissionClient:
+class ManualClock:
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def submission_client(
+    collector, invalidations=None, clock=None
+) -> CollectorSubmissionClient:
     session = CollectorSession(
         collector.origin, credential=lambda: "hf_synthetic", scope=SUBMIT_SCOPE
     )
@@ -72,6 +82,7 @@ def submission_client(collector, invalidations=None) -> CollectorSubmissionClien
         credential=session.credential,
         invalidate_credential=invalidations or session.invalidate,
         allow_loopback_uploads=True,
+        clock=clock or ManualClock(),
     )
 
 
@@ -114,14 +125,62 @@ def test_an_upload_refused_as_already_stored_counts_as_stored(
     assert outcome.status == "accepted"
 
 
-def test_intake_switched_off_leaves_the_submission_pending(collector, tmp_path) -> None:
-    collector.exchange_status = 404
+@pytest.mark.parametrize("intake", ["off", "absent"])
+def test_a_collector_without_intake_leaves_the_submission_pending(
+    collector, tmp_path, intake
+) -> None:
+    """Off: the exchange answers 404 ``intake_not_enabled``. Absent: a collector
+    released before intake answers 200 with a ``telemetry:write`` token."""
+    collector.intake = intake
 
     outcome = submission_client(collector).submit(planned_submission(tmp_path))
 
     assert outcome.status == "pending"
-    assert outcome.error_code == "COLLECTOR_UNAVAILABLE"
+    assert outcome.error_code == "COLLECTOR_INTAKE_NOT_ENABLED"
+    assert outcome.retry_after == pytest.approx(3600)
     assert collector.created == []
+
+
+def test_without_intake_no_request_is_sent_until_the_hour_has_passed(
+    collector, tmp_path
+) -> None:
+    collector.intake = "absent"
+    clock = ManualClock()
+    client = submission_client(collector, clock=clock)
+    planned = planned_submission(tmp_path)
+    client.submit(planned)
+    exchanges = len(collector.exchange_requests)
+
+    clock.now += 3599
+    waiting = client.submit(planned)
+    assert (waiting.status, waiting.error_code) == (
+        "pending",
+        "COLLECTOR_INTAKE_NOT_ENABLED",
+    )
+    assert waiting.retry_after == pytest.approx(1)
+    assert len(collector.exchange_requests) == exchanges
+
+    collector.intake = "on"
+    clock.now += 1
+    assert client.submit(planned).status == "accepted"
+    assert collector.exchange_requests[-1] == {"scope": "artifacts:submit"}
+
+
+def test_a_token_without_the_submit_scope_is_never_used_for_submissions():
+    session = CollectorSession(
+        "https://collector.test",
+        post=lambda url, payload, token: (
+            200,
+            {
+                "access_token": "telemetry",
+                "expires_in": 900,
+                "scope": "telemetry:write",
+            },
+        ),
+        credential=lambda: "hf",
+        scope=SUBMIT_SCOPE,
+    )
+    assert session.credential() == ("intake_unavailable", None)
 
 
 def test_a_rejected_credential_fails_the_submission(collector, tmp_path) -> None:
@@ -235,7 +294,11 @@ def test_a_session_asks_for_its_scope_and_telemetry_sessions_still_send_nothing(
 
     def record_post(url, payload, token):
         exchanged.append(payload)
-        return 200, {"access_token": "token", "expires_in": 900}
+        return 200, {
+            "access_token": "token",
+            "expires_in": 900,
+            **({"scope": payload["scope"]} if "scope" in payload else {}),
+        }
 
     CollectorSession(
         "https://collector.test",

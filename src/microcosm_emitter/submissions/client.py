@@ -9,6 +9,7 @@ its content, so a later attempt continues where an earlier one stopped.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,8 +35,12 @@ REQUEST_TIMEOUT_SECONDS: Final = 30.0
 #: Large files take as long as the connection needs; only stalls time out.
 UPLOAD_TIMEOUT: Final = httpx.Timeout(60.0, write=None)
 RETRYABLE_STATUSES: Final = frozenset({408, 429})
+#: After the collector shows it has no intake, how long to wait before
+#: exchanging again; no submission request goes to it meanwhile.
+INTAKE_RETRY_SECONDS: Final = 3600.0
 
 CREDENTIAL_MISSING: Final = "CREDENTIAL_MISSING"
+COLLECTOR_INTAKE_NOT_ENABLED: Final = "COLLECTOR_INTAKE_NOT_ENABLED"
 CREDENTIAL_REJECTED: Final = "CREDENTIAL_REJECTED"
 COLLECTOR_UNAVAILABLE: Final = "COLLECTOR_UNAVAILABLE"
 INVALID_RESPONSE: Final = "INVALID_RESPONSE"
@@ -45,12 +50,17 @@ FILES_INCOMPLETE: Final = "FILES_INCOMPLETE"
 
 @dataclass(frozen=True)
 class SubmissionOutcome:
-    """One attempt's result. ``pending`` is retried; the others are final."""
+    """One attempt's result. ``pending`` is retried; the others are final.
+
+    ``retry_after`` is how long to wait before the next attempt, when the
+    collector says so (for example an hour while it has no intake).
+    """
 
     status: Literal["accepted", "pending", "failed"]
     error_code: str | None = None
     submission_id: str | None = None
     collector_status: str | None = None
+    retry_after: float | None = None
 
 
 def upload_url_allowed(url: str, *, allow_loopback: bool) -> bool:
@@ -103,12 +113,35 @@ class CollectorSubmissionClient:
         invalidate_credential: Callable[[], None],
         http: httpx.Client | None = None,
         allow_loopback_uploads: bool = False,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self.origin = origin.rstrip("/")
         self._credential = credential
         self._invalidate_credential = invalidate_credential
         self._http = http or httpx.Client(follow_redirects=False)
         self._allow_loopback_uploads = allow_loopback_uploads
+        self._clock = clock
+        self._intake_unavailable_until: float | None = None
+
+    def _intake_unavailable(self) -> SubmissionOutcome:
+        """Discard the token and send nothing to this collector for an hour."""
+        self._invalidate_credential()
+        self._intake_unavailable_until = self._clock() + INTAKE_RETRY_SECONDS
+        return SubmissionOutcome(
+            "pending", COLLECTOR_INTAKE_NOT_ENABLED, retry_after=INTAKE_RETRY_SECONDS
+        )
+
+    def _waiting_for_intake(self) -> SubmissionOutcome | None:
+        until = self._intake_unavailable_until
+        if until is None:
+            return None
+        remaining = until - self._clock()
+        if remaining <= 0:
+            self._intake_unavailable_until = None
+            return None
+        return SubmissionOutcome(
+            "pending", COLLECTOR_INTAKE_NOT_ENABLED, retry_after=remaining
+        )
 
     def close(self) -> None:
         self._http.close()
@@ -121,6 +154,8 @@ class CollectorSubmissionClient:
             raise _StepFailedError(SubmissionOutcome("pending", CREDENTIAL_MISSING))
         if result == "rejected":
             raise _StepFailedError(SubmissionOutcome("failed", CREDENTIAL_REJECTED))
+        if result == "intake_unavailable":
+            raise _StepFailedError(self._intake_unavailable())
         # Includes the 404 a collector answers while its intake is off.
         raise _StepFailedError(SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE))
 
@@ -211,6 +246,9 @@ class CollectorSubmissionClient:
         preserved = _preserved_files_outcome(planned)
         if preserved is not None:
             return preserved
+        waiting = self._waiting_for_intake()
+        if waiting is not None:
+            return waiting
         try:
             token = self._token()
             created = self._post(SUBMISSIONS_PATH, token, planned.body)

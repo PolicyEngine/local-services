@@ -115,11 +115,18 @@ class CollectorSubmissionDelivery:
         submissions: list[dict[str, Any]],
         *,
         retry: bool,
+        retry_after: float | None = None,
     ) -> None:
         receipt = self._receipt(
             job.handover_id, status, error_code, job.attempts + 1, submissions
         )
-        self.queue.finish_job(job, receipt=receipt, retry=retry, now=self.clock())
+        self.queue.finish_job(
+            job,
+            receipt=receipt,
+            retry=retry,
+            now=self.clock(),
+            retry_after=retry_after,
+        )
 
     def _attempt(self, job: ClaimedJob) -> None:
         previous = self.receipt(job.handover_id) or {}
@@ -139,12 +146,15 @@ class CollectorSubmissionDelivery:
             )
             return
         results: dict[str, dict[str, Any]] = {}
+        waits: list[float] = []
         for planned in planned_submissions(job.request, revision, job.files):
             settled = earlier.get(planned.kind)
             if settled is not None and settled["status"] in {"accepted", "failed"}:
                 results[planned.kind] = settled
                 continue
             outcome = self.client.submit(planned)
+            if outcome.retry_after is not None:
+                waits.append(outcome.retry_after)
             results[planned.kind] = {
                 "kind": planned.kind,
                 "status": outcome.status,
@@ -157,7 +167,12 @@ class CollectorSubmissionDelivery:
         failed = [entry for entry in submissions if entry["status"] == "failed"]
         if pending:
             self._finish(
-                job, "pending", pending[0]["error_code"], submissions, retry=True
+                job,
+                "pending",
+                pending[0]["error_code"],
+                submissions,
+                retry=True,
+                retry_after=max(waits) if waits else None,
             )
         elif failed:
             self._finish(

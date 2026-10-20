@@ -1,9 +1,16 @@
 """A loopback stand-in for the collector's artifact intake and its bucket.
 
 It follows the submission contract (PolicyEngine/microcosm-collector,
-``docs/artifact-submissions.md``) closely enough to drive the emitter: the
-scoped token exchange, creation with signed upload URLs, single-creation
-uploads, completion with problems, and status codes the tests choose.
+``docs/artifact-submissions.md`` at ``673df3d``) closely enough to drive the
+emitter: the scoped token exchange, creation with signed upload URLs,
+single-creation uploads, completion with problems, and status codes the tests
+choose.
+
+``intake`` chooses the collector the tests talk to: ``"on"``, ``"off"`` (the
+exchange and every submission path answer 404 ``intake_not_enabled``) or
+``"absent"`` (a collector released before intake: the exchange answers 200
+with a ``telemetry:write`` token and no ``scope``, and submission paths 404
+without a ``code``).
 """
 
 from __future__ import annotations
@@ -24,11 +31,13 @@ class FakeCollector:
         self.objects: dict[str, bytes] = {}
         self.submissions: dict[str, dict[str, Any]] = {}
         self.exchange_status = 200
+        self.intake = "on"
         self.create_statuses: list[int] = []
         self.complete_statuses: list[int] = []
         self.sign_stored_files = False
         self.upload_origin: str | None = None
-        self._tokens: set[str] = set()
+        #: Each issued session token and its scope.
+        self._tokens: dict[str, str] = {}
         self._lock = threading.Lock()
         collector = self
 
@@ -56,6 +65,8 @@ class FakeCollector:
                 with collector._lock:
                     if self.path == "/v1/auth/huggingface/exchange":
                         return collector._exchange(self, body)
+                    if collector.intake != "on":
+                        return collector._intake_not_available(self)
                     if not self._authorized():
                         return self._json(401, {"detail": "invalid"})
                     if self.path == "/v1/submissions":
@@ -85,14 +96,37 @@ class FakeCollector:
         self._server.shutdown()
         self._server.server_close()
 
+    def _intake_not_available(self, handler: Any) -> None:
+        if self.intake == "off":
+            return handler._json(
+                404, {"detail": "Intake is off.", "code": "intake_not_enabled"}
+            )
+        handler._json(404, {"detail": "Not Found"})
+
     def _exchange(self, handler: Any, body: bytes) -> None:
         request = json.loads(body) if body else {}
         self.exchange_requests.append(request)
         if self.exchange_status != 200:
             return handler._json(self.exchange_status, {"detail": "refused"})
-        token = f"submit-token-{len(self._tokens) + 1}"
-        self._tokens.add(token)
-        handler._json(200, {"access_token": token, "expires_in": 900})
+        scope = request.get("scope", "telemetry:write")
+        if scope == "artifacts:submit" and self.intake == "off":
+            return self._intake_not_available(handler)
+        if self.intake == "absent":
+            # Released before intake: every exchange gives a telemetry token.
+            token = f"telemetry-token-{len(self._tokens) + 1}"
+            self._tokens[token] = "telemetry:write"
+            return handler._json(200, {"access_token": token, "expires_in": 900})
+        token = f"session-token-{len(self._tokens) + 1}"
+        self._tokens[token] = scope
+        handler._json(
+            200,
+            {
+                "access_token": token,
+                "token_type": "bearer",
+                "expires_in": 900,
+                "scope": scope,
+            },
+        )
 
     def _create(self, handler: Any, body: dict[str, Any]) -> None:
         self.created.append(body)

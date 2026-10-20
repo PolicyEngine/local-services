@@ -117,7 +117,11 @@ class CollectorSession:
 
     ``scope`` asks the exchange for a credential with that scope, such as
     ``artifacts:submit``. Without it the exchange body stays ``{}``, which the
-    collector answers with a ``telemetry:write`` credential.
+    collector answers with a ``telemetry:write`` credential. A scoped session
+    accepts a token only when the answer names that scope; any other 200, or
+    a 404 from the exchange, means the collector has no intake for it
+    (``intake_unavailable``): a collector released before intake answers 200
+    with a ``telemetry:write`` token, and one with intake switched off 404.
     """
 
     def __init__(self, origin: str, *, post=None, credential=None, scope=None):
@@ -153,6 +157,11 @@ class CollectorSession:
                 )
             except (OSError, TimeoutError):
                 return "unavailable", None
+            if self.scope is not None and (
+                status == HTTPStatus.NOT_FOUND
+                or (status == HTTPStatus.OK and response.get("scope") != self.scope)
+            ):
+                return "intake_unavailable", None
             if status == HTTPStatus.OK and isinstance(
                 response.get("access_token"), str
             ):

@@ -3,6 +3,7 @@
 import hashlib
 import time
 
+import pytest
 from fake_hugging_face import PRIVATE_REPOSITORY
 
 from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
@@ -175,22 +176,29 @@ def test_a_bundle_hugging_face_refused_is_not_submitted(submitting_module, monke
     assert controls.collector.created == []
 
 
-def test_intake_switched_off_keeps_the_submission_until_it_is_on(
-    submitting_module,
+@pytest.mark.parametrize("intake", ["off", "absent"])
+def test_without_intake_the_submission_is_retried_about_hourly(
+    submitting_module, intake
 ):
     controls = submitting_module
     request = bundle(controls)
     stage(controls, request)
-    controls.collector.exchange_status = 404
+    controls.collector.intake = intake
 
     cycle(controls)
     pending = collector_receipt(controls, request)
-    controls.collector.exchange_status = 200
+    controls.collector.intake = "on"
     controls.clock.advance(600)
+    cycle(controls)
+    still_pending = collector_receipt(controls, request)
+    controls.clock.advance(3000)
     cycle(controls)
 
     assert pending["status"] == "pending"
-    assert pending["error_code"] == "COLLECTOR_UNAVAILABLE"
+    assert pending["error_code"] == "COLLECTOR_INTAKE_NOT_ENABLED"
+    # Not attempted again within the hour, and nothing was submitted.
+    assert still_pending["attempts"] == pending["attempts"]
+    assert len(controls.collector.created) == 1
     assert collector_receipt(controls, request)["status"] == "submitted"
 
 
