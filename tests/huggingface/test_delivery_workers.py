@@ -235,3 +235,123 @@ def test_the_bundle_commit_lands_once_its_upload_finishes(running_module):
     assert wait_until(
         lambda: len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1, seconds=10
     )
+
+
+def bundle_message(directory: Path, repository: str, run_id: str) -> dict:
+    directory.mkdir(parents=True)
+    return StageDatasetBundle(
+        repository=repository,
+        run_id=run_id,
+        files=(
+            bundle_file(directory, "dataset.h5", "dataset", b"rows"),
+            bundle_file(
+                directory, "staged_manifest.json", "staged_manifest", b'{"files": {}}'
+            ),
+        ),
+    ).message()
+
+
+def queue_bundles_before_the_workers_start(
+    database_path: Path, hub, directory: Path, repositories: list[str]
+) -> None:
+    """Queue one bundle per repository, so the worker's first cycle lists all."""
+    from microcosm_emitter.host.contracts import ModuleContext
+    from microcosm_emitter.huggingface.service.module import HuggingFaceModule
+
+    queueing_module = HuggingFaceModule(
+        {"handover_database_path": str(database_path)},
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+        background_workers=False,
+    )
+    queueing_module.initialize()
+    for position, repository in enumerate(repositories):
+        receipt = queueing_module.query(
+            bundle_message(
+                directory / f"bundle-{position}", repository, f"run-{position}"
+            )
+        )["receipt"]
+        assert receipt["status"] == "pending", receipt
+    queueing_module.close(time.monotonic() + SHUTDOWN_SECONDS)
+
+
+def test_no_bundle_upload_starts_once_shutdown_begins(tmp_path):
+    """Shutdown during one bundle upload: the worker starts no other upload.
+
+    The worker's cycle lists two repositories. Shutdown begins while the
+    upload to the first is held; that upload then finishes within the
+    shutdown period. No upload to the second repository may start, and the
+    first repository's run files, which the first shutdown commit skipped
+    because the upload held that repository, get the second shutdown commit.
+    """
+    from microcosm_emitter.host.contracts import ModuleContext
+    from microcosm_emitter.huggingface.service.module import HuggingFaceModule
+
+    hub = FakeHuggingFaceApi(whoami={"auth": {"accessToken": {"role": "write"}}})
+    hub.create_repository(PRIVATE_REPOSITORY, {"README.md": b"private fixture"})
+    hub.create_repository(STAGING_REPOSITORY, {"README.md": b"staging fixture"})
+    # The cycle visits repositories in name order: the private one first.
+    assert PRIVATE_REPOSITORY < STAGING_REPOSITORY
+    database_path = tmp_path / "events.handovers.sqlite3"
+    queue_bundles_before_the_workers_start(
+        database_path, hub, tmp_path, [PRIVATE_REPOSITORY, STAGING_REPOSITORY]
+    )
+
+    first_upload_entered = threading.Event()
+    first_upload_released = threading.Event()
+    second_upload_started = threading.Event()
+    test_finished = threading.Event()
+
+    def hold_the_first_upload():
+        first_upload_entered.set()
+        first_upload_released.wait(BLOCKED_COMMIT_LIMIT_SECONDS)
+
+    hub.run_before_next_commit(hold_the_first_upload)
+    create_commit_on_the_hub = hub.create_commit
+
+    def create_commit_holding_the_second_repository(repo_id, operations, **options):
+        if repo_id == STAGING_REPOSITORY:
+            # An upload that outlasts the shutdown period.
+            second_upload_started.set()
+            test_finished.wait(BLOCKED_COMMIT_LIMIT_SECONDS)
+        return create_commit_on_the_hub(repo_id, operations, **options)
+
+    hub.create_commit = create_commit_holding_the_second_repository
+    module = HuggingFaceModule(
+        {"handover_database_path": str(database_path)},
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+        worker_interval_seconds=0.05,
+    )
+    module.initialize()
+    try:
+        assert first_upload_entered.wait(10), "the first bundle upload never started"
+        progress = tmp_path / "progress.json"
+        progress.write_bytes(b'{"stage":"completed"}')
+        # Not due for an hour: only a commit at shutdown can deliver it.
+        run_files_receipt = module.query(
+            StageRunFiles(
+                repository=PRIVATE_REPOSITORY,
+                run_id="staging-run-1",
+                files=(RunFile("progress.json", progress),),
+                flush=False,
+                commit_interval_seconds=3600,
+            ).message()
+        )["receipt"]
+        assert run_files_receipt["status"] == "recorded", run_files_receipt
+        releaser = threading.Timer(0.5, first_upload_released.set)
+        releaser.start()
+
+        module.close(time.monotonic() + SHUTDOWN_SECONDS)
+
+        releaser.join()
+        assert not second_upload_started.is_set(), (
+            "an upload to the second repository started after shutdown began"
+        )
+        assert any(
+            "runs/staging-run-1/progress.json" in commit.added
+            for commit in hub.commits(PRIVATE_REPOSITORY)
+        ), "the first repository's run files missed the second shutdown commit"
+    finally:
+        first_upload_released.set()
+        test_finished.set()
