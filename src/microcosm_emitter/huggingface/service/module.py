@@ -23,7 +23,7 @@ from microcosm_emitter.core.auth import (
     CollectorSession,
     _collector_origin,
     _development_collector_url,
-    _huggingface_token,
+    huggingface_token,
 )
 from microcosm_emitter.core.constants import PRODUCTION_COLLECTOR_URL
 from microcosm_emitter.host.constants import TICK_SECONDS
@@ -130,7 +130,7 @@ class HuggingFaceModule:
         release_change_policy: ReleaseChangePolicy = allow_every_change,
         background_workers: bool = True,
         worker_interval_seconds: float = TICK_SECONDS,
-        collector_credential: Callable[[], str | None] = _huggingface_token,
+        collector_credential: Callable[[], str | None] = huggingface_token,
     ) -> None:
         self.configuration, self.context = configuration, context
         self.api_factory, self.clock = api_factory, clock

@@ -9,7 +9,6 @@ its content, so a later attempt continues where an earlier one stopped.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,12 @@ from urllib.parse import urlsplit
 import httpx
 
 from microcosm_emitter.core.constants import LOOPBACK_HOSTS
+from microcosm_emitter.huggingface.service.hub import (
+    PRESERVED_BYTES_CHANGED,
+    PRESERVED_FILES_MISSING,
+    UPLOAD_FAILED,
+)
+from microcosm_emitter.huggingface.service.queue import sha256_file
 from microcosm_emitter.submissions.planning import PlannedSubmission
 
 SUBMIT_SCOPE: Final = "artifacts:submit"
@@ -30,14 +35,11 @@ REQUEST_TIMEOUT_SECONDS: Final = 30.0
 UPLOAD_TIMEOUT: Final = httpx.Timeout(60.0, write=None)
 RETRYABLE_STATUSES: Final = frozenset({408, 429})
 
-PRESERVED_FILES_MISSING: Final = "PRESERVED_FILES_MISSING"
-PRESERVED_BYTES_CHANGED: Final = "PRESERVED_BYTES_CHANGED"
 CREDENTIAL_MISSING: Final = "CREDENTIAL_MISSING"
 CREDENTIAL_REJECTED: Final = "CREDENTIAL_REJECTED"
 COLLECTOR_UNAVAILABLE: Final = "COLLECTOR_UNAVAILABLE"
 INVALID_RESPONSE: Final = "INVALID_RESPONSE"
 UPLOAD_URL_REFUSED: Final = "UPLOAD_URL_REFUSED"
-UPLOAD_FAILED: Final = "UPLOAD_FAILED"
 FILES_INCOMPLETE: Final = "FILES_INCOMPLETE"
 
 
@@ -66,14 +68,6 @@ def upload_url_allowed(url: str, *, allow_loopback: bool) -> bool:
     )
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _preserved_files_outcome(planned: PlannedSubmission) -> SubmissionOutcome | None:
     for file in planned.body["files"]:
         path = Path(planned.local_paths[file["name"]])
@@ -82,7 +76,7 @@ def _preserved_files_outcome(planned: PlannedSubmission) -> SubmissionOutcome | 
                 return SubmissionOutcome("pending", PRESERVED_FILES_MISSING)
             if path.stat().st_size != file["size"]:
                 return SubmissionOutcome("failed", PRESERVED_BYTES_CHANGED)
-            if _sha256_file(path) != file["sha256"]:
+            if sha256_file(path) != file["sha256"]:
                 return SubmissionOutcome("failed", PRESERVED_BYTES_CHANGED)
         except OSError:
             return SubmissionOutcome("pending", PRESERVED_FILES_MISSING)
