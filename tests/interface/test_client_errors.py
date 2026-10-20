@@ -187,6 +187,25 @@ def test_an_orrery_retry_reports_the_error_code_of_its_own_call():
     assert receipt["error_code"] == "local_service_unavailable"
 
 
+def test_an_orrery_receipt_without_a_status_is_an_unavailable_receipt():
+    client, transport = running_client()
+    transport.query = lambda module, message, *, timeout=None: {
+        "receipt": {"publication_id": "fixture-publication"}
+    }
+
+    receipt = client.orrery_receipt("fixture-publication")
+    retried = client.retry_orrery_inputs("fixture-publication", wait_seconds=1)
+    handed_over = client.hand_over_orrery_inputs(
+        Path("/tmp"),
+        {"version": 1, "publication_id": "fixture-publication", "files": []},
+        wait_seconds=1,
+    )
+
+    for answered in (receipt, retried, handed_over):
+        assert answered["status"] == "failed"
+        assert answered["error_code"] == "local_service_unavailable"
+
+
 def test_unconvertible_orrery_arguments_report_failure():
     client, transport = running_client()
     assert client.orrery_inventory(UnresolvablePath(), {"graph.json": "graph"}) is None

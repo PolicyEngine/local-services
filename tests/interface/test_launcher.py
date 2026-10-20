@@ -209,3 +209,32 @@ def test_close_stops_the_emitter_and_removes_its_runtime_directory(tmp_path):
     while process.runtime_directory.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not process.runtime_directory.exists()
+
+
+class AnsweringTransport:
+    """A socket transport stand-in that answers ``hello`` with a fixed value."""
+
+    def __init__(self, description):
+        self.description = description
+
+    def hello(self, *, timeout=None):
+        return self.description
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        {"protocol_versions": [PROTOCOL_VERSION], "modules": [{"name": "orrery"}]},
+        {"protocol_versions": [PROTOCOL_VERSION], "modules": ["orrery", 3]},
+        {"protocol_versions": [PROTOCOL_VERSION, {"version": 2}], "modules": []},
+    ],
+    ids=["module-objects", "module-number", "version-object"],
+)
+def test_a_hello_answer_with_unusable_values_is_refused(description):
+    """A later emitter's differently shaped answer stops at startup, never in a
+    call: every call reads the module names as a set of strings."""
+    from microcosm_emitter_interface.launcher import _accepted_description
+
+    with pytest.raises(EmitterStartupError) as failure:
+        _accepted_description(AnsweringTransport(description), time.monotonic() + 5)
+    assert failure.value.reason == "unsupported_protocol_version"
