@@ -7,7 +7,7 @@ collector contract's roles; it never reads or interprets file contents.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from microcosm_emitter_interface.bundles import CALIBRATION_DIAGNOSTICS_ROLE
@@ -58,11 +58,17 @@ SUBMISSION_KINDS: Final = (
 
 @dataclass(frozen=True)
 class PlannedSubmission:
-    """One ``POST /v1/submissions`` body and where each of its files is."""
+    """One ``POST /v1/submissions`` body and where each of its files is.
+
+    ``copied`` holds the bytes of files copied when the bundle was handed
+    over; they are submitted as they were then, since the build may have
+    rewritten them since.
+    """
 
     kind: str
     body: dict[str, Any]
     local_paths: dict[str, str]
+    copied: dict[str, bytes] = field(default_factory=dict)
 
 
 def _kinds_named(request: Mapping[str, Any]) -> list[SubmissionKind]:
@@ -77,9 +83,15 @@ def wants_collector_submission(request: Mapping[str, Any]) -> bool:
 
 
 def planned_submissions(
-    request: Mapping[str, Any], revision: str
+    request: Mapping[str, Any],
+    revision: str,
+    copied: Mapping[str, bytes] | None = None,
 ) -> list[PlannedSubmission]:
-    """The submissions for a bundle committed to Hugging Face at ``revision``."""
+    """The submissions for a bundle committed to Hugging Face at ``revision``.
+
+    ``copied`` are the bytes copied at hand-over, by file name.
+    """
+    copied = {} if copied is None else copied
 
     collector = request.get("collector")
     if not isinstance(collector, Mapping):
@@ -121,6 +133,11 @@ def planned_submissions(
                     ],
                 },
                 local_paths={entry["name"]: entry["local_path"] for entry in entries},
+                copied={
+                    entry["name"]: copied[entry["name"]]
+                    for entry in entries
+                    if entry["name"] in copied
+                },
             )
         )
     return planned

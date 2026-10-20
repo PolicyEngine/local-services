@@ -69,7 +69,10 @@ def upload_url_allowed(url: str, *, allow_loopback: bool) -> bool:
 
 
 def _preserved_files_outcome(planned: PlannedSubmission) -> SubmissionOutcome | None:
+    """Re-hash the files submitted from their paths; copied files are not read."""
     for file in planned.body["files"]:
+        if file["name"] in planned.copied:
+            continue
         path = Path(planned.local_paths[file["name"]])
         try:
             if not path.is_file():
@@ -174,16 +177,26 @@ class CollectorSubmissionClient:
         return submission_id, uploads
 
     def _upload(self, upload: Mapping[str, Any], planned: PlannedSubmission) -> None:
+        copied = planned.copied.get(upload["name"])
         path = Path(planned.local_paths[upload["name"]])
-        headers = {**upload["headers"], "Content-Length": str(path.stat().st_size)}
         try:
-            with path.open("rb") as stream:
+            size = len(copied) if copied is not None else path.stat().st_size
+            headers = {**upload["headers"], "Content-Length": str(size)}
+            if copied is not None:
                 response = self._http.put(
                     upload["url"],
-                    content=stream,
+                    content=copied,
                     headers=headers,
                     timeout=UPLOAD_TIMEOUT,
                 )
+            else:
+                with path.open("rb") as stream:
+                    response = self._http.put(
+                        upload["url"],
+                        content=stream,
+                        headers=headers,
+                        timeout=UPLOAD_TIMEOUT,
+                    )
         except (httpx.HTTPError, OSError):
             raise _StepFailedError(
                 SubmissionOutcome("pending", UPLOAD_FAILED)

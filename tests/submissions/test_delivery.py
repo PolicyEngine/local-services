@@ -155,7 +155,11 @@ def test_the_collector_waits_for_the_hugging_face_commit(submitting_module):
     assert collector_receipt(controls, request)["status"] == "submitted"
 
 
-def test_a_bundle_hugging_face_refused_is_not_submitted(submitting_module):
+def test_a_bundle_hugging_face_refused_is_not_submitted(submitting_module, monkeypatch):
+    from microcosm_emitter.huggingface.service import requests as request_module
+
+    # Too large to copy: the changed file is uploaded from its path and refused.
+    monkeypatch.setattr(request_module, "MAX_COPIED_FILE_BYTES", 8)
     controls = submitting_module
     request = bundle(controls)
     stage(controls, request)
@@ -223,3 +227,25 @@ def test_the_module_tick_delivers_to_both_destinations(submitting_module):
 
     assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
     assert collector_receipt(controls, request)["status"] == "submitted"
+
+
+def test_files_microcosm_rewrites_after_staging_are_submitted_as_handed_over(
+    submitting_module,
+):
+    """Microcosm rewrites its build manifest right after ``stage_dataset``."""
+    controls = submitting_module
+    request = bundle(controls)
+    receipt = stage(controls, request)
+    assert "build_manifest.json" in receipt["copied_files"]
+    manifest = controls.tmp_path / "uk-run-1" / "build_manifest.json"
+    rewritten = manifest.with_name(".build_manifest.json.rewrite")
+    rewritten.write_bytes(b'{"outputs": {}, "staging_delivery": {}}')
+    rewritten.replace(manifest)
+
+    cycle(controls)
+
+    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert sorted(controls.collector.objects.values()) == [
+        b'{"outputs": {}}',
+        b'{"schema": 8}',
+    ]

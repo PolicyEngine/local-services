@@ -49,8 +49,16 @@ class CollectorSubmissionDelivery:
         return self.client.origin
 
     def enqueue_for_bundle(
-        self, handover_id: str, request: Mapping[str, Any]
+        self,
+        handover_id: str,
+        request: Mapping[str, Any],
+        files: Mapping[str, bytes] | None = None,
     ) -> dict[str, Any]:
+        """Queue the collector row; ``files`` are the bytes copied at hand-over.
+
+        The copies are shared with the Hugging Face row and kept until both
+        rows have settled.
+        """
         return self.queue.enqueue_job(
             handover_id=handover_id,
             kind=COLLECTOR_SUBMISSION,
@@ -59,6 +67,7 @@ class CollectorSubmissionDelivery:
             receipt=self._receipt(handover_id, "pending", None, 0, []),
             now=self.clock(),
             destination=DESTINATION_COLLECTOR,
+            files=files,
         )
 
     def receipt(self, handover_id: str) -> dict[str, Any] | None:
@@ -130,7 +139,7 @@ class CollectorSubmissionDelivery:
             )
             return
         results: dict[str, dict[str, Any]] = {}
-        for planned in planned_submissions(job.request, revision):
+        for planned in planned_submissions(job.request, revision, job.files):
             settled = earlier.get(planned.kind)
             if settled is not None and settled["status"] in {"accepted", "failed"}:
                 results[planned.kind] = settled

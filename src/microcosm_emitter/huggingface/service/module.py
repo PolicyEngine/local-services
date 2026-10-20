@@ -281,7 +281,7 @@ class HuggingFaceModule:
             hand_over.request
         ):
             self.collector_delivery.enqueue_for_bundle(
-                hand_over.handover_id, hand_over.request
+                hand_over.handover_id, hand_over.request, hand_over.copied
             )
         return receipt
 
