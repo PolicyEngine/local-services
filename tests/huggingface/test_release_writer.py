@@ -1272,3 +1272,84 @@ def test_a_queued_promotion_lands_after_a_later_withdrawal_on_this_machine(
         "a queued promotion was refused for a later withdrawal of another build"
     )
     assert current_of(controls).current == SECOND_BUILD
+
+
+# Every release receipt says, in its `current` field, which build is the
+# release's current build once the change was applied. A publication that
+# asked to become current but was overtaken is still `published` with no
+# error code, so only that field lets the caller tell "published and
+# current" from "published, not current".
+
+NO_CURRENT_FIELD = "the receipt does not say which build is current"
+
+
+def test_an_overtaken_publication_receipt_names_the_build_that_is_current(
+    hugging_face_module,
+):
+    """The #24 round-2 review's trigger: another machine's later promotion
+    lands while this machine's publication waits after a transient error."""
+    controls = hugging_face_module
+    publish_both(controls)
+    controls.hub.fail_next("create_commit", FakeHubHTTPError(503))
+    third, _ = publish_request(controls.tmp_path, THIRD_BUILD, make_current=True)
+    hand_over(controls, third)
+    controls.module.delivery.run_cycle()
+    assert status_of(receipt_of(controls, third)) == ("pending", "UPLOAD_FAILED")
+    controls.clock.advance(1)
+    other_machine = apply_release_change(
+        DatasetRepository(PRIVATE_REPOSITORY, controls.hub),
+        promotion(SECOND_BUILD),
+        published_at="2026-10-20T00:00:00+00:00",
+        requested_at=controls.clock(),
+    )
+    assert other_machine.status == "published"
+
+    controls.clock.advance(600)
+    controls.module.delivery.run_cycle()
+
+    receipt = receipt_of(controls, third)
+    assert status_of(receipt) == ("published", None)
+    assert THIRD_BUILD in current_of(controls).builds
+    assert receipt.get("current") == SECOND_BUILD, NO_CURRENT_FIELD
+
+
+def test_every_release_receipt_names_the_build_that_is_current(
+    hugging_face_module,
+):
+    controls = hugging_face_module
+    first, _ = publish_request(controls.tmp_path, FIRST_BUILD, make_current=True)
+    pending = hand_over(controls, first)
+    assert pending["status"] == "pending"
+    assert "current" in pending, NO_CURRENT_FIELD
+    assert pending["current"] is None
+    controls.module.delivery.run_cycle()
+    controls.clock.advance(1)
+    made_current = receipt_of(controls, first)
+    assert made_current["status"] == "published"
+    assert made_current.get("current") == FIRST_BUILD, NO_CURRENT_FIELD
+
+    second, _ = publish_request(controls.tmp_path, SECOND_BUILD)
+    listed_only = queue_change(controls, second)
+    assert (listed_only["status"], listed_only.get("current")) == (
+        "published",
+        FIRST_BUILD,
+    )
+    promoted = queue_change(controls, promotion(SECOND_BUILD))
+    assert (promoted["status"], promoted.get("current")) == ("published", SECOND_BUILD)
+    # A promotion of the current build writes nothing.
+    unchanged = queue_change(controls, promotion(SECOND_BUILD))
+    assert (unchanged["status"], unchanged.get("current")) == (
+        "published",
+        SECOND_BUILD,
+    )
+    # A publication of a build already published never promotes it.
+    republished, _ = publish_request(controls.tmp_path, FIRST_BUILD, make_current=True)
+    already = queue_change(controls, republished)
+    assert (already["status"], already.get("current")) == ("published", SECOND_BUILD)
+    refused = queue_change(controls, withdrawal(SECOND_BUILD))
+    assert (refused["status"], refused["error_code"]) == (
+        "refused",
+        "WITHDRAWING_CURRENT_BUILD",
+    )
+    assert "current" in refused, NO_CURRENT_FIELD
+    assert refused["current"] is None

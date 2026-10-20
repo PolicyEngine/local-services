@@ -225,3 +225,29 @@ def test_a_request_id_must_be_a_safe_identifier(request_id):
             build=BUILD,
             request_id=request_id,
         )
+
+
+def test_a_client_receipt_names_the_build_that_is_current(tmp_path, emitter_with_hub):
+    client, _ = emitter_with_hub
+    receipt = client.publish_release(
+        publication(tmp_path / "first", make_current=True), wait_seconds=20
+    )
+    assert receipt["status"] == "published", receipt
+    assert receipt.get("current") == BUILD, (
+        "the receipt does not say which build is current"
+    )
+
+
+def test_an_unavailable_release_receipt_names_no_current_build(
+    tmp_path, in_thread_emitter
+):
+    client = EmitterClient(
+        in_thread_emitter(
+            SocketTransport(tmp_path / "unused.sock"),
+            {"modules": ["telemetry"], "protocol_versions": [1]},
+        )
+    )
+    receipt = client.publish_release(publication(tmp_path), wait_seconds=1)
+    assert receipt["status"] == "unavailable"
+    assert "current" in receipt, "the receipt does not say which build is current"
+    assert receipt["current"] is None
