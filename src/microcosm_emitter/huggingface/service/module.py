@@ -57,6 +57,7 @@ from microcosm_emitter.submissions.client import (
     CollectorSubmissionClient,
 )
 from microcosm_emitter.submissions.delivery import (
+    COLLECTOR_SUBMISSION,
     COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT,
     CollectorSubmissionDelivery,
 )
@@ -153,21 +154,26 @@ class HuggingFaceModule:
             api_factory=self.api_factory,
             clock=self.clock,
         )
-        if self.background_workers:
-            self.workers = self._delivery_workers(self.delivery)
-            for worker in self.workers.values():
-                worker.start()
         enabled = self.configuration.get(
             "collector_submissions", COLLECTOR_SUBMISSIONS_ENABLED_BY_DEFAULT
         )
         if enabled is True:
             self.collector_delivery = self._collector_delivery(self.queue)
+        if self.background_workers:
+            self.workers = self._delivery_workers(self.delivery)
+            for worker in self.workers.values():
+                worker.start()
 
     def _delivery_workers(
         self, delivery: HuggingFaceDelivery
     ) -> dict[str, DeliveryWorker]:
-        """One worker per kind of upload that can take minutes."""
-        return {
+        """One worker per kind of upload that can take minutes.
+
+        Collector submissions get their own: a slow or stalled submission
+        never delays a Hugging Face commit, the commit at shutdown or a
+        read-back.
+        """
+        workers = {
             DATASET_BUNDLE: DeliveryWorker(
                 "dataset-bundles",
                 lambda stop_requested: delivery.job_cycle(
@@ -187,10 +193,22 @@ class HuggingFaceModule:
                 on_error=self._worker_error,
             ),
         }
+        if self.collector_delivery is not None:
+            workers[COLLECTOR_SUBMISSION] = DeliveryWorker(
+                "collector-submissions",
+                lambda _stop_requested: self.collector_delivery.run_cycle(),
+                interval_seconds=self.worker_interval_seconds,
+                on_error=self._collector_error,
+            )
+        return workers
 
     def _worker_error(self) -> None:
         if self.delivery is not None:
             self.delivery.warn_once("worker", WORKER_ERROR_MESSAGE)
+
+    def _collector_error(self) -> None:
+        if self.delivery is not None:
+            self.delivery.warn_once("collector", COLLECTOR_WORKER_ERROR_MESSAGE)
 
     def _collector_delivery(self, queue: HandoverQueue) -> CollectorSubmissionDelivery:
         development_url = self.configuration.get("development_collector_url")
@@ -457,11 +475,11 @@ class HuggingFaceModule:
             # The host stops a module whose tick raises; a local queue error
             # leaves the work queued and must not end every later delivery.
             self._worker_error()
-        if self.collector_delivery is not None:
+        if self.collector_delivery is not None and not self.workers:
             try:
                 self.collector_delivery.run_cycle()
             except Exception:
-                self.delivery.warn_once("collector", COLLECTOR_WORKER_ERROR_MESSAGE)
+                self._collector_error()
 
     def parent_exited(self) -> None:
         """Queued hand-overs stay eligible for the next emitter host."""
@@ -493,11 +511,13 @@ class HuggingFaceModule:
             self._worker_error()
             workers_stopped = False
         finally:
-            if self.collector_delivery is not None:
-                self.collector_delivery.client.close()
-            # A worker still uploading needs the queue to record its result.
-            if self.queue is not None and (not self.workers or workers_stopped):
-                self.queue.close()
+            # A worker still uploading needs its HTTP client, and the queue to
+            # record its result; both go with the process.
+            if not self.workers or workers_stopped:
+                if self.collector_delivery is not None:
+                    self.collector_delivery.client.close()
+                if self.queue is not None:
+                    self.queue.close()
 
     def _drain(self, deadline: float) -> None:
         if self.delivery is not None and time.monotonic() < deadline:

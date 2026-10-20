@@ -28,8 +28,13 @@ def collector():
         fake.stop()
 
 
-def new_module(tmp_path, collector, *, background_workers=False, **configuration):
-    """The module and its in-memory Hub, not yet initialized."""
+def new_module(
+    tmp_path, collector, *, background_workers=False, clock=None, **configuration
+):
+    """The module and its in-memory Hub, not yet initialized.
+
+    ``clock`` is the module's clock; by default a manual one the test moves.
+    """
     from microcosm_emitter.host.contracts import ModuleContext
     from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 
@@ -37,7 +42,7 @@ def new_module(tmp_path, collector, *, background_workers=False, **configuration
         whoami={"auth": {"accessToken": {"role": "write"}}, "name": "fixture"}
     )
     hub.create_repository(PRIVATE_REPOSITORY, {"README.md": b"private fixture"})
-    clock = ManualClock()
+    clock = ManualClock() if clock is None else clock
     available_api = {"value": hub}
     module = HuggingFaceModule(
         {

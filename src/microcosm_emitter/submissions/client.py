@@ -10,7 +10,7 @@ its content, so a later attempt continues where an earlier one stopped.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -32,8 +32,15 @@ SUBMISSIONS_PATH: Final = "/v1/submissions"
 #: Signed upload URLs point at Cloud Storage's XML API host.
 STORAGE_HOST: Final = "storage.googleapis.com"
 REQUEST_TIMEOUT_SECONDS: Final = 30.0
-#: Large files take as long as the connection needs; only stalls time out.
-UPLOAD_TIMEOUT: Final = httpx.Timeout(60.0, write=None)
+#: An upload may wait 60 seconds to connect, for each write to make progress,
+#: and for the answer: a stalled upload fails within a minute.
+UPLOAD_TIMEOUT: Final = httpx.Timeout(60.0)
+#: However fast it progresses, an upload stops after
+#: ``upload_time_limit(size)``: at least ``MIN_UPLOAD_SECONDS``, and longer for
+#: a file that needs it at ``MIN_UPLOAD_BYTES_PER_SECOND`` (2 Mbit/s).
+MIN_UPLOAD_SECONDS: Final = 300.0
+MIN_UPLOAD_BYTES_PER_SECOND: Final = 256 * 1024
+UPLOAD_CHUNK_BYTES: Final = 1024 * 1024
 RETRYABLE_STATUSES: Final = frozenset({408, 429})
 #: After the collector shows it has no intake, how long to wait before
 #: exchanging again; no submission request goes to it meanwhile.
@@ -52,6 +59,33 @@ COLLECTOR_UNAVAILABLE: Final = "COLLECTOR_UNAVAILABLE"
 INVALID_RESPONSE: Final = "INVALID_RESPONSE"
 UPLOAD_URL_REFUSED: Final = "UPLOAD_URL_REFUSED"
 FILES_INCOMPLETE: Final = "FILES_INCOMPLETE"
+
+
+class UploadTimeLimitError(Exception):
+    """An upload outlasted its time limit."""
+
+
+def upload_time_limit(size: int) -> float:
+    """How long uploading ``size`` bytes may take, in seconds."""
+    return max(MIN_UPLOAD_SECONDS, size / MIN_UPLOAD_BYTES_PER_SECOND)
+
+
+def chunks_until(
+    chunks: Iterable[bytes],
+    *,
+    deadline: float,
+    clock: Callable[[], float] = time.monotonic,
+) -> Iterator[bytes]:
+    """Yield ``chunks``; raise ``UploadTimeLimitError`` once ``deadline`` passes."""
+    for chunk in chunks:
+        if clock() > deadline:
+            raise UploadTimeLimitError()
+        yield chunk
+
+
+def _byte_slices(content: bytes) -> Iterator[bytes]:
+    for start in range(0, len(content), UPLOAD_CHUNK_BYTES):
+        yield content[start : start + UPLOAD_CHUNK_BYTES]
 
 
 @dataclass(frozen=True)
@@ -277,22 +311,24 @@ class CollectorSubmissionClient:
         try:
             size = len(copied) if copied is not None else path.stat().st_size
             headers = {**upload["headers"], "Content-Length": str(size)}
+            deadline = time.monotonic() + upload_time_limit(size)
             if copied is not None:
                 response = self._http.put(
                     upload["url"],
-                    content=copied,
+                    content=chunks_until(_byte_slices(copied), deadline=deadline),
                     headers=headers,
                     timeout=UPLOAD_TIMEOUT,
                 )
             else:
                 with path.open("rb") as stream:
+                    blocks = iter(lambda: stream.read(UPLOAD_CHUNK_BYTES), b"")
                     response = self._http.put(
                         upload["url"],
-                        content=stream,
+                        content=chunks_until(blocks, deadline=deadline),
                         headers=headers,
                         timeout=UPLOAD_TIMEOUT,
                     )
-        except (httpx.HTTPError, OSError):
+        except (httpx.HTTPError, OSError, UploadTimeLimitError):
             raise _StepFailedError(
                 SubmissionOutcome("pending", UPLOAD_FAILED)
             ) from None

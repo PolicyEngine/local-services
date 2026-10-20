@@ -341,6 +341,9 @@ def module_with_workers(module_factory, collector):
     """The module with its own delivery workers, as the host runs it."""
     controls = module_factory.start(
         background_workers=True,
+        # As in the host: a submission waiting for its Hugging Face commit
+        # is retried seconds later.
+        clock=time.time,
         collector_submissions=True,
         development_collector_url=collector.origin,
     )
@@ -420,6 +423,7 @@ def test_the_shutdown_commit_runs_during_a_held_collector_upload(
 
     controls = module_factory.new(
         background_workers=True,
+        clock=time.time,
         collector_submissions=True,
         development_collector_url=collector.origin,
     )

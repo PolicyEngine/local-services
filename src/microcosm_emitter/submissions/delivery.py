@@ -30,6 +30,10 @@ COLLECTOR_SUBMISSION: Final = "collector_submission"
 #: Long enough to upload large native evidence files in one attempt.
 SUBMISSION_LEASE_SECONDS: Final = 3600.0
 MAX_JOBS_PER_CYCLE: Final = 8
+#: How long one cycle keeps starting submissions. A submission in progress
+#: then runs to its end; each of its requests and uploads has its own time
+#: limit (see ``client``), so a cycle's length is bounded.
+MAX_CYCLE_SECONDS: Final = 600.0
 STAGED_STATUSES: Final = frozenset({"uploaded", "already_staged"})
 NOT_STAGED_STATUSES: Final = frozenset({"failed", "refused"})
 WAITING_FOR_HUGGING_FACE: Final = "WAITING_FOR_HUGGING_FACE"
@@ -96,9 +100,16 @@ class CollectorSubmissionDelivery:
         }
 
     def run_cycle(self) -> int:
-        """Attempt each due collector hand-over once; return how many."""
+        """Attempt each due collector hand-over once; return how many.
+
+        The module runs this on a worker thread of its own, so a slow
+        submission never delays a Hugging Face commit.
+        """
+        cycle_deadline = time.monotonic() + MAX_CYCLE_SECONDS
         attempted = 0
         for _ in range(MAX_JOBS_PER_CYCLE):
+            if attempted and time.monotonic() >= cycle_deadline:
+                break
             job = self.queue.claim_job(
                 self.target,
                 now=self.clock(),
