@@ -121,7 +121,9 @@ class ReleasesRecord:
 
         if not isinstance(document, dict) or set(document) != _RECORD_KEYS:
             raise invalid(f"releases.json must have exactly {sorted(_RECORD_KEYS)}.")
-        if document["schema_version"] != RELEASES_SCHEMA_VERSION:
+        version = document["schema_version"]
+        # ``True`` and ``1.0`` equal 1 in Python; only the integer is the version.
+        if type(version) is not int or version != RELEASES_SCHEMA_VERSION:
             raise invalid(
                 f"releases.json schema_version must be {RELEASES_SCHEMA_VERSION}."
             )
@@ -301,8 +303,16 @@ def check_record(record: ReleasesRecord) -> list[Violation]:
 def check_change(
     before: ReleasesRecord | None, after: ReleasesRecord
 ) -> list[Violation]:
-    """Existing build entries are unchanged except for ``withdrawn``."""
+    """Existing build entries are unchanged except for ``withdrawn``, and the
+    new record stays within the size every reader accepts."""
     violations = check_record(after)
+    if len(after.serialize()) > MAX_RECORD_BYTES:
+        violations.append(
+            Violation(
+                "RECORD_TOO_LARGE",
+                f"releases.json would be larger than {MAX_RECORD_BYTES} bytes.",
+            )
+        )
     if before is None:
         return violations
     for release, entry in before.releases.items():
