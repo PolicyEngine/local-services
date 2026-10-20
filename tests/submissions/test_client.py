@@ -492,17 +492,21 @@ def slow_link_collector():
 
 
 def slow_link_client(collector) -> CollectorSubmissionClient:
+    """A client with a small send buffer; it trusts the fake's TLS uploads."""
     session = CollectorSession(
         collector.origin, credential=lambda: "hf_synthetic", scope=SUBMIT_SCOPE
     )
     small_send_buffer = (socket.SOL_SOCKET, socket.SO_SNDBUF, SMALL_SOCKET_BUFFER_BYTES)
+    tls_verification = collector.client_tls_context or True
     return CollectorSubmissionClient(
         collector.origin,
         credential=session.credential,
         invalidate_credential=session.invalidate,
         http=httpx.Client(
             follow_redirects=False,
-            transport=httpx.HTTPTransport(socket_options=[small_send_buffer]),
+            transport=httpx.HTTPTransport(
+                verify=tls_verification, socket_options=[small_send_buffer]
+            ),
         ),
         allow_loopback_uploads=True,
         clock=ManualClock(),
@@ -580,3 +584,52 @@ def test_a_stalled_upload_is_abandoned(
     assert (outcome.status, outcome.error_code) == ("pending", "UPLOAD_FAILED")
     assert time.monotonic() - started < 5
     assert slow_link_collector.objects == {}
+
+
+# Over HTTPS, as every production upload to Cloud Storage is, a send to the
+# connection writes its whole buffer before it returns: CPython's ``ssl``
+# does no partial writes, and its write timeout covers the whole call. So the
+# write timeout covers each piece of the file the client sends, and the
+# pieces must be small enough that a slow link still finishes each one well
+# within it.
+
+#: About 1 MiB/s: a 64 KiB piece takes about 60 ms, a 1 MiB piece a second.
+TLS_READ_PACE = (16 * 1024, 1 / 64)
+#: The stall threshold set here, in place of the client's 60 seconds.
+TLS_WRITE_TIMEOUT_SECONDS = 0.5
+#: More than one 1 MiB piece, so the client sends at least one whole piece.
+TLS_FILE_BYTES = 3 * 1024 * 1024 // 2
+
+
+def test_an_https_upload_that_keeps_progressing_is_never_stopped(
+    tmp_path, monkeypatch
+) -> None:
+    """The #27 round-2 review's NEW BUGS 1: the link averages about 1 MiB/s,
+    so the upload keeps making progress, yet a 1 MiB piece takes twice the
+    stall threshold to write. Every piece must finish within the threshold
+    for the upload to complete."""
+    from microcosm_emitter.submissions import client as client_module
+
+    monkeypatch.setattr(
+        client_module,
+        "UPLOAD_TIMEOUT",
+        httpx.Timeout(10.0, write=TLS_WRITE_TIMEOUT_SECONDS),
+    )
+    collector = FakeCollector(
+        receive_buffer_bytes=SMALL_SOCKET_BUFFER_BYTES, tls_uploads=True
+    ).start()
+    try:
+        collector.upload_read_pace = TLS_READ_PACE
+        content = b"x" * TLS_FILE_BYTES
+        planned = one_large_file_submission(tmp_path, content)
+
+        outcome = slow_link_client(collector).submit(planned)
+
+        assert (outcome.status, outcome.error_code) == ("accepted", None), (
+            "an HTTPS upload that kept making progress was stopped"
+        )
+        assert list(collector.objects.values()) == [content]
+        assert collector.upload_origin.startswith("https://")
+    finally:
+        collector.release_uploads()
+        collector.stop()

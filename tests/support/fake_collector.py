@@ -15,6 +15,13 @@ without a ``code``).
 For slow links: ``receive_buffer_bytes`` gives each connection a small
 receive buffer, so the client's sends wait for the fake to read, and
 ``upload_read_pace`` makes it read an upload's body a few bytes at a time.
+
+``tls_uploads`` signs upload URLs for a second loopback server that speaks
+TLS, as Cloud Storage does, while the collector itself stays plain HTTP. A
+TLS send writes its whole buffer before it returns, so a slow reader shows
+how long each piece of an upload takes. The server has no certificate: it
+and ``client_tls_context`` use only anonymous cipher suites, which is
+enough to put a TLS socket under the client and needs no key material.
 """
 
 from __future__ import annotations
@@ -22,14 +29,32 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+#: Anonymous key exchange only: no certificate on either side.
+ANONYMOUS_CIPHERS = "aNULL:@SECLEVEL=0"
+
+
+def anonymous_tls_context(purpose: int) -> ssl.SSLContext:
+    """A TLS 1.2 context that negotiates only anonymous cipher suites."""
+    context = ssl.SSLContext(purpose)
+    if purpose == ssl.PROTOCOL_TLS_CLIENT:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    context.set_ciphers(ANONYMOUS_CIPHERS)
+    return context
+
 
 class FakeCollector:
-    def __init__(self, *, receive_buffer_bytes: int | None = None) -> None:
+    def __init__(
+        self, *, receive_buffer_bytes: int | None = None, tls_uploads: bool = False
+    ) -> None:
         self.exchange_requests: list[dict[str, Any]] = []
         self.created: list[dict[str, Any]] = []
         self.completed: list[str] = []
@@ -123,22 +148,40 @@ class FakeCollector:
                 with collector._lock:
                     collector._store(self, self.path.removeprefix("/storage/"), body)
 
-        self._server = ThreadingHTTPServer(
-            ("127.0.0.1", 0), Handler, bind_and_activate=False
-        )
-        if receive_buffer_bytes is not None:
-            # Accepted connections inherit the listening socket's buffer size.
-            self._server.socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes
+        def loopback_server() -> ThreadingHTTPServer:
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), Handler, bind_and_activate=False
             )
-        self._server.server_bind()
-        self._server.server_activate()
+            if receive_buffer_bytes is not None:
+                # Accepted connections inherit the listening socket's buffer.
+                server.socket.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes
+                )
+            server.server_bind()
+            server.server_activate()
+            return server
+
+        self._server = loopback_server()
         self.origin = f"http://127.0.0.1:{self._server.server_address[1]}"
-        self._thread = threading.Thread(
-            target=self._server.serve_forever,
-            kwargs={"poll_interval": 0.02},
-            daemon=True,
-        )
+        self._servers = [self._server]
+        #: The client side of ``tls_uploads``; ``None`` without it.
+        self.client_tls_context: ssl.SSLContext | None = None
+        if tls_uploads:
+            storage = loopback_server()
+            storage.socket = anonymous_tls_context(ssl.PROTOCOL_TLS_SERVER).wrap_socket(
+                storage.socket, server_side=True
+            )
+            self.upload_origin = f"https://127.0.0.1:{storage.server_address[1]}"
+            self.client_tls_context = anonymous_tls_context(ssl.PROTOCOL_TLS_CLIENT)
+            self._servers.append(storage)
+        self._threads = [
+            threading.Thread(
+                target=server.serve_forever,
+                kwargs={"poll_interval": 0.02},
+                daemon=True,
+            )
+            for server in self._servers
+        ]
 
     def hold_uploads(self) -> None:
         """Make every upload wait until ``release_uploads``."""
@@ -148,12 +191,14 @@ class FakeCollector:
         self.uploads_released.set()
 
     def start(self) -> FakeCollector:
-        self._thread.start()
+        for thread in self._threads:
+            thread.start()
         return self
 
     def stop(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
+        for server in self._servers:
+            server.shutdown()
+            server.server_close()
 
     def _intake_not_available(self, handler: Any) -> None:
         if self.intake == "off":
