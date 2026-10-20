@@ -88,6 +88,8 @@ def test_an_empty_record_has_no_default_and_no_releases():
     "edit",
     [
         lambda document: document.update(schema_version=2),
+        lambda document: document.update(schema_version=True),
+        lambda document: document.update(schema_version=1.0),
         lambda document: document.update(default="unknown-release"),
         lambda document: document.update(extra=True),
         lambda document: document["releases"][NATIONAL].update(current="unlisted"),
@@ -108,6 +110,8 @@ def test_an_empty_record_has_no_default_and_no_releases():
     ],
     ids=[
         "schema-version",
+        "schema-version-boolean",
+        "schema-version-float",
         "default-not-listed",
         "extra-key",
         "current-not-listed",
@@ -398,3 +402,21 @@ def test_a_deeply_nested_manifest_does_not_name_its_build():
     assert codes(check_repository(record, nested, nested.__getitem__)) == {
         "MANIFEST_MISMATCH"
     }
+
+
+def test_a_change_that_would_exceed_the_reading_limit_is_refused(monkeypatch):
+    """Every later read would refuse such a record, so it is never written."""
+    from microcosm_emitter_interface import releases as releases_module
+
+    before = documented_record()
+    after = releases_module.add_build(
+        before,
+        release=NATIONAL,
+        build="uk-frs-calibration-attempt-20261020T101500Z-0a1b2c3d",
+        release_role="national_default",
+        published_at="2026-10-20T10:15:00+00:00",
+        make_current=False,
+    )
+    monkeypatch.setattr(releases_module, "MAX_RECORD_BYTES", len(after.serialize()) - 1)
+    violations = check_change(before, after)
+    assert [violation.code for violation in violations] == ["RECORD_TOO_LARGE"]
