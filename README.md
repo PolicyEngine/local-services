@@ -13,6 +13,20 @@ Installing `microcosm-emitter` always installs the telemetry library and all its
 
 The build process imports only the adapter, not the service implementation. It supplies run metadata, its existing queue path, and build identity. The adapter starts a separate local telemetry emitter service process automatically and sends requests over a private Unix socket. The adapter does not track stages, construct events, or redact telemetry. Imports alone create no processes, sockets, files, or network requests.
 
+## Installing the emitter on its own
+
+`uv tool install microcosm-emitter` installs the `microcosm-emitter` command in its own environment, separately from the build's Python environment. A build then starts `microcosm-emitter host` as its own child process, exactly as the in-process launcher starts `python -m microcosm_emitter.host`:
+
+- the build passes its process ID with `--parent-pid` and the module configuration on standard input, never in process-list arguments;
+- the host inherits the build's environment variables and runs as the same user, so it finds the same Hugging Face credential (`HF_TOKEN`, then `HUGGINGFACE_TOKEN`, then the token saved by `hf auth login`);
+- the host exits after the build exits. Without `--parent-created-at`, the host reads the build's creation time itself, and refuses to start if the named process is not its parent.
+
+The host is never a separately started system service: such a service would not see the build's environment variables. `--skip-unavailable-modules` starts the host without requested modules that this emitter release does not install, so a newer build can still use an older emitter's modules.
+
+Only a host started by `microcosm-emitter host` answers a `hello` request on the socket. It returns the emitter version, the socket protocol versions it accepts, the modules it loaded and the requested modules it skipped (`microcosm_emitter.compatibility.HelloResponse`). A host started with `python -m microcosm_emitter.host`, as by the in-process launcher, refuses `hello` like any unknown action. `microcosm-emitter version` prints the emitter version and protocol versions as JSON. Every emitter release must keep accepting every protocol version that builds still send (`microcosm_emitter.compatibility`).
+
+With `--skip-unavailable-modules`, the host still refuses to start if none of the requested modules is installed, and refuses each request to a skipped module as it refuses one to an unknown module.
+
 ## Delivery and persistence
 
 The service interprets requests such as a stage change or build failure, timestamps and redacts the resulting events, and saves them before acknowledging the socket request. A stage change can complete one stage and start another; both events commit in one SQLAlchemy ORM transaction, and the service changes its stage state only after that transaction succeeds. Periodic retention maintenance runs outside this acknowledgement path.

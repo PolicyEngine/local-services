@@ -8,13 +8,15 @@ from microcosm_emitter.host.contracts import (
     ModuleContext,
     ServiceModule,
 )
-from microcosm_emitter.host.errors import LocalServiceError
+from microcosm_emitter.host.errors import LocalServiceError, ModuleNotInstalledError
 
 
 def load_module(
     name: str, configuration: JsonObject, context: ModuleContext
 ) -> ServiceModule:
     matches = list(entry_points(group=MODULE_GROUP, name=name))
+    if not matches:
+        raise ModuleNotInstalledError(f"No installed module is named {name!r}.")
     if len(matches) != 1:
         raise LocalServiceError(
             f"Expected exactly one installed module named {name!r}."

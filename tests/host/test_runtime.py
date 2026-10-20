@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from microcosm_emitter.host.client import SocketClient
-from microcosm_emitter.host.errors import LocalServiceError
+from microcosm_emitter.host.errors import LocalServiceError, ModuleNotInstalledError
 from microcosm_emitter.host.loading import load_module
 from microcosm_emitter.host.runtime import ServiceRuntime
 
@@ -153,7 +153,7 @@ def test_module_selection_refuses_missing_and_duplicate(monkeypatch):
     from microcosm_emitter.host import loading
 
     monkeypatch.setattr(loading, "entry_points", lambda **kwargs: [])
-    with pytest.raises(LocalServiceError, match="exactly one"):
+    with pytest.raises(ModuleNotInstalledError, match="No installed module"):
         load_module("example", {}, None)
     entry = EntryPoint(
         name="example",

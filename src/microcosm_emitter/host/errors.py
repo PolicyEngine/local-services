@@ -7,6 +7,10 @@ class LocalServiceError(RuntimeError):
     """A local service could not start, accept a message, or shut down."""
 
 
+class ModuleNotInstalledError(LocalServiceError):
+    """No installed entry point provides the requested module."""
+
+
 StartupFailureReason = Literal[
     "readiness_timeout",
     "configuration_timeout",

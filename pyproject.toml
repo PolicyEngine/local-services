@@ -21,6 +21,7 @@ telemetry = "microcosm_emitter.telemetry.service:create_module"
 orrery = "microcosm_emitter.orrery.service:create_module"
 
 [project.scripts]
+microcosm-emitter = "microcosm_emitter.cli:main"
 microcosm-emitter-publish-graph = "microcosm_emitter.orrery.cli:main"
 
 [build-system]

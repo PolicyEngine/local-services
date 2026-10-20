@@ -51,3 +51,11 @@ def test_installed_distribution_includes_host_telemetry_and_migrations():
         find_spec("microcosm_emitter.core.alembic.versions.v20261007_01_initial_spool")
         is not None
     )
+
+
+def test_installed_distribution_provides_the_emitter_command():
+    """`uv tool install microcosm-emitter` puts this command on the user's PATH."""
+    commands = list(entry_points(group="console_scripts", name="microcosm-emitter"))
+    assert len(commands) == 1
+    assert commands[0].value == "microcosm_emitter.cli:main"
+    assert commands[0].dist.name == EXPECTED_NAME
