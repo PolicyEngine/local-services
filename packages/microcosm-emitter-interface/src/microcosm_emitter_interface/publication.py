@@ -208,8 +208,16 @@ class ReleaseReceipt(TypedDict):
 
 
 def unavailable_release_receipt(request: ReleaseChange) -> ReleaseReceipt:
+    """No emitter accepted the change; built without converting its files.
+
+    ``handover_id`` is empty when the request's files cannot be converted.
+    """
+    try:
+        handover_id = request.handover_id()
+    except Exception:
+        handover_id = ""
     return {
-        "handover_id": request.handover_id(),
+        "handover_id": handover_id,
         "status": "unavailable",
         "error_code": None,
         "message": None,

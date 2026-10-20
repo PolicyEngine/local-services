@@ -497,10 +497,9 @@ class EmitterClient:
     def _release_change(
         self, request: ReleaseChange, wait_seconds: float
     ) -> ReleaseReceipt:
-        message = request.message()
         response = self._query(
             HUGGING_FACE_MODULE,
-            lambda: message,
+            request.message,
             kind="release",
             timeout=FILE_REQUEST_TIMEOUT_SECONDS,
         )
