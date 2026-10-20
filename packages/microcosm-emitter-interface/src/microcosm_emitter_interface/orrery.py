@@ -70,11 +70,17 @@ class OrrerySettings:
         return configuration
 
 
-def unavailable_receipt(publication_id: str | None) -> PublicationReceipt:
-    """No acknowledgement: no claim that the emitter queued anything."""
+def unavailable_receipt(
+    publication_id: str | None, *, error_code: str = "local_service_unavailable"
+) -> PublicationReceipt:
+    """No acknowledgement: no claim that the emitter queued anything.
+
+    ``error_code`` is ``local_service_unavailable`` when no emitter answered,
+    or ``invalid_arguments`` when the call's arguments could not be sent.
+    """
     return {
         "version": 1,
         "publication_id": publication_id,
         "status": "failed",
-        "error_code": "local_service_unavailable",
+        "error_code": error_code,
     }

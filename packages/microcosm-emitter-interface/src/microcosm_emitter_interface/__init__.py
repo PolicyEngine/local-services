@@ -3,7 +3,11 @@
 Importing this package starts no process and opens no socket or file.
 """
 
-from microcosm_emitter_interface.client import EmitterClient, default_spool_path
+from microcosm_emitter_interface.client import (
+    EmitterClient,
+    RequestFailure,
+    default_spool_path,
+)
 from microcosm_emitter_interface.launcher import (
     COMMAND_ENVIRONMENT_VARIABLE,
     DEFAULT_COMMAND,
@@ -20,6 +24,7 @@ __all__ = [
     "EmitterClient",
     "EmitterStartupError",
     "OrrerySettings",
+    "RequestFailure",
     "TelemetryRun",
     "TelemetrySettings",
     "default_spool_path",

@@ -258,7 +258,13 @@ class TelemetryRecorder:
         details: Mapping[str, Any] | None = None,
     ) -> bool:
         return self._client.emit_telemetry(
-            EventRecord(event_type, status, stage_id, message, details or {})
+            EventRecord(
+                event_type,
+                status,
+                stage_id,
+                message,
+                {} if details is None else details,
+            )
         )
 
     def stage(

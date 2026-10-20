@@ -23,7 +23,7 @@ client.close()
 
 `EmitterClient.start` runs the `microcosm-emitter` command as the build's own child process. The command comes from the `command` argument, then the `MICROCOSM_EMITTER_COMMAND` environment variable, then `PATH`. The child inherits the build's environment variables and user, so it finds the same Hugging Face credential: `HF_TOKEN`, then `HUGGINGFACE_TOKEN`, then the token saved by `hf auth login`.
 
-No call raises because the emitter is missing, slow or refusing a request. Each call reports whether the emitter accepted it, and the build continues.
+No call raises into the build: not because the emitter is missing, slow or refusing a request, and not because an argument cannot be converted to JSON (for example a multi-element NumPy array or a self-referencing mapping). Each call converts its arguments inside its error handling and reports whether the emitter accepted it; after a refusal, `client.last_failure` says why (`emitter_unavailable`, `invalid_arguments` or `not_accepted`). Startup settings that cannot be converted start an unavailable client (`invalid_configuration`). The build continues in every case.
 
 ## Compatibility
 
