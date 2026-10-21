@@ -647,7 +647,7 @@ dev = [
 
 [[package]]
 name = "microcosm-emitter-interface"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/microcosm-emitter-interface" }
 
 [[package]]
