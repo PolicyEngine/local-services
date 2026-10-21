@@ -1,0 +1,18 @@
+[project]
+name = "microcosm-emitter-interface"
+version = "0.4.0"
+description = "Typed hand-over calls from Microcosm builds to the separately installed microcosm-emitter"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+dependencies = []
+
+[project.urls]
+Source = "https://github.com/PolicyEngine/microcosm-emitter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/microcosm_emitter_interface"]

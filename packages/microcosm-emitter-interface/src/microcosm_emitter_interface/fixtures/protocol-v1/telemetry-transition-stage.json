@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "transition_stage",
+    "stage_id": "calibrating",
+    "status": "running",
+    "message": "Calibrating.",
+    "details": {}
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "module": "host",
+  "kind": "envelope",
+  "body": {
+    "action": "message",
+    "module": "telemetry",
+    "message": {
+      "command": "complete"
+    }
+  },
+  "response": "acknowledgement"
+}

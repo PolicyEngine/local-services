@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "transition_calibration_progress",
+    "event": {
+      "kind": "calibration_epoch",
+      "epoch": 20,
+      "epochs": 100,
+      "loss": 0.125
+    }
+  }
+}

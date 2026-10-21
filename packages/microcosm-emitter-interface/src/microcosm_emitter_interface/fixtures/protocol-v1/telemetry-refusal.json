@@ -1,0 +1,17 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "block",
+    "phase": "preflight",
+    "blocking_gate_ids": [
+      "fixture-check"
+    ],
+    "blocking_failure_count": 1,
+    "gate_statuses": {
+      "fixture-check": "failed"
+    }
+  }
+}

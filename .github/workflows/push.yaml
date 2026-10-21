@@ -14,7 +14,8 @@ permissions:
 # remaining jobs verify, tag, then publish, each only after the one before.
 #
 # PyPI trusts this file by name, in the pypi environment, which only main can
-# use. Renaming it stops publication.
+# use, for both distributions (microcosm-emitter and microcosm-emitter-interface).
+# Renaming it stops publication.
 jobs:
   versioning:
     name: Update versioning
@@ -68,11 +69,25 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+    # The emitter requires the interface of the same version, so the interface
+    # is uploaded first: PyPI never offers an emitter whose interface is
+    # missing. Files already on PyPI are skipped, so rerunning this job after
+    # a failed or partial upload uploads only the missing files instead of
+    # stopping on "File already exists".
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: distributions
-          path: dist
+          name: interface-distribution
+          path: dist/interface
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: dist/
+          packages-dir: dist/interface/
+          skip-existing: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: emitter-distribution
+          path: dist/emitter
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/emitter/
+          skip-existing: true

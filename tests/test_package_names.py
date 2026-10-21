@@ -9,15 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_NAME = "microcosm-emitter"
 
 
-def test_single_distribution_with_required_telemetry_dependencies():
+INTERFACE_NAME = "microcosm-emitter-interface"
+INTERFACE_ROOT = ROOT / "packages" / INTERFACE_NAME
+SOURCE_URL = "https://github.com/PolicyEngine/microcosm-emitter"
+
+
+def test_emitter_requires_telemetry_and_its_own_interface_release():
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())
     project = config["project"]
     assert project["name"] == EXPECTED_NAME
-    assert project["urls"]["Source"] == (
-        "https://github.com/PolicyEngine/microcosm-emitter"
-    )
-    assert not list((ROOT / "packages").glob("*/pyproject.toml"))
-    assert "workspace" not in config.get("tool", {}).get("uv", {})
+    assert project["urls"]["Source"] == SOURCE_URL
     assert "optional-dependencies" not in project
     assert set(project["dependencies"]) == {
         "alembic>=1.13.3,<2",
@@ -25,7 +26,28 @@ def test_single_distribution_with_required_telemetry_dependencies():
         "huggingface-hub>=0.20,<2",
         "psutil>=6,<8",
         "httpx>=0.27,<1",
+        # The emitter runs the checks and fixtures of the same release.
+        f"{INTERFACE_NAME}=={project['version']}",
     }
+
+
+def test_interface_is_the_only_other_distribution_and_has_no_dependencies():
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "packages").glob("*/pyproject.toml")
+    ) == [f"packages/{INTERFACE_NAME}/pyproject.toml"]
+    assert config["tool"]["uv"]["workspace"] == {
+        "members": [f"packages/{INTERFACE_NAME}"]
+    }
+    assert config["tool"]["uv"]["sources"] == {INTERFACE_NAME: {"workspace": True}}
+    interface = tomllib.loads((INTERFACE_ROOT / "pyproject.toml").read_text())[
+        "project"
+    ]
+    assert interface["name"] == INTERFACE_NAME
+    assert interface["version"] == config["project"]["version"]
+    assert interface["dependencies"] == []
+    assert interface["urls"]["Source"] == SOURCE_URL
 
 
 def test_installed_distribution_includes_host_telemetry_and_migrations():
@@ -38,6 +60,8 @@ def test_installed_distribution_includes_host_telemetry_and_migrations():
     requirements = emitter.requires
     assert all("extra ==" not in requirement for requirement in requirements)
     assert not any("microcosm-provider" in requirement for requirement in requirements)
+    assert f"{INTERFACE_NAME}=={project['version']}" in requirements
+    assert distribution(INTERFACE_NAME).version == project["version"]
     modules = list(entry_points(group="microcosm.emitter.modules", name="telemetry"))
     assert len(modules) == 1
     assert modules[0].value == "microcosm_emitter.telemetry.service:create_module"

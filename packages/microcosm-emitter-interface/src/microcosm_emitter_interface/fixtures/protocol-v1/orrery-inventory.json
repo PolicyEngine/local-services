@@ -1,0 +1,22 @@
+{
+  "protocol_version": 1,
+  "module": "orrery",
+  "kind": "query",
+  "sequence": 1,
+  "files": {
+    "graph.orrery.json": "{\"nodes\":[]}",
+    "graph.schema.json": "{\"schema\":true}"
+  },
+  "body": {
+    "command": "inventory",
+    "directory": "{directory}",
+    "roles": {
+      "graph.orrery.json": "graph",
+      "graph.schema.json": "schema"
+    },
+    "publication_id": "fixture-publication"
+  },
+  "response_keys": [
+    "inventory"
+  ]
+}

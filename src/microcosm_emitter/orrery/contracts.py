@@ -1,50 +1,23 @@
-"""Explicit data contracts for immutable graph publication."""
+"""Explicit data contracts for immutable graph publication.
+
+The request and receipt shapes are the interface package's, so the emitter's
+service, its in-process client and ``microcosm_emitter_interface`` share one
+definition.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict
 
-type PublicationFileRole = Literal[
-    "graph",
-    "schema",
-    "index",
-    "declaration",
-    "manifest",
-    "binding",
-    "summaries",
-    "upstream",
-]
-
-
-class PublicationFile(TypedDict):
-    """One public file, identified by its exact bytes and allowed role."""
-
-    name: str
-    role: PublicationFileRole
-    bytes: int
-    sha256: str
-
-
-class PublicationInventory(TypedDict):
-    """The versioned file inventory submitted to the publication API."""
-
-    version: Literal[1]
-    publication_id: str
-    files: list[PublicationFile]
-
-
-class PublicationReceipt(TypedDict):
-    """Local publication result, including retry and build-snapshot fields."""
-
-    version: Literal[1]
-    publication_id: str | None
-    status: Literal["pending", "published", "skipped", "failed", "no_evidence"]
-    error_code: str | None
-    url: NotRequired[str | None]
-    attempts: NotRequired[int]
-    inventory_sha256: NotRequired[str]
-    preserved_directory: NotRequired[str]
-    recorded_execution: NotRequired[bool]
+from microcosm_emitter_interface.orrery import PublicationFile as PublicationFile
+from microcosm_emitter_interface.orrery import (
+    PublicationFileRole as PublicationFileRole,
+)
+from microcosm_emitter_interface.orrery import (
+    PublicationInventory as PublicationInventory,
+)
+from microcosm_emitter_interface.orrery import (
+    PublicationReceipt as PublicationReceipt,
+)
 
 
 @dataclass(frozen=True)

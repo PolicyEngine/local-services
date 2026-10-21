@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Final
 
-type TelemetryEventType = Literal[
-    "run", "stage", "progress", "calibration", "heartbeat"
-]
-type TelemetryStatus = Literal["started", "progress", "completed", "failed", "blocked"]
+# The interface package defines these for both kinds of client.
+from microcosm_emitter_interface.telemetry import (
+    TelemetryEventType as TelemetryEventType,
+)
+from microcosm_emitter_interface.telemetry import TelemetryStatus as TelemetryStatus
 
 TELEMETRY_SCHEMA_VERSION: Final = 1
 TELEMETRY_IDENTIFIER_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$"

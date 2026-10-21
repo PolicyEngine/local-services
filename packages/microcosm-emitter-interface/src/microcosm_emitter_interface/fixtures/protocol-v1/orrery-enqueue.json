@@ -1,0 +1,35 @@
+{
+  "protocol_version": 1,
+  "module": "orrery",
+  "kind": "query",
+  "sequence": 2,
+  "files": {
+    "graph.orrery.json": "{\"nodes\":[]}",
+    "graph.schema.json": "{\"schema\":true}"
+  },
+  "body": {
+    "command": "enqueue",
+    "directory": "{directory}",
+    "inventory": {
+      "version": 1,
+      "publication_id": "fixture-publication",
+      "files": [
+        {
+          "name": "graph.orrery.json",
+          "role": "graph",
+          "bytes": 12,
+          "sha256": "acf2fa576acb702442f9d0101673354c398db67315c066ca48be8db8e0d2c75b"
+        },
+        {
+          "name": "graph.schema.json",
+          "role": "schema",
+          "bytes": 15,
+          "sha256": "e296bc1725afc9c1e1585549e7f3c3b0cf58acba82fc60188d8eda40b9e17a13"
+        }
+      ]
+    }
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}

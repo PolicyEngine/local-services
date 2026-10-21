@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "progress",
+    "stage_id": "calibrating",
+    "done": 2,
+    "total": 10,
+    "unit": "epochs",
+    "details": {
+      "phase": "solve"
+    }
+  }
+}

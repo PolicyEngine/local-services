@@ -1,0 +1,9 @@
+{
+  "protocol_version": 1,
+  "module": "host",
+  "kind": "envelope",
+  "body": {
+    "action": "ping"
+  },
+  "response": "acknowledgement"
+}

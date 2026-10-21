@@ -1,12 +1,18 @@
-"""Thin graph requests; hashing, persistence, auth and uploads stay in the service."""
+"""Thin graph requests; hashing, persistence, auth and uploads stay in the service.
+
+The messages, receipts and spool location come from
+``microcosm_emitter_interface``, so this in-process client and the interface
+package send the same requests. Each message is built inside the error
+handling: no call raises, and an argument that cannot be sent gives an
+unavailable receipt with the error code ``invalid_arguments``.
+"""
 
 from __future__ import annotations
 
-import os
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from microcosm_emitter.host.constants import STARTUP_TIMEOUT
 from microcosm_emitter.host.contracts import JsonObject
@@ -22,6 +28,22 @@ from microcosm_emitter.orrery.contracts import (
     PublicationInventory,
     PublicationReceipt,
 )
+from microcosm_emitter_interface.orrery import (
+    answered_inventory,
+    answered_receipt,
+    enqueue_message,
+    inventory_message,
+    publication_id_of,
+    receipt_message,
+    retry_message,
+    unavailable_receipt,
+)
+from microcosm_emitter_interface.spool import (
+    default_spool_path as default_spool_path,
+)
+
+INVALID_ARGUMENTS = "invalid_arguments"
+UNAVAILABLE = "local_service_unavailable"
 
 
 class GraphTransport(Protocol):
@@ -32,22 +54,6 @@ class GraphTransport(Protocol):
     ) -> JsonObject: ...
 
     def close(self) -> None: ...
-
-
-def default_spool_path() -> Path:
-    """Keep the existing queue location so versioned jobs survive extraction."""
-    configured = os.environ.get("XDG_CACHE_HOME", "").strip()
-    root = Path(configured).expanduser() if configured else Path.home() / ".cache"
-    return root / "microcosm" / "telemetry" / "events.sqlite3"
-
-
-def _unavailable(publication_id: str | None) -> PublicationReceipt:
-    return {
-        "version": 1,
-        "publication_id": publication_id,
-        "status": "failed",
-        "error_code": "local_service_unavailable",
-    }
 
 
 class GraphPublicationClient:
@@ -87,15 +93,29 @@ class GraphPublicationClient:
             client.startup_error = safe_startup_error(error)
         return client
 
-    def _request(self, message: JsonObject) -> JsonObject | None:
+    def _request(
+        self, build_message: Callable[[], JsonObject]
+    ) -> tuple[JsonObject | None, str]:
+        """The module's answer, or None and the receipt error code to report."""
         if self.transport is None:
-            return None
+            return None, UNAVAILABLE
         try:
-            return self.transport.request(
-                message, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS
+            message = dict(build_message())
+        except Exception:
+            return None, INVALID_ARGUMENTS
+        try:
+            return (
+                self.transport.request(message, timeout=GRAPH_REQUEST_TIMEOUT_SECONDS),
+                UNAVAILABLE,
             )
-        except (LocalServiceError, OSError, ValueError, TypeError):
-            return None
+        except Exception:
+            return None, UNAVAILABLE
+
+    def _receipt(
+        self, build_message: Callable[[], JsonObject], publication_id: str | None
+    ) -> PublicationReceipt:
+        answer, error_code = self._request(build_message)
+        return answered_receipt(answer, publication_id, error_code=error_code)
 
     def inventory(
         self,
@@ -104,55 +124,28 @@ class GraphPublicationClient:
         *,
         publication_id: str | None = None,
     ) -> PublicationInventory | None:
-        response = self._request(
-            {
-                "command": "inventory",
-                "directory": str(directory.resolve()),
-                "roles": dict(roles),
-                "publication_id": publication_id,
-            }
+        answer, _ = self._request(
+            lambda: inventory_message(directory, roles, publication_id)
         )
-        value = response.get("inventory") if response is not None else None
-        return cast(PublicationInventory, value) if isinstance(value, dict) else None
+        return answered_inventory(answer)
 
     def enqueue(
         self, directory: Path, inventory: PublicationInventory
     ) -> PublicationReceipt:
-        response = self._request(
-            {
-                "command": "enqueue",
-                "directory": str(directory.resolve()),
-                "inventory": inventory,
-            }
-        )
-        value = response.get("receipt") if response is not None else None
-        return (
-            cast(PublicationReceipt, value)
-            if isinstance(value, dict)
-            else _unavailable(inventory["publication_id"])
+        publication_id = publication_id_of(inventory)
+        if publication_id is None:
+            return unavailable_receipt(None, error_code=INVALID_ARGUMENTS)
+        return self._receipt(
+            lambda: enqueue_message(directory, inventory), publication_id
         )
 
     def receipt(self, publication_id: str) -> PublicationReceipt:
-        response = self._request(
-            {"command": "receipt", "publication_id": publication_id}
-        )
-        value = response.get("receipt") if response is not None else None
-        return (
-            cast(PublicationReceipt, value)
-            if isinstance(value, dict)
-            else _unavailable(publication_id)
-        )
+        return self._receipt(lambda: receipt_message(publication_id), publication_id)
 
     def retry(
         self, publication_id: str, *, wait_seconds: float = 0
     ) -> PublicationReceipt:
-        response = self._request({"command": "retry", "publication_id": publication_id})
-        value = response.get("receipt") if response is not None else None
-        receipt = (
-            cast(PublicationReceipt, value)
-            if isinstance(value, dict)
-            else _unavailable(publication_id)
-        )
+        receipt = self._receipt(lambda: retry_message(publication_id), publication_id)
         previous_attempts = receipt.get("attempts", 0)
         deadline = time.monotonic() + max(0, wait_seconds)
         while (

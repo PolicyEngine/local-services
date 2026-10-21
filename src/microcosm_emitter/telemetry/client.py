@@ -1,11 +1,16 @@
-"""Thin build adapter: start the service, send requests, and close the connection."""
+"""Thin build adapter: start the service, send requests, and close the connection.
+
+The run identity, the configuration and every message come from
+``microcosm_emitter_interface.telemetry``, so this in-process client and the
+interface package send identical messages. Each message is built inside the
+error handling: an argument that cannot be converted to JSON prints one warning
+and the build continues.
+"""
 
 from __future__ import annotations
 
 import sys
-import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,19 +28,21 @@ from microcosm_emitter.telemetry.protocol import (
     TelemetryEventType,
     TelemetryStatus,
 )
-from microcosm_emitter.telemetry.requests import (
-    COMMAND_BLOCK,
-    COMMAND_CALIBRATION_PROGRESS,
-    COMMAND_COMPLETE,
-    COMMAND_EMIT,
-    COMMAND_FAIL,
-    COMMAND_PROGRESS,
-    COMMAND_STAGE,
-    COMMAND_TRANSITION_CALIBRATION_PROGRESS,
-    COMMAND_TRANSITION_STAGE,
-    DEFAULT_FAILURE_CLASS,
+from microcosm_emitter.telemetry.requests import DEFAULT_FAILURE_CLASS
+from microcosm_emitter_interface.telemetry import (
+    BuildCompleted,
+    BuildFailure,
+    BuildRefused,
+    CalibrationProgress,
+    EventRecord,
+    StageEvent,
+    StageProgress,
+    StageTransition,
+    TelemetryCommand,
+    TelemetrySettings,
+    telemetry_message,
 )
-from microcosm_emitter.telemetry.serialization import wire_value
+from microcosm_emitter_interface.telemetry import TelemetryRun as TelemetryRun
 
 
 class Transport(Protocol):
@@ -43,30 +50,6 @@ class Transport(Protocol):
 
     def send(self, message: Mapping[str, Any]) -> None: ...
     def close(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class TelemetryRun:
-    """Identity registered with the hosted collector for one build."""
-
-    run_id: str
-    country_code: str
-    pipeline: str
-    candidate_id: str | None = None
-    release_id: str | None = None
-    run_kind: str = "build"
-    producer_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-
-    def as_registration(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "producer_id": self.producer_id,
-            "country_code": self.country_code,
-            "pipeline": self.pipeline,
-            "candidate_id": self.candidate_id,
-            "release_id": self.release_id,
-            "run_kind": self.run_kind,
-        }
 
 
 class LocalTelemetryEmitter:
@@ -102,17 +85,15 @@ class LocalTelemetryEmitter:
     ) -> LocalTelemetryEmitter:
         """Start the installed service; return a disabled adapter on failure."""
         try:
+            settings = TelemetrySettings(
+                run=run,
+                identity={} if identity is None else identity,
+                development_collector_url=development_collector_url,
+                heartbeat_seconds=heartbeat_seconds,
+            )
             handle = start_service(
                 TELEMETRY_MODULE,
-                wire_value(
-                    {
-                        "registration": run.as_registration(),
-                        "spool_path": str(spool_path),
-                        "identity": identity or {},
-                        "development_collector_url": development_collector_url,
-                        "heartbeat_seconds": heartbeat_seconds,
-                    }
-                ),
+                settings.configuration(Path(spool_path)),
                 startup_timeout=startup_timeout_seconds,
             )
         except Exception as error:
@@ -137,11 +118,11 @@ class LocalTelemetryEmitter:
     def available(self) -> bool:
         return self._transport is not None and not self._closed
 
-    def _request(self, command: str, **arguments: Any) -> None:
+    def _request(self, command: TelemetryCommand) -> None:
         if not self.available:
             return
         try:
-            self._transport.send(wire_value({"command": command, **arguments}))
+            self._transport.send(telemetry_message(command))
         except Exception as error:
             self._warn(error)
 
@@ -162,12 +143,13 @@ class LocalTelemetryEmitter:
         details: Mapping[str, Any] | None = None,
     ) -> None:
         self._request(
-            COMMAND_EMIT,
-            event_type=event_type,
-            stage_id=stage_id,
-            status=status,
-            message=message,
-            details=details or {},
+            EventRecord(
+                event_type,
+                status,
+                stage_id,
+                message,
+                {} if details is None else details,
+            )
         )
 
     def stage(
@@ -178,13 +160,7 @@ class LocalTelemetryEmitter:
         message: str | None = None,
         **details: Any,
     ) -> None:
-        self._request(
-            COMMAND_STAGE,
-            stage_id=stage_id,
-            status=status,
-            message=message,
-            details=details,
-        )
+        self._request(StageEvent(stage_id, status, message, details))
 
     def transition_stage(
         self,
@@ -194,13 +170,7 @@ class LocalTelemetryEmitter:
         message: str | None = None,
         **details: Any,
     ) -> None:
-        self._request(
-            COMMAND_TRANSITION_STAGE,
-            stage_id=stage_id,
-            status=status,
-            message=message,
-            details=details,
-        )
+        self._request(StageTransition(stage_id, status, message, details))
 
     def progress(
         self,
@@ -211,20 +181,13 @@ class LocalTelemetryEmitter:
         unit: str | None = None,
         **details: Any,
     ) -> None:
-        self._request(
-            COMMAND_PROGRESS,
-            stage_id=stage_id,
-            done=done,
-            total=total,
-            unit=unit,
-            details=details,
-        )
+        self._request(StageProgress(stage_id, done, total, unit, details))
 
     def calibration_progress(self, event: Mapping[str, Any]) -> None:
-        self._request(COMMAND_CALIBRATION_PROGRESS, event=event)
+        self._request(CalibrationProgress(event))
 
     def transition_calibration_progress(self, event: Mapping[str, Any]) -> None:
-        self._request(COMMAND_TRANSITION_CALIBRATION_PROGRESS, event=event)
+        self._request(CalibrationProgress(event, transition=True))
 
     def fail(
         self,
@@ -241,12 +204,13 @@ class LocalTelemetryEmitter:
                 self._warn(formatting_error)
                 message = None
             self._request(
-                COMMAND_FAIL,
-                message=message,
-                error_type=type(error).__name__,
-                failed_during=failed_during,
-                failure_class=failure_class,
-                **({"error_code": error_code} if error_code is not None else {}),
+                BuildFailure(
+                    error_type=type(error).__name__,
+                    message=message,
+                    failed_during=failed_during,
+                    failure_class=failure_class,
+                    error_code=error_code,
+                )
             )
         finally:
             if self._close_service_on_finish:
@@ -262,12 +226,15 @@ class LocalTelemetryEmitter:
     ) -> None:
         """Ask the service to finish a run refused by its validation checks."""
         try:
+            # The interface names these fields for what they hold: the
+            # refusing validation checks, how many failed, and each status.
             self._request(
-                COMMAND_BLOCK,
-                phase=phase,
-                blocking_gate_ids=blocking_gate_ids,
-                blocking_failure_count=blocking_failure_count,
-                gate_statuses=gate_statuses,
+                BuildRefused(
+                    phase=phase,
+                    refusing_check_ids=blocking_gate_ids,
+                    refusing_check_count=blocking_failure_count,
+                    check_statuses=gate_statuses,
+                )
             )
         finally:
             if self._close_service_on_finish:
@@ -275,7 +242,7 @@ class LocalTelemetryEmitter:
 
     def complete(self) -> None:
         try:
-            self._request(COMMAND_COMPLETE)
+            self._request(BuildCompleted())
         finally:
             if self._close_service_on_finish:
                 self.close()

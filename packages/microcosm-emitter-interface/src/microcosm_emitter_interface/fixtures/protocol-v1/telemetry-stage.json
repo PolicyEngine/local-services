@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "module": "telemetry",
+  "kind": "message",
+  "sequence": 0,
+  "body": {
+    "command": "stage",
+    "stage_id": "compile",
+    "status": "started",
+    "message": null,
+    "details": {
+      "rows": 3
+    }
+  }
+}

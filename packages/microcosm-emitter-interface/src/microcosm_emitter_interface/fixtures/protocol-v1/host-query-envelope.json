@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "module": "host",
+  "kind": "envelope",
+  "body": {
+    "action": "query",
+    "module": "orrery",
+    "message": {
+      "command": "receipt",
+      "publication_id": "fixture-publication"
+    }
+  },
+  "response": "answer"
+}
