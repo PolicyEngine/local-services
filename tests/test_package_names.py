@@ -68,6 +68,13 @@ def test_installed_distribution_includes_host_telemetry_and_migrations():
     graphs = list(entry_points(group="microcosm.emitter.modules", name="orrery"))
     assert len(graphs) == 1
     assert graphs[0].value == "microcosm_emitter.orrery.service:create_module"
+    hugging_face = list(
+        entry_points(group="microcosm.emitter.modules", name="huggingface")
+    )
+    assert len(hugging_face) == 1
+    assert (
+        hugging_face[0].value == "microcosm_emitter.huggingface.service:create_module"
+    )
     assert find_spec("microcosm_emitter.orrery.client") is not None
     assert find_spec("microcosm_emitter.host.__main__") is not None
     assert find_spec("microcosm_emitter.telemetry.client") is not None

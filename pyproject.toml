@@ -20,6 +20,7 @@ Source = "https://github.com/PolicyEngine/microcosm-emitter"
 [project.entry-points."microcosm.emitter.modules"]
 telemetry = "microcosm_emitter.telemetry.service:create_module"
 orrery = "microcosm_emitter.orrery.service:create_module"
+huggingface = "microcosm_emitter.huggingface.service:create_module"
 
 [project.scripts]
 microcosm-emitter = "microcosm_emitter.cli:main"
@@ -43,6 +44,8 @@ dev = ["pytest>=8,<9", "ruff>=0.11,<1", "build>=1,<2", "twine>=7,<8", "pyyaml>=6
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Shared test doubles, such as the in-memory Hugging Face Hub.
+pythonpath = ["tests/support"]
 addopts = "-q --import-mode=importlib"
 markers = ["collector: requires the pinned collector and disposable PostgreSQL"]
 

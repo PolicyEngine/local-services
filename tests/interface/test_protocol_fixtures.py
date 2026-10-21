@@ -16,10 +16,12 @@ import time
 from pathlib import Path
 
 import pytest
+from fake_hugging_face import FakeHuggingFaceApi
 
 from microcosm_emitter.compatibility import SUPPORTED_PROTOCOL_VERSIONS
 from microcosm_emitter.host.contracts import ModuleContext
 from microcosm_emitter.host.runtime import ServiceRuntime
+from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 from microcosm_emitter.orrery.service.module import OrreryModule
 from microcosm_emitter.telemetry.service.module import TelemetryModule
 from microcosm_emitter_interface.launcher import DEFAULT_COMMAND, start_emitter
@@ -34,6 +36,30 @@ from microcosm_emitter_interface.protocol_fixtures import (
 RELEASED_FIXTURE_DIGESTS = {
     "protocol-v1/host-close.json": (
         "68fa81b4116852f91f3c0dab3716a1974a8150039fb2b238f79efc094d9b0f6f"
+    ),
+    "protocol-v1/huggingface-check-write-access.json": (
+        "750b7eb8c7c9ea4112bb60560522d3b1591c6c9838239a5a54d72f90c095a631"
+    ),
+    "protocol-v1/huggingface-handover-receipt.json": (
+        "e3d6735361da9326ce9c1aeb893d1c644a749e574ded8c1f2f2071f12e00ca09"
+    ),
+    "protocol-v1/huggingface-stage-dataset-bundle.json": (
+        "6f576285b7a87607c47755ebee00ca051694b39455812a0068ebee2c27277728"
+    ),
+    "protocol-v1/huggingface-configuration.json": (
+        "0ecea1a8e7ba6c4458c530b58fa90079207ee3f48da3e522479e9afde581551a"
+    ),
+    "protocol-v1/huggingface-read-back-run-files.json": (
+        "ab643a81520cbf35fada4362d6bf08f63c84d45ed41d9ddf1a0a592855c91313"
+    ),
+    "protocol-v1/huggingface-run-files-receipt.json": (
+        "acc37a2747fff6dc5ec134410f3c068b0cfb830e8703cdb273a83c690971315e"
+    ),
+    "protocol-v1/huggingface-stage-run-files-with-index.json": (
+        "efe20fc318c6a576a37684884aff3497ac9aad093f4df81ca9b34a4ecbc0c0e7"
+    ),
+    "protocol-v1/huggingface-stage-run-files.json": (
+        "e29d312aed140076789ab4f4c38bf7a9d11eadf1b446ea96d46a6f88ca7e4bd0"
     ),
     "protocol-v1/host-hello.json": (
         "36fcac377b69a9103b7c1cfd884d2ff667e030463edc9da349a379bb4868b927"
@@ -171,6 +197,38 @@ def test_orrery_module_answers_each_query_fixture_in_order(tmp_path):
             receipt = response.get("receipt")
             if receipt is not None:
                 assert receipt["status"] == "pending", fixture.name
+    finally:
+        module.close(time.monotonic())
+
+
+def test_hugging_face_module_answers_each_query_fixture_in_order(tmp_path):
+    hub = FakeHuggingFaceApi(whoami={"auth": {"accessToken": {"role": "write"}}})
+    hub.create_repository("policyengine/fixture-staging")
+    hub.create_repository("policyengine/fixture-private")
+    module = HuggingFaceModule(
+        configuration_of("huggingface", tmp_path),
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+    )
+    module.initialize()
+    directory = tmp_path / "inputs"
+    directory.mkdir()
+    try:
+        for fixture in fixtures_of("huggingface", "query"):
+            for name, text in fixture.files.items():
+                (directory / name).write_text(text)
+            response = module.query(
+                materialize(fixture, directory=directory, spool_path=tmp_path)
+            )
+            assert set(fixture.response_keys) <= set(response), fixture.name
+            if response.get("receipt") is not None:
+                assert response["receipt"]["status"] in {"recorded", "pending"}, (
+                    fixture.name
+                )
+            if "read_back" in response:
+                assert response["read_back"]["status"] in {"pending", "passed"}
+            if "access" in response:
+                assert response["access"]["status"] == "checked"
     finally:
         module.close(time.monotonic())
 

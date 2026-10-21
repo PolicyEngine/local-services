@@ -1,0 +1,15 @@
+{
+  "protocol_version": 1,
+  "module": "huggingface",
+  "kind": "query",
+  "sequence": 3,
+  "body": {
+    "protocol_version": 1,
+    "command": "run_files_receipt",
+    "repository": "policyengine/fixture-staging",
+    "run_id": "fixture-run"
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}

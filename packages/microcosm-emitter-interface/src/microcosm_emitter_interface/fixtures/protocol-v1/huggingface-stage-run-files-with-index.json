@@ -1,0 +1,33 @@
+{
+  "protocol_version": 1,
+  "module": "huggingface",
+  "kind": "query",
+  "sequence": 2,
+  "files": {
+    "progress.json": "{\"stage\":\"calibrating\"}",
+    "latest_staging.json": "{\"run_id\":\"fixture-run\"}"
+  },
+  "body": {
+    "protocol_version": 1,
+    "command": "stage_run_files",
+    "repository": "policyengine/fixture-staging",
+    "run_id": "fixture-run",
+    "prefix": "runs",
+    "files": [
+      {
+        "relative_path": "progress.json",
+        "local_path": "{directory}/progress.json"
+      }
+    ],
+    "latest_pointer": "{directory}/latest_staging.json",
+    "run_index_entry": {
+      "run_id": "fixture-run",
+      "status": "running"
+    },
+    "flush": false,
+    "commit_interval_seconds": 300.0
+  },
+  "response_keys": [
+    "receipt"
+  ]
+}

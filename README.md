@@ -54,6 +54,54 @@ The host can also start telemetry and graph modules together with `start_service
 
 Preserve the selected source files until publication succeeds. `microcosm-emitter-publish-graph` asks the service to retry a publication by ID and can re-enqueue a preserved directory on another machine. It never rewrites the original build receipt; the queue and separate latest-status file record retries.
 
+## Hugging Face hand-overs
+
+The `huggingface` module takes over the uploads Microcosm made itself. Microcosm still decides what to hand over and validates its own contracts; the module only writes the bytes it was given, with the build's own Hugging Face credential.
+
+**Where hand-overs are stored.** The module keeps its queue in its own SQLite file, the hand-over database, with its own Alembic history (`core/handover_alembic`). `HuggingFaceSettings` names it: by default it sits next to the spool database (`events.sqlite3` → `events.handovers.sqlite3`), and `handover_database_path` chooses another file, never the spool database itself. The spool database stays at revision `20261008_02`, because every emitter on a machine shares it, including the released emitters (0.2.0 to 0.4.0) that Microcosm builds pin, and those refuse a revision they don't know. Each history also refuses the other's file.
+
+**Repair for a machine that ran an earlier, unreleased build of the hand-over queue.** Before the hand-over database existed, an unreleased build kept four or five hand-over tables in the spool database (`staged_run_files`, `staged_run_deliveries`, `repository_commit_schedules`, `handover_jobs`, and in its later form `handover_files`) and moved the spool database to revision `20261020_03`. No migration history contains that revision now. So on such a machine an emitter started with the `telemetry` or `orrery` module, this one or a released one, refuses the spool database at startup (`Can't locate revision identified by '20261020_03'`), and the build runs without that emitter's telemetry or hand-overs. An emitter started with only the `huggingface` module never opens the spool database and is not affected. Nothing repairs this automatically. To repair it, first stop every Microcosm build and emitter on the machine. The spool database is `$XDG_CACHE_HOME/microcosm/telemetry/events.sqlite3`, or `~/.cache/microcosm/telemetry/events.sqlite3` when `XDG_CACHE_HOME` is unset (or the `spool_path` the build set). Then do one of these:
+
+- **Delete it,** together with `events.sqlite3-journal` beside it if that file exists. This loses everything queued in it and not yet delivered: telemetry events not yet sent to the collector, graph publication jobs not yet published, and the run files and dataset bundles that the earlier build handed over and had not committed. The next emitter creates a new spool database at `20261008_02`.
+- **Keep the queued telemetry events and graph publication jobs** by undoing what the earlier build's migration did, as its own downgrade would have: drop its tables and set the revision back to `20261008_02`.
+
+  ```sh
+  sqlite3 -bail <spool file> <<'SQL'
+  BEGIN;
+  -- Stop here, changing nothing, unless the file is at the earlier build's revision.
+  CREATE TEMP TABLE repair_guard (revision TEXT NOT NULL CHECK (revision = '20261020_03'));
+  INSERT INTO repair_guard VALUES ((SELECT version_num FROM alembic_version));
+  DROP TABLE IF EXISTS handover_files;
+  DROP TABLE IF EXISTS handover_jobs;
+  DROP TABLE IF EXISTS repository_commit_schedules;
+  DROP TABLE IF EXISTS staged_run_deliveries;
+  DROP TABLE IF EXISTS staged_run_files;
+  UPDATE alembic_version SET version_num = '20261008_02' WHERE version_num = '20261020_03';
+  COMMIT;
+  SQL
+  ```
+
+  Unless the file's revision is `20261020_03`, the guard row is refused, `-bail` stops `sqlite3` at that error, and the open transaction is rolled back. So the command changes nothing in a spool database at any other revision, nor in the hand-over database (`events.handovers.sqlite3`), whose tables have the same names. No spool revision uses these table names. The dropped tables hold only the earlier build's undelivered hand-overs, which are lost either way.
+
+**Staging run files** (Microcosm's `staging.py` and `staging_v2.py` uploads). A build hands over its current run files; the module copies their bytes into the hand-over database before answering, so the build may rewrite them at once.
+
+- Files land at `<prefix>/<run_id>/<relative path>` (by default `runs/<run_id>/...`), exactly as the build's writer lays them out. Staging contract version 1 also writes `latest_staging.json` at the repository root, and its `runs.json` index: at commit time the module merges the run's summary into the repository's copy at the head it commits on, keeping other runs, with Microcosm's ordering and JSON formatting. It starts a new index only when the Hub answers that the repository has no `runs.json`; any other download error (a connection error, a timeout, a 429 or 5xx response) fails the commit and retries it after the backoff. Microcosm started from an empty index on any download error, which could drop every other run.
+- Each path keeps only the newest bytes, and bytes equal to those last committed are not written again.
+- **One commit per repository per cycle.** Each module tick (once a second, on the host's worker thread) commits, for each repository with run files due, every pending path in one commit. An unforced hand-over is due one interval (Microcosm's upload interval) after this machine's last commit to the repository; a forced one (final states, artifacts) at the next cycle. Either way, two commits from this machine to one repository, of run files or bundles, are at least 10 seconds apart; only the last commit at shutdown ignores that spacing, and commits from other machines are not counted. Microcosm's writers made one commit per file, up to eight per upload cycle, and each commit triggered the dataset repository's webhook.
+- Uploads stay best-effort. Requests answer within seconds or report that they were not accepted; a failed commit keeps the files queued and retries with backoff (up to five minutes); without a credential the files stay queued and one warning is printed. On shutdown the module commits every repository's pending run files once more, on the host's thread and before it waits for any bundle upload. The one exception is a repository a bundle upload holds at that moment: its run files are committed after that upload, if the upload finishes within the shutdown period (15 seconds); otherwise they stay queued for the next emitter. Nothing raises into the build.
+- A commit that merges `runs.json` is pinned to the head it read (`parent_commit`); if another build commits first, the module reads the index again and merges again.
+- `read_back_run_files` commits pending files, then compares the Hub's copy of each committed file with the committed bytes. A run with no file this emitter committed (its hand-overs were refused, or another machine's emitter staged it) reads back as `failed` with `NO_COMMITTED_FILES`, never `passed`.
+
+**Staged dataset bundles** (Microcosm's `staging_dataset.stage_bundle`, used by `uk_runtime/rowwise_staging.py` and the Orrery evidence bundle). A build verifies its bundle and writes the sidecars as before, then hands the files over by path, each with its role (`dataset`, `calibration_diagnostics`, `build_manifest`, `staged_manifest`, `checksums`, ...), SHA-256 and size. The hand-over is a durable job:
+
+- Before answering, the module copies the bundle's small files into the hand-over database, smallest first, each of at most 32 MiB and together at most 64 MiB, after checking each one's size and SHA-256 against the hand-over (`FILE_SIZE_DIFFERS`, `FILE_DIGEST_DIFFERS`). The receipt's `copied_files` names them, and the build may rewrite them at once: Microcosm rewrites its build manifest, its `sha256sums.txt` and, in national builds, its build record right after staging, and the commit carries the bytes as they were handed over. The copies are deleted once the hand-over settles.
+- Larger files (the datasets) are uploaded from their paths. The worker re-hashes each one first and never uploads changed bytes (`PRESERVED_BYTES_CHANGED`); a missing file waits for an operator to restore it (`PRESERVED_FILES_MISSING`).
+- As in Microcosm, it writes every file under `<prefix>/<run_id>/` (by default `staged/<run_id>/`) in one commit pinned to the head it checked, with the message `Stage <run_id> under <prefix>/<run_id>`. A repository copy of the bundle's `staged_manifest` whose `files` equal the outputs' digests is `already_staged` with that copy's commit; a different one is `REMOTE_DIFFERS` and is never overwritten.
+- Unlike Microcosm's single attempt, `REPOSITORY_UNAVAILABLE` and `UPLOAD_FAILED` are retried with backoff, and a commit that loses a race to another writer is checked and tried again. The receipt keeps the last error code while the job is pending.
+- `check_write_access` is Microcosm's staged-dataset preflight: whether a credential is present, the repository is reachable, and the Hub reports a write scope for it.
+
+**Bundle uploads run on their own thread.** A bundle upload can take minutes, so the module uploads bundles on a worker thread of its own, while the host's worker thread commits run files and makes the commit at shutdown. A bundle upload to one repository therefore never delays run-file commits to another repository, the commit at shutdown, or a read-back. Once shutdown begins, the bundle worker starts no further upload, even to a repository left in its current pass: it checks for shutdown before each repository, again once it has leased the repository, and again once it has claimed a job, immediately before that upload begins, and it gives back a job claimed after shutdown began without attempting it. So during the commit at shutdown a repository can be held only by an upload that passed that last check before shutdown began, or, for the few database operations it takes to give it back, by a lease the worker took just before; the second commit at shutdown covers that repository if the worker stops within the shutdown period. Each delivery leases its repository first, so this machine never commits to one repository twice at once: run files for the repository a bundle is uploading to wait for that upload, and then for the 10-second spacing.
+
 ## Development
 
 Use Python 3.13 or 3.14 on Linux or macOS.

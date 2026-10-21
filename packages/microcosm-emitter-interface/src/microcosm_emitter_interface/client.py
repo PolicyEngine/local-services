@@ -17,8 +17,16 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from microcosm_emitter_interface.bundles import (
+    DatasetBundleReceipt,
+    StageDatasetBundle,
+    WriteAccess,
+    unavailable_bundle_receipt,
+    unavailable_write_access,
+)
+from microcosm_emitter_interface.identifiers import repository_identifier
 from microcosm_emitter_interface.launcher import (
     EmitterProcess,
     EmitterStartupError,
@@ -41,11 +49,25 @@ from microcosm_emitter_interface.orrery import (
 from microcosm_emitter_interface.protocol import (
     ACKNOWLEDGEMENT_TIMEOUT_SECONDS,
     FILE_REQUEST_TIMEOUT_SECONDS,
+    HUGGING_FACE_MODULE,
     ORRERY_MODULE,
+    PROTOCOL_VERSION,
+    READ_BACK_TIMEOUT_SECONDS,
+    SETTLED_STATUSES,
+    STAGING_REQUEST_TIMEOUT_SECONDS,
     STARTUP_TIMEOUT_SECONDS,
     TELEMETRY_MODULE,
 )
 from microcosm_emitter_interface.spool import default_spool_path
+from microcosm_emitter_interface.staging import (
+    HuggingFaceSettings,
+    ReadBackResult,
+    RunFilesReceipt,
+    StageRunFiles,
+    run_reference_message,
+    unavailable_read_back,
+    unavailable_run_files_receipt,
+)
 from microcosm_emitter_interface.telemetry import (
     TelemetryCommand,
     TelemetryRecorder,
@@ -109,6 +131,7 @@ class EmitterClient:
         *,
         telemetry: TelemetrySettings | None = None,
         orrery: OrrerySettings | None = None,
+        hugging_face: HuggingFaceSettings | None = None,
         spool_path: Path | str | None = None,
         command: str | os.PathLike[str] | None = None,
         startup_timeout: float = STARTUP_TIMEOUT_SECONDS,
@@ -121,6 +144,8 @@ class EmitterClient:
                 modules[TELEMETRY_MODULE] = telemetry.configuration(path)
             if orrery is not None:
                 modules[ORRERY_MODULE] = orrery.configuration(path)
+            if hugging_face is not None:
+                modules[HUGGING_FACE_MODULE] = hugging_face.configuration(path)
         except Exception:
             failure = EmitterStartupError("invalid_configuration")
             print(STARTUP_WARNING.format(reason=failure.reason), file=sys.stderr)
@@ -322,6 +347,144 @@ class EmitterClient:
         return answered_receipt(
             answer, publication_id, error_code=_receipt_error_code(failure)
         )
+
+    def stage_run_files(self, request: StageRunFiles) -> RunFilesReceipt:
+        """Hand over a staging run's files; returns once they are queued.
+
+        The emitter copies the files' bytes before answering, so the build
+        may rewrite them immediately afterwards.
+        """
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            request.message,
+            kind="staging",
+            timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        if isinstance(value, dict):
+            return cast(RunFilesReceipt, value)
+        return unavailable_run_files_receipt(request.repository, request.run_id)
+
+    def run_files_receipt(self, repository: str, run_id: str) -> RunFilesReceipt:
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: run_reference_message("run_files_receipt", repository, run_id),
+            kind="staging",
+            timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        if isinstance(value, dict):
+            return cast(RunFilesReceipt, value)
+        return unavailable_run_files_receipt(repository, run_id)
+
+    def read_back_run_files(
+        self, repository: str, run_id: str, *, wait_seconds: float = 30.0
+    ) -> ReadBackResult:
+        """Commit the run's pending files now, then compare the Hub's copies.
+
+        Waits up to ``wait_seconds`` for pending files to be committed; a run
+        whose files are still pending then reads back as ``pending``.
+        """
+        if HUGGING_FACE_MODULE not in self.modules:
+            self._fail("staging", "emitter_unavailable")
+            return unavailable_read_back()
+        try:
+            flush = StageRunFiles(repository=repository, run_id=run_id, flush=True)
+        except Exception as error:
+            self._fail("staging", "invalid_arguments", error)
+            return unavailable_read_back()
+        receipt = self.stage_run_files(flush)
+        deadline = time.monotonic() + _wait_seconds(wait_seconds)
+        while (
+            receipt["status"] == "recorded"
+            and receipt["pending_files"]
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.1)
+            receipt = self.run_files_receipt(repository, run_id)
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: run_reference_message("read_back_run_files", repository, run_id),
+            kind="staging",
+            timeout=READ_BACK_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("read_back")
+        if isinstance(value, dict):
+            return cast(ReadBackResult, value)
+        return unavailable_read_back()
+
+    def _handover_receipt(self, handover_id: str) -> dict[str, Any] | None:
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: {
+                "protocol_version": PROTOCOL_VERSION,
+                "command": "handover_receipt",
+                "handover_id": handover_id,
+            },
+            kind="staging",
+            timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        return value if isinstance(value, dict) else None
+
+    def _wait_until_settled(
+        self, receipt: dict[str, Any], wait_seconds: float
+    ) -> dict[str, Any]:
+        handover_id = receipt.get("handover_id")
+        if not isinstance(handover_id, str) or not handover_id:
+            # Nothing to ask about: return the receipt as answered.
+            return receipt
+        deadline = time.monotonic() + _wait_seconds(wait_seconds)
+        while (
+            receipt.get("status") not in SETTLED_STATUSES
+            and receipt.get("status") != "unavailable"
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.1)
+            latest = self._handover_receipt(handover_id)
+            if latest is None:
+                break
+            receipt = latest
+        return receipt
+
+    def stage_dataset_bundle(
+        self, request: StageDatasetBundle, *, wait_seconds: float = 0
+    ) -> DatasetBundleReceipt:
+        """Queue a staged dataset bundle; optionally wait for its upload.
+
+        Returns once the hand-over is durably queued (``pending``), or after
+        it settles if that happens within ``wait_seconds``.
+        """
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            request.message,
+            kind="staging",
+            timeout=FILE_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        if not isinstance(value, dict):
+            return unavailable_bundle_receipt(request)
+        return cast(DatasetBundleReceipt, self._wait_until_settled(value, wait_seconds))
+
+    def dataset_bundle_receipt(self, handover_id: str) -> DatasetBundleReceipt | None:
+        return cast(DatasetBundleReceipt | None, self._handover_receipt(handover_id))
+
+    def check_write_access(self, repository: str) -> WriteAccess:
+        """Whether the build's credential can reach and write ``repository``."""
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: {
+                "protocol_version": PROTOCOL_VERSION,
+                "command": "check_write_access",
+                "repository": repository_identifier(repository),
+            },
+            kind="staging",
+            timeout=READ_BACK_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("access")
+        if isinstance(value, dict):
+            return cast(WriteAccess, value)
+        return unavailable_write_access()
 
     def close(self) -> None:
         """Ask the emitter to drain and stop; repeated calls do nothing."""

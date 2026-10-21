@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "module": "huggingface",
+  "kind": "query",
+  "sequence": 7,
+  "body": {
+    "protocol_version": 1,
+    "command": "check_write_access",
+    "repository": "policyengine/fixture-private"
+  },
+  "response_keys": [
+    "access"
+  ]
+}

@@ -18,12 +18,21 @@ MAX_MESSAGE_BYTES: Final = 1_048_576
 
 TELEMETRY_MODULE: Final = "telemetry"
 ORRERY_MODULE: Final = "orrery"
-type ModuleName = Literal["telemetry", "orrery"]
+HUGGING_FACE_MODULE: Final = "huggingface"
+type ModuleName = Literal["telemetry", "orrery", "huggingface"]
 
 #: Telemetry requests only wait for the service to commit their events.
 ACKNOWLEDGEMENT_TIMEOUT_SECONDS: Final = 0.2
 #: Orrery requests hash a bounded set of preserved files before answering.
 FILE_REQUEST_TIMEOUT_SECONDS: Final = 30.0
+#: Staging hand-overs copy a few small files into the emitter's queue.
+STAGING_REQUEST_TIMEOUT_SECONDS: Final = 5.0
+#: Read-back and the write-access check call the Hub while answering.
+READ_BACK_TIMEOUT_SECONDS: Final = 60.0
+#: Statuses after which a queued hand-over never changes.
+SETTLED_STATUSES: Final = frozenset(
+    {"uploaded", "already_staged", "failed", "published", "refused"}
+)
 STARTUP_TIMEOUT_SECONDS: Final = 15.0
 STARTUP_POLL_SECONDS: Final = 0.02
 DRAIN_SECONDS: Final = 15.0

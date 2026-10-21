@@ -1,13 +1,23 @@
 """Loopback services shared by the interface tests; nothing leaves this machine."""
 
 import json
+import os
+import shutil
 import stat
 import sys
+import tempfile
 import threading
+import time
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from fake_hugging_face import (
+    PRIVATE_REPOSITORY,
+    STAGING_REPOSITORY,
+    FakeHuggingFaceApi,
+)
 
 
 @pytest.fixture
@@ -74,3 +84,69 @@ def isolated_path(monkeypatch, tmp_path):
     directory.mkdir()
     monkeypatch.setenv("PATH", str(directory))
     return directory
+
+
+@dataclass
+class InThreadEmitter:
+    """An emitter host running in a thread of the test process."""
+
+    transport: object
+    description: dict = field(default_factory=dict)
+
+    def close(self):
+        self.transport.close()
+
+
+@pytest.fixture
+def in_thread_emitter():
+    return InThreadEmitter
+
+
+@pytest.fixture
+def emitter_with_hub(tmp_path):
+    """A client talking over a real socket to the module and an in-memory Hub."""
+    from microcosm_emitter.host.contracts import ModuleContext
+    from microcosm_emitter.host.runtime import ServiceRuntime
+    from microcosm_emitter.huggingface.service.module import HuggingFaceModule
+    from microcosm_emitter_interface.client import EmitterClient
+    from microcosm_emitter_interface.transport import SocketTransport
+
+    hub = FakeHuggingFaceApi(whoami={"auth": {"accessToken": {"role": "write"}}})
+    hub.create_repository(STAGING_REPOSITORY)
+    hub.create_repository(PRIVATE_REPOSITORY)
+    runtime_directory = Path(tempfile.mkdtemp(prefix="pe-stage-", dir="/tmp"))
+    socket_path = runtime_directory / "service.sock"
+    module = HuggingFaceModule(
+        {"handover_database_path": str(tmp_path / "events.handovers.sqlite3")},
+        ModuleContext(os.getpid()),
+        api_factory=lambda: hub,
+    )
+    runtime = ServiceRuntime(
+        socket_path,
+        modules={"huggingface": module},
+        is_parent_alive=lambda: True,
+        tick_seconds=0.01,
+    )
+    thread = threading.Thread(target=runtime.run)
+    thread.start()
+    transport = SocketTransport(socket_path)
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            transport.ping()
+            break
+        except Exception:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.01)
+    client = EmitterClient(
+        InThreadEmitter(
+            transport, {"modules": ["huggingface"], "protocol_versions": [1]}
+        )
+    )
+    try:
+        yield client, hub
+    finally:
+        client.close()
+        thread.join(timeout=20)
+        shutil.rmtree(runtime_directory, ignore_errors=True)
