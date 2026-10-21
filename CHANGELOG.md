@@ -1,3 +1,12 @@
+## [0.6.0] - 2026-10-21
+
+### Added
+
+- Add `stage_dataset_bundle`, `dataset_bundle_receipt` and `check_write_access`. A build hands over its staged dataset bundle with each file's role; the emitter writes it under `staged/<run_id>/` in one commit with Microcosm's message, paths and idempotency (`already_staged`, `REMOTE_DIFFERS`), and retries Hub failures from the durable queue. The emitter copies the bundle's small files (each up to 32 MiB, up to 64 MiB per hand-over) into its queue before answering, so the build may rewrite them at once, as Microcosm does with its build manifest, checksum listing and build record; it uploads larger files from their paths and never uploads one whose bytes changed after the hand-over. Bundles upload on a worker thread of their own, so a long upload never delays run-file commits to another repository, the commit at shutdown, or a read-back.
+- Add a durable Hugging Face hand-over queue in its own SQLite database next to the spool database (`events.handovers.sqlite3`, with its own Alembic history), so the shared spool database stays at a revision that released emitters accept; `HuggingFaceSettings.handover_database_path` can name another file. Staging run files keep only the newest handed-over bytes per repository path; dataset bundles and releases are jobs with leases, retries and receipts; and a per-repository schedule spaces commits and lets one writer on a machine hold a repository at a time. Hugging Face calls use the build's own credential, found in the same order as telemetry's.
+- Add the `huggingface` emitter module and the interface's `stage_run_files`, `run_files_receipt` and `read_back_run_files` calls. A build hands over its staging run files; the emitter writes them at the same paths with the same bytes as Microcosm's staging writers (`runs/<run_id>/...`, and for staging contract version 1 `latest_staging.json` and a merged `runs.json`), in one Hugging Face commit per repository per cycle instead of one commit per file. Uploads stay best-effort and are retried from the durable queue.
+
+
 ## [0.5.1] - 2026-10-21
 
 ### Fixed
