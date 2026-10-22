@@ -5,12 +5,15 @@ answers with its receipt. Commits happen on worker threads:
 
 - staging run-file commits, and the commit at shutdown, on the host's worker
   thread (``tick`` and ``close``);
-- dataset bundle uploads, which can take minutes, on the module's own
-  ``DeliveryWorker``, so they never delay those (see ``workers``).
+- dataset bundle uploads and release changes, which can take minutes, each
+  on the module's own ``DeliveryWorker``, so they never delay those (see
+  ``workers``).
 """
 
 from __future__ import annotations
 
+import getpass
+import os
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -28,8 +31,14 @@ from microcosm_emitter.huggingface.service.hub import (
     hugging_face_api,
 )
 from microcosm_emitter.huggingface.service.queue import HandoverQueue, sha256_bytes
+from microcosm_emitter.huggingface.service.releases import (
+    ReleaseCaller,
+    ReleaseChangePolicy,
+    allow_every_change,
+)
 from microcosm_emitter.huggingface.service.requests import (
     RequestRefusedError,
+    parse_release_change,
     parse_stage_dataset_bundle,
     parse_stage_run_files,
     require_supported_version,
@@ -37,6 +46,7 @@ from microcosm_emitter.huggingface.service.requests import (
 )
 from microcosm_emitter.huggingface.service.workers import DeliveryWorker
 from microcosm_emitter_interface.identifiers import repository_identifier
+from microcosm_emitter_interface.publication import RELEASE_CHANGE
 
 #: A read-back of a run with no file this emitter committed: nothing to compare.
 NO_COMMITTED_FILES = "NO_COMMITTED_FILES"
@@ -64,6 +74,19 @@ def _refused_run_files_receipt(message: Mapping[str, Any], code: str) -> dict[st
     }
 
 
+def _user_name() -> str:
+    """The account the emitter runs as, or its numeric user ID.
+
+    ``getpass.getuser()`` raises when no user name variable is set and the
+    user ID has no password-database entry, as in a container run with an
+    arbitrary user ID (Python 3.13 and later).
+    """
+    try:
+        return getpass.getuser()
+    except Exception:
+        return str(os.getuid())
+
+
 class HuggingFaceModule:
     """Queue hand-overs on request; commit them on worker threads.
 
@@ -79,11 +102,13 @@ class HuggingFaceModule:
         *,
         api_factory: Callable[[], Any | None] = hugging_face_api,
         clock: Callable[[], float] = time.time,
+        release_change_policy: ReleaseChangePolicy = allow_every_change,
         background_workers: bool = True,
         worker_interval_seconds: float = TICK_SECONDS,
     ) -> None:
         self.configuration, self.context = configuration, context
         self.api_factory, self.clock = api_factory, clock
+        self.release_change_policy = release_change_policy
         self.background_workers = background_workers
         self.worker_interval_seconds = worker_interval_seconds
         self.queue: HandoverQueue | None = None
@@ -96,7 +121,9 @@ class HuggingFaceModule:
         # ``HandoverQueue``); ``HuggingFaceSettings`` names it.
         self.queue = HandoverQueue(Path(self.configuration["handover_database_path"]))
         self.delivery = HuggingFaceDelivery(
-            self.queue, api_factory=self.api_factory, clock=self.clock
+            self.queue,
+            api_factory=self.api_factory,
+            clock=self.clock,
         )
         if self.background_workers:
             self.workers = self._delivery_workers(self.delivery)
@@ -115,7 +142,17 @@ class HuggingFaceModule:
                 ),
                 interval_seconds=self.worker_interval_seconds,
                 on_error=self._worker_error,
-            )
+            ),
+            # A publication uploads release files too; it never waits for a
+            # bundle upload to another repository, nor holds one up.
+            RELEASE_CHANGE: DeliveryWorker(
+                "release-changes",
+                lambda stop_requested: delivery.job_cycle(
+                    frozenset({RELEASE_CHANGE}), stop_requested=stop_requested
+                ),
+                interval_seconds=self.worker_interval_seconds,
+                on_error=self._worker_error,
+            ),
         }
 
     def _worker_error(self) -> None:
@@ -149,6 +186,8 @@ class HuggingFaceModule:
             return {"receipt": self._handover_receipt(message)}
         if command == "check_write_access":
             return {"access": self._check_write_access(message)}
+        if command in {"publish_release", "promote_build", "withdraw_build"}:
+            return {"receipt": self._release_change(message)}
         raise ValueError("unsupported Hugging Face hand-over command")
 
     def _stage_dataset_bundle(self, message: JsonObject) -> dict[str, Any]:
@@ -184,6 +223,57 @@ class HuggingFaceModule:
             },
             now=self.clock(),
             files=hand_over.copied,
+        )
+
+    def _caller(self) -> ReleaseCaller:
+        return ReleaseCaller(user=_user_name(), parent_pid=self.context.parent_pid)
+
+    def _release_change(self, message: JsonObject) -> dict[str, Any]:
+        assert self.queue is not None
+
+        def refused(
+            code: str, handover_id: str = "", reason: str | None = None
+        ) -> dict[str, Any]:
+            return {
+                "handover_id": handover_id,
+                "status": "refused",
+                "error_code": code,
+                "message": reason,
+                "commit": None,
+                "repository": str(message.get("repository") or ""),
+                "release": str(message.get("release") or ""),
+                "build": str(message.get("build") or ""),
+                "attempts": 0,
+                "current": None,
+            }
+
+        try:
+            hand_over = parse_release_change(message)
+        except RequestRefusedError as refusal:
+            return refused(refusal.code)
+        # Who may change a release is decided here, when the change is handed
+        # over by its caller; a refused change is never queued.
+        reason = self.release_change_policy(hand_over.change, self._caller())
+        if reason is not None:
+            return refused("NOT_AUTHORIZED", hand_over.handover_id, str(reason))
+        return self.queue.enqueue_job(
+            handover_id=hand_over.handover_id,
+            kind=RELEASE_CHANGE,
+            target=hand_over.repository,
+            request=hand_over.request,
+            receipt={
+                "handover_id": hand_over.handover_id,
+                "status": "pending",
+                "error_code": None,
+                "message": None,
+                "commit": None,
+                "repository": hand_over.repository,
+                "release": hand_over.change.release,
+                "build": hand_over.change.build,
+                "attempts": 0,
+                "current": None,
+            },
+            now=self.clock(),
         )
 
     def _handover_receipt(self, message: JsonObject) -> dict[str, Any] | None:

@@ -37,6 +37,15 @@ RELEASED_FIXTURE_DIGESTS = {
     "protocol-v1/host-close.json": (
         "68fa81b4116852f91f3c0dab3716a1974a8150039fb2b238f79efc094d9b0f6f"
     ),
+    "protocol-v1/huggingface-promote-build.json": (
+        "069248aa33b24c937e18e00bc46dd1e39c6e06febedb5f7b5cab4c1e1fea9f07"
+    ),
+    "protocol-v1/huggingface-publish-release.json": (
+        "12ccf6c9b613dae4e01709b745e8caacfbeb8f2ceeb6b8bfc8373af134de25c8"
+    ),
+    "protocol-v1/huggingface-withdraw-build.json": (
+        "ad15257013d831c5830818668b222a12c0c8b53c5236ac0ff9733bbfd76c98be"
+    ),
     "protocol-v1/huggingface-check-write-access.json": (
         "750b7eb8c7c9ea4112bb60560522d3b1591c6c9838239a5a54d72f90c095a631"
     ),

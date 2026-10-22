@@ -219,7 +219,7 @@ def test_collector_delivery_exchanges_hf_token_then_flushes(
     queued = spool.append(registration, _event())
     requests: list[tuple[str, dict[str, object], str]] = []
 
-    monkeypatch.setattr(collector_module, "_huggingface_token", lambda: "hf-secret")
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-secret")
 
     def fake_post(url, payload, token, *, timeout=5.0):
         requests.append((url, payload, token))
@@ -254,7 +254,7 @@ def test_non_org_credential_keeps_event_local(tmp_path, monkeypatch, capsys) -> 
     spool.register(registration)
     spool.append(registration, _event())
     requests: list[dict[str, object]] = []
-    monkeypatch.setattr(collector_module, "_huggingface_token", lambda: "hf-outsider")
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-outsider")
 
     def reject(url, payload, token, *, timeout=5.0):
         requests.append(payload)
@@ -281,7 +281,7 @@ def test_identity_provider_outage_keeps_events_eligible_for_retry(
     registration = _registration()
     spool.register(registration)
     spool.append(registration, _event())
-    monkeypatch.setattr(collector_module, "_huggingface_token", lambda: "hf-member")
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-member")
     monkeypatch.setattr(
         collector_module,
         "_http_post",
@@ -300,7 +300,7 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
     registration = _registration()
     spool.register(registration)
     spool.append(registration, _event())
-    monkeypatch.setattr(collector_module, "_huggingface_token", lambda: None)
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: None)
     monkeypatch.setattr(
         collector_module,
         "_http_post",
@@ -314,7 +314,7 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
     assert spool.pending_runs() == []
 
     reopened = EventSpool(spool_path)
-    monkeypatch.setattr(collector_module, "_huggingface_token", lambda: "hf-later")
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-later")
     assert reopened.pending_runs() == []
 
 
@@ -335,9 +335,7 @@ def test_permanent_collector_rejection_retains_only_rejected_producer(
     rejected = spool.append(bad, _event())
     spool.append(good, _event())
     requests = []
-    monkeypatch.setattr(
-        collector_module, "_huggingface_token", lambda: "hf_test_member"
-    )
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf_test_member")
 
     def post(url, payload, token):
         requests.append((url, payload))
@@ -399,9 +397,7 @@ def test_transient_collector_rejection_remains_retryable(
     clock = [100.0]
     attempts = []
     monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(
-        collector_module, "_huggingface_token", lambda: "hf_test_member"
-    )
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf_test_member")
 
     def post(url, payload, token):
         if url.endswith("/exchange"):

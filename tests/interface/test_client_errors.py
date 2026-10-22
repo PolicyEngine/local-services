@@ -360,3 +360,37 @@ def test_a_pending_bundle_receipt_without_an_identifier_is_returned_not_raised(
     receipt = client.stage_dataset_bundle(request, wait_seconds=1)
 
     assert receipt == {"status": "pending"}
+
+
+@pytest.mark.parametrize("running", [True, False], ids=["running", "no-emitter"])
+def test_unconvertible_release_arguments_report_failure(running):
+    import hashlib
+
+    from microcosm_emitter_interface.publication import PublishRelease, ReleaseFile
+
+    client, transport = hugging_face_client() if running else (EmitterClient(), None)
+    request = PublishRelease(
+        repository="policyengine/fixture-private",
+        release="fixture-release",
+        build="fixture-build",
+        release_role="national_default",
+        make_current=True,
+        files=(
+            ReleaseFile(
+                name="release_manifest.json",
+                role="release_manifest",
+                local_path=UnresolvablePath(),
+                sha256=hashlib.sha256(b"").hexdigest(),
+                bytes=0,
+            ),
+        ),
+    )
+    receipt = client.publish_release(request, wait_seconds=0)
+    assert receipt["status"] == "unavailable"
+    assert (receipt["release"], receipt["build"]) == (
+        "fixture-release",
+        "fixture-build",
+    )
+    if running:
+        assert transport.requests == []
+        assert client.last_failure.reason == "invalid_arguments"

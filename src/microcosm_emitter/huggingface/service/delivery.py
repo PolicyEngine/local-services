@@ -1,11 +1,12 @@
 """Delivery cycles: at most one Hugging Face commit per repository per cycle.
 
 Each cycle finds the repositories with work due, leases each one, and makes
-one commit: a due job (a dataset bundle), or every pending staging run file of
-that repository at once. The module runs the run-file cycle on the host's
-thread and each job kind's cycle on its own worker thread (see ``workers``),
-so a long upload holds only its own repository. Failures keep the work queued
-and back off; nothing here raises into the build.
+one commit: a due job (a dataset bundle or a release change), or every
+pending staging run file of that repository at once. The module runs the
+run-file cycle on the host's thread and each job kind's cycle on its own
+worker thread (see ``workers``), so a long upload holds only its own
+repository. Failures keep the work queued and back off; nothing here raises
+into the build.
 """
 
 from __future__ import annotations
@@ -19,9 +20,20 @@ from datetime import UTC, datetime
 from typing import Any
 
 from microcosm_emitter.huggingface.service.bundles import stage_bundle
-from microcosm_emitter.huggingface.service.hub import DatasetRepository
+from microcosm_emitter.huggingface.service.hub import UPLOAD_FAILED, DatasetRepository
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
+from microcosm_emitter.huggingface.service.releases import (
+    ReleaseOutcome,
+    apply_release_change,
+    expired_change,
+    sets_current,
+)
+from microcosm_emitter.huggingface.service.requests import (
+    RequestRefusedError,
+    release_change_from_message,
+)
 from microcosm_emitter.huggingface.service.run_files import commit_run_files
+from microcosm_emitter_interface.publication import RELEASE_CHANGE
 
 #: How long a repository or job lease lasts without renewal. While a delivery
 #: runs, its leases are renewed every ``LEASE_RENEWAL_SECONDS``, so a long
@@ -31,9 +43,11 @@ REPOSITORY_LEASE_SECONDS = 120.0
 LEASE_RENEWAL_SECONDS = 30.0
 #: The job kinds this emitter delivers.
 DATASET_BUNDLE = "dataset_bundle"
-SUPPORTED_JOB_KINDS = frozenset({DATASET_BUNDLE})
+SUPPORTED_JOB_KINDS = frozenset({DATASET_BUNDLE, RELEASE_CHANGE})
+#: Job kinds that skip the spacing between commits: release changes are rare
+#: and a build waits for them. Bundles and run files keep it.
+UNSPACED_JOB_KINDS = frozenset({RELEASE_CHANGE})
 CREDENTIAL_MISSING = "CREDENTIAL_MISSING"
-UPLOAD_FAILED = "UPLOAD_FAILED"
 CREDENTIAL_MISSING_MESSAGE = (
     "Microcosm Hugging Face uploads are paused: no Hugging Face credential was "
     "found (HF_TOKEN, HUGGINGFACE_TOKEN or `hf auth login`). Handed-over files "
@@ -186,7 +200,10 @@ class HuggingFaceDelivery:
         stop_requested: Callable[[], bool] = never_stop,
     ) -> int:
         repositories = self.queue.due_repositories(
-            self.clock(), kinds=job_kinds, run_files=run_files
+            self.clock(),
+            kinds=job_kinds,
+            unspaced_kinds=UNSPACED_JOB_KINDS,
+            run_files=run_files,
         )
         if not repositories:
             return 0
@@ -285,13 +302,12 @@ class HuggingFaceDelivery:
         )
 
     def _claim_job(self, repository: str, kinds: frozenset[str]) -> ClaimedJob | None:
-        """The next due job of ``kinds``, once the commit spacing has elapsed.
-
-        Checked here, after the repository is leased: another thread may have
-        committed to it since this cycle listed it.
-        """
+        """The next due job of ``kinds``; within the commit spacing, only a
+        release change."""
         now = self.clock()
         if not self.queue.commit_spacing_elapsed(repository, now):
+            kinds = kinds & UNSPACED_JOB_KINDS
+        if not kinds:
             return None
         return self.queue.claim_job(
             repository,
@@ -306,30 +322,48 @@ class HuggingFaceDelivery:
         *,
         status: str,
         error_code: str | None,
-        revision: str | None,
         retry: bool,
         committed: bool = False,
+        revision: str | None = None,
+        message: str | None = None,
+        current: str | None = None,
     ) -> None:
+        receipt: dict[str, Any] = {
+            "handover_id": job.handover_id,
+            "status": status,
+            "error_code": error_code,
+            "attempts": job.attempts + 1,
+            "repository": job.target,
+        }
+        if job.kind == RELEASE_CHANGE:
+            receipt.update(
+                message=message,
+                commit=revision,
+                release=job.request["release"],
+                build=job.request["build"],
+                current=current,
+            )
+        else:
+            receipt.update(
+                revision=revision,
+                prefix=f"{job.request['prefix']}/{job.request['run_id']}",
+                copied_files=sorted(job.files),
+            )
         self.queue.finish_job(
-            job,
-            receipt={
-                "handover_id": job.handover_id,
-                "status": status,
-                "error_code": error_code,
-                "revision": revision,
-                "attempts": job.attempts + 1,
-                "repository": job.target,
-                "prefix": f"{job.request['prefix']}/{job.request['run_id']}",
-                "copied_files": sorted(job.files),
-            },
-            retry=retry,
-            now=self.clock(),
-            committed=committed,
+            job, receipt=receipt, retry=retry, now=self.clock(), committed=committed
         )
 
     def _deliver_job(self, hub: DatasetRepository, held: HeldLeases) -> bool:
-        assert held.job is not None, "The job is claimed before delivery."
-        outcome = stage_bundle(hub, held.job.request, held.job.files)
+        job = held.job
+        assert job is not None, "The job is claimed before delivery."
+        current = None
+        if job.kind == RELEASE_CHANGE:
+            outcome = self._release_outcome(hub, job)
+            revision, message = outcome.commit, outcome.message
+            current = outcome.current
+        else:
+            outcome = stage_bundle(hub, job.request, job.files)
+            revision, message = outcome.revision, None
         if outcome.retry and outcome.error_code is not None:
             self.warn_once(
                 outcome.error_code,
@@ -341,11 +375,50 @@ class HuggingFaceDelivery:
             held.job,
             status=outcome.status,
             error_code=outcome.error_code,
-            revision=outcome.revision,
             retry=outcome.retry,
             committed=outcome.committed,
+            revision=revision,
+            message=message,
+            current=current,
         )
         return outcome.committed
+
+    def _release_outcome(
+        self, hub: DatasetRepository, job: ClaimedJob
+    ) -> ReleaseOutcome:
+        """Apply a queued release change, unless it has waited too long."""
+        expired = expired_change(job.created_at, self.clock())
+        if expired is not None:
+            return expired
+        try:
+            change = release_change_from_message(job.request)
+        except RequestRefusedError as refusal:
+            return ReleaseOutcome("refused", refusal.code)
+        return apply_release_change(
+            hub,
+            change,
+            published_at=iso_timestamp(self.clock()),
+            requested_at=job.created_at,
+            newest_local_requests=self._newest_current_changes_landed(job.target),
+        )
+
+    def _newest_current_changes_landed(self, repository: str) -> dict[str, float]:
+        """For each release, when the newest change to its ``current`` (see
+        ``sets_current``) that this machine landed on ``repository`` was
+        handed over."""
+        newest_requests: dict[str, float] = {}
+        for created_at, request in self.queue.requests_with_status(
+            repository, kind=RELEASE_CHANGE, status="published"
+        ):
+            try:
+                change = release_change_from_message(request)
+            except RequestRefusedError:
+                continue
+            if sets_current(change):
+                newest_requests[change.release] = max(
+                    newest_requests.get(change.release, created_at), created_at
+                )
+        return newest_requests
 
     def _credential_missing(
         self,
@@ -362,12 +435,24 @@ class HuggingFaceDelivery:
             held.hold_job(job)
             held.stop()
             assert held.job is not None
+            expired = (
+                expired_change(job.created_at, self.clock())
+                if job.kind == RELEASE_CHANGE
+                else None
+            )
+            if expired is not None:
+                # Final even without a credential: a later login must not
+                # apply a change requested long before.
+                self._finish_job(
+                    held.job,
+                    status=expired.status,
+                    error_code=expired.error_code,
+                    retry=False,
+                    message=expired.message,
+                )
+                return
             self._finish_job(
-                held.job,
-                status="pending",
-                error_code=CREDENTIAL_MISSING,
-                revision=None,
-                retry=True,
+                held.job, status="pending", error_code=CREDENTIAL_MISSING, retry=True
             )
             return
         if not self._run_files_to_commit(repository, run_files, at_shutdown):

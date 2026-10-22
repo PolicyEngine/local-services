@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from microcosm_emitter.huggingface.service.hub import (
+    MAX_PARENT_CONFLICT_ATTEMPTS,
     DatasetRepository,
     add_operation,
     is_absent,
@@ -26,7 +27,6 @@ from microcosm_emitter.huggingface.service.queue import PendingRunFile
 #: Staging contract version 1's index of runs, at the repository root.
 RUNS_INDEX_PATH = "runs.json"
 RUNS_INDEX_SCHEMA_VERSION = 1
-MAX_PARENT_CONFLICT_ATTEMPTS = 5
 
 
 def _jsonable(value: Any) -> Any:

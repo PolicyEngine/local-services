@@ -10,13 +10,23 @@ in-memory Hub. The client carries the build's own credential, found exactly as
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from microcosm_emitter.core.auth import _huggingface_token
+from microcosm_emitter.core.auth import huggingface_token
 
 #: HTTP statuses the Hub returns when ``parent_commit`` is no longer the head.
 PARENT_CONFLICT_STATUSES = frozenset({409, 412})
+#: How often a commit pinned to a head is rebuilt on the new head after
+#: another writer's commit landed first.
+MAX_PARENT_CONFLICT_ATTEMPTS = 5
+#: Error codes the hand-over receipts share. The first two are retried.
+REPOSITORY_UNAVAILABLE = "REPOSITORY_UNAVAILABLE"
+UPLOAD_FAILED = "UPLOAD_FAILED"
+#: A preserved file is missing (retried) or its bytes changed (final).
+PRESERVED_FILES_MISSING = "PRESERVED_FILES_MISSING"
+PRESERVED_BYTES_CHANGED = "PRESERVED_BYTES_CHANGED"
 #: Errors huggingface_hub raises when the Hub answered that a file is missing
 #: (``RemoteEntryNotFoundError`` from 1.0, ``EntryNotFoundError`` before).
 _MISSING_FILE_ERROR_NAMES = frozenset(
@@ -28,6 +38,25 @@ _MISSING_FILE_ERROR_NAMES = frozenset(
 _NO_ANSWER_ERROR_NAME = "LocalEntryNotFoundError"
 
 
+def _field(value: Any, name: str) -> Any:
+    """``name`` of a Hub answer, which may be a mapping or an object."""
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _seconds_since_epoch(value: Any) -> float | None:
+    """A date the Hub reported, in seconds; ``None`` if it is not a date."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return (value if value.tzinfo else value.replace(tzinfo=UTC)).timestamp()
+
+
 def hugging_face_api() -> Any | None:
     """An ``HfApi`` with the build's credential, or ``None`` without one.
 
@@ -35,7 +64,7 @@ def hugging_face_api() -> Any | None:
     saved by ``hf auth login``: the same order telemetry uses. It is read again
     for every cycle, so a login during a long build is picked up.
     """
-    token = _huggingface_token()
+    token = huggingface_token()
     if not token:
         return None
     from huggingface_hub import HfApi
@@ -153,25 +182,39 @@ class DatasetRepository:
 
     def last_commit(self, path_in_repo: str) -> str | None:
         """The commit that last changed ``path_in_repo``, when the Hub reports it."""
+        oid = self._last_commit_field(path_in_repo, "oid", revision=None)
+        return str(oid) if oid else None
+
+    def last_commit_title_and_date(
+        self, path_in_repo: str, *, revision: str | None = None
+    ) -> tuple[str | None, float | None]:
+        """The commit that last changed ``path_in_repo`` at ``revision``: the
+        first line of its message, and the Hub's date for it in seconds since
+        the epoch. Each is ``None`` when the Hub does not report it."""
+        commit = self._last_commit_info(path_in_repo, revision=revision)
+        title = _field(commit, "title")
+        return (
+            title if isinstance(title, str) and title else None,
+            _seconds_since_epoch(_field(commit, "date")),
+        )
+
+    def _last_commit_field(
+        self, path_in_repo: str, name: str, *, revision: str | None
+    ) -> Any:
+        return _field(self._last_commit_info(path_in_repo, revision=revision), name)
+
+    def _last_commit_info(self, path_in_repo: str, *, revision: str | None) -> Any:
         entries = self.api.get_paths_info(
             repo_id=self.repo_id,
             paths=[path_in_repo],
             expand=True,
             repo_type="dataset",
+            revision=revision,
         )
         for entry in entries or []:
-            commit = (
-                entry.get("last_commit")
-                if isinstance(entry, Mapping)
-                else getattr(entry, "last_commit", None)
-            )
-            oid = (
-                commit.get("oid")
-                if isinstance(commit, Mapping)
-                else getattr(commit, "oid", None)
-            )
-            if oid:
-                return str(oid)
+            commit = _field(entry, "last_commit")
+            if commit:
+                return commit
         return None
 
     def _access_token(self) -> Mapping[str, Any] | None:

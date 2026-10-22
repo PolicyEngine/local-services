@@ -11,7 +11,7 @@ Two record shapes share the hand-over database:
   handed-over bytes, so a commit carries the latest state of every pending
   path at once. One commit per repository per cycle replaces Microcosm's one
   ``upload_file`` commit per file.
-- **Jobs** (dataset bundles, and later releases) follow the graph queue's
+- **Jobs** (dataset bundles and release changes) follow the graph queue's
   pattern: a row per hand-over and destination, a lease while a worker holds
   it, retries with backoff, and a receipt.
 
@@ -46,11 +46,12 @@ from microcosm_emitter.core.handover_models import (
 from microcosm_emitter.core.migrations import upgrade_handover_database
 
 #: The shortest time between two commits to one repository from this machine,
-#: of run files or jobs, even for hand-overs that ask to be committed at the
-#: next cycle. A cycle checks it when it lists the repository and again once
-#: it has leased it, because another thread may have committed in between.
-#: Only the drain at shutdown ignores it; other machines' commits are not
-#: counted.
+#: of run files or dataset bundles, even for hand-overs that ask to be
+#: committed at the next cycle. A cycle checks it when it lists the
+#: repository and again once it has leased it, because another thread may
+#: have committed in between. Release changes, which are rare and which a
+#: build waits for, ignore it, as does the commit at shutdown; other
+#: machines' commits are not counted.
 MIN_COMMIT_SPACING_SECONDS = 10.0
 MAX_RETRY_SECONDS = 300.0
 DESTINATION_HUGGING_FACE = "huggingface"
@@ -59,6 +60,15 @@ JOB_PENDING = "pending"
 
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    """The SHA-256 of a preserved file, read in blocks."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _entry_text(entry: Mapping[str, Any]) -> str:
@@ -98,6 +108,8 @@ class ClaimedJob:
     lease_until: float
     #: The bytes of the files copied at hand-over, by name.
     files: dict[str, bytes] = field(default_factory=dict)
+    #: When the job was handed over, by this machine's clock.
+    created_at: float = 0.0
 
 
 class HandoverQueue:
@@ -198,6 +210,7 @@ class HandoverQueue:
         now: float,
         *,
         kinds: Iterable[str] | None = None,
+        unspaced_kinds: Iterable[str] = (),
         run_files: bool = True,
     ) -> list[str]:
         """Repositories with work due now that may receive a commit now.
@@ -205,8 +218,11 @@ class HandoverQueue:
         ``kinds`` limits jobs to those this emitter can deliver, so a job
         queued by a newer emitter sharing the database waits for it; an empty
         ``kinds`` leaves jobs out. ``run_files`` false leaves out run files.
+        Every commit waits ``MIN_COMMIT_SPACING_SECONDS`` after this machine's
+        last commit to the repository, except jobs of ``unspaced_kinds``.
         """
         job_kinds = None if kinds is None else list(kinds)
+        unspaced = set(unspaced_kinds)
         with self._sessions() as session:
             run_file_repositories: set[str] = set()
             if run_files:
@@ -225,9 +241,10 @@ class HandoverQueue:
                         )
                     )
                 )
-            job_repositories: set[str] = set()
+            spaced_job_repositories: set[str] = set()
+            unspaced_job_repositories: set[str] = set()
             if job_kinds != []:
-                job_query = select(HandoverJob.target).where(
+                job_query = select(HandoverJob.target, HandoverJob.kind).where(
                     HandoverJob.destination == DESTINATION_HUGGING_FACE,
                     HandoverJob.status == JOB_PENDING,
                     HandoverJob.next_attempt_at <= now,
@@ -235,18 +252,28 @@ class HandoverQueue:
                 )
                 if job_kinds is not None:
                     job_query = job_query.where(HandoverJob.kind.in_(job_kinds))
-                job_repositories = set(session.scalars(job_query))
+                for target, kind in session.execute(job_query):
+                    if kind in unspaced:
+                        unspaced_job_repositories.add(target)
+                    else:
+                        spaced_job_repositories.add(target)
             due = []
-            for repository in sorted(run_file_repositories | job_repositories):
+            for repository in sorted(
+                run_file_repositories
+                | spaced_job_repositories
+                | unspaced_job_repositories
+            ):
                 schedule = session.get(RepositoryCommitSchedule, repository)
-                if schedule is not None and (
-                    schedule.lease_until > now
-                    or schedule.last_commit_at + MIN_COMMIT_SPACING_SECONDS > now
-                ):
+                if schedule is not None and schedule.lease_until > now:
                     continue
-                run_files_allowed = schedule is None or schedule.retry_after <= now
-                if repository in job_repositories or (
-                    repository in run_file_repositories and run_files_allowed
+                spaced = self._spacing_elapsed(schedule, now)
+                if (
+                    repository in unspaced_job_repositories
+                    or (repository in spaced_job_repositories and spaced)
+                    or (
+                        repository in run_file_repositories
+                        and self._run_files_allowed(schedule, now)
+                    )
                 ):
                     due.append(repository)
             return due
@@ -256,7 +283,8 @@ class HandoverQueue:
         """Whether this machine's last commit to the repository is far enough back.
 
         The spacing keeps bursts of commits, each starting the dataset
-        repository's webhook, from reaching the Hub.
+        repository's webhook, from reaching the Hub; only release changes,
+        which are rare and explicit, skip it.
         """
         return (
             schedule is None
@@ -692,6 +720,7 @@ class HandoverQueue:
                 attempts=candidate.attempts,
                 lease_until=lease,
                 files={row.name: row.content for row in copied},
+                created_at=candidate.created_at,
             )
 
     def renew_job(self, job: ClaimedJob, renewed: float) -> bool:
@@ -775,6 +804,27 @@ class HandoverQueue:
                     )
             if committed:
                 self._schedule(session, job.target).last_commit_at = now
+
+    def requests_with_status(
+        self,
+        target: str,
+        *,
+        kind: str,
+        status: str,
+        destination: str = DESTINATION_HUGGING_FACE,
+    ) -> list[tuple[float, dict[str, Any]]]:
+        """When each job of ``kind`` for ``target`` now at ``status`` was
+        handed over, with its request."""
+        with self._sessions() as session:
+            rows = session.execute(
+                select(HandoverJob.created_at, HandoverJob.request).where(
+                    HandoverJob.destination == destination,
+                    HandoverJob.target == target,
+                    HandoverJob.kind == kind,
+                    HandoverJob.status == status,
+                )
+            )
+            return [(created_at, dict(request)) for created_at, request in rows]
 
     def job_receipt(
         self, handover_id: str, destination: str = DESTINATION_HUGGING_FACE

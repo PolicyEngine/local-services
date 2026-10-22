@@ -25,6 +25,14 @@ from microcosm_emitter_interface.identifiers import (
     repository_prefix,
     safe_identifier,
 )
+from microcosm_emitter_interface.publication import (
+    RELEASE_CHANGE,
+    PromoteBuild,
+    PublishRelease,
+    ReleaseChange,
+    ReleaseFile,
+    WithdrawBuild,
+)
 
 #: Transport bounds for one staging run file and one hand-over. Microcosm's
 #: staging contract keeps its own, smaller limits.
@@ -239,4 +247,90 @@ def parse_stage_dataset_bundle(message: Mapping[str, Any]) -> BundleHandOver:
         remote_prefix=request.remote_prefix,
         request={key: value for key, value in canonical.items()},
         copied=copied,
+    )
+
+
+@dataclass(frozen=True)
+class ReleaseHandOver:
+    handover_id: str
+    #: The validated change, and its canonical message, which is what is queued.
+    change: ReleaseChange
+    request: dict[str, Any]
+
+    @property
+    def repository(self) -> str:
+        return self.change.repository
+
+
+def release_change_from_message(message: Mapping[str, Any]) -> ReleaseChange:
+    """The typed change a message describes; ``RequestRefusedError`` if invalid.
+
+    Only the message's shape is checked here, so the worker can rebuild the
+    typed change from the queued message.
+    """
+    require_supported_version(message)
+    command = message.get("command")
+    try:
+        if command == "publish_release":
+            entries = message.get("files")
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, Mapping) for entry in entries
+            ):
+                raise RequestRefusedError("INVALID_REQUEST")
+            return PublishRelease(
+                repository=message.get("repository"),
+                release=message.get("release"),
+                build=message.get("build"),
+                release_role=message.get("release_role"),
+                make_current=message.get("make_current"),
+                request_id=message.get("request_id"),
+                files=tuple(
+                    ReleaseFile(
+                        name=entry.get("name"),
+                        role=entry.get("role"),
+                        local_path=Path(str(entry.get("local_path"))),
+                        sha256=entry.get("sha256"),
+                        bytes=entry.get("bytes"),
+                    )
+                    for entry in entries
+                ),
+            )
+        if command in {"promote_build", "withdraw_build"}:
+            change = PromoteBuild if command == "promote_build" else WithdrawBuild
+            return change(
+                repository=message.get("repository"),
+                release=message.get("release"),
+                build=message.get("build"),
+                request_id=message.get("request_id"),
+            )
+    except RequestRefusedError:
+        raise
+    except (ValueError, TypeError):
+        raise RequestRefusedError("INVALID_REQUEST") from None
+    raise RequestRefusedError("INVALID_REQUEST")
+
+
+def parse_release_change(message: Mapping[str, Any]) -> ReleaseHandOver:
+    """Check a publication, promotion or withdrawal with the interface's rules.
+
+    The queued request is the validated change's own message, so keys the
+    rules do not know never reach the queue or the hand-over identifier.
+    """
+    change = release_change_from_message(message)
+    if isinstance(change, PublishRelease):
+        for item in change.files:
+            if not item.local_path.is_absolute():
+                raise RequestRefusedError("INVALID_REQUEST")
+            try:
+                if not item.local_path.is_file():
+                    raise RequestRefusedError("LOCAL_FILE_MISSING")
+                if item.local_path.stat().st_size != item.bytes:
+                    raise RequestRefusedError("FILE_SIZE_DIFFERS")
+            except OSError:
+                raise RequestRefusedError("LOCAL_FILE_MISSING") from None
+    canonical = change.message()
+    return ReleaseHandOver(
+        handover_id=handover_identifier(RELEASE_CHANGE, canonical),
+        change=change,
+        request=canonical,
     )

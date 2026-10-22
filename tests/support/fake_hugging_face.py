@@ -15,6 +15,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +54,8 @@ class FakeCommit:
     message: str
     files: dict[str, bytes]
     added: dict[str, bytes]
+    #: The Hub's date for the commit, in seconds; ``None`` when undated.
+    date: float | None = None
 
 
 @dataclass
@@ -83,9 +86,13 @@ class FakeHuggingFaceApi:
         self.whoami_response = whoami
         self._failures: dict[str, list[BaseException]] = {}
         self._before_commit: list[Callable[[], None]] = []
+        self._after_commit_failures: list[BaseException] = []
         self._lock = threading.RLock()
         self._download_directory = Path(tempfile.mkdtemp(prefix="fake-hub-"))
         self._sequence = 0
+        #: The Hub's own clock. When set, each commit is dated with it and
+        #: ``get_paths_info`` reports that date; otherwise commits are undated.
+        self.commit_clock: Callable[[], float] | None = None
 
     # Test controls -------------------------------------------------------
 
@@ -101,6 +108,10 @@ class FakeHuggingFaceApi:
     def fail_next(self, method: str, error: BaseException, *, times: int = 1) -> None:
         """Raise ``error`` from the next ``times`` calls of ``method``."""
         self._failures.setdefault(method, []).extend([error] * times)
+
+    def fail_after_next_commit(self, error: BaseException) -> None:
+        """Let the next commit land, then raise ``error`` as if it had not."""
+        self._after_commit_failures.append(error)
 
     def run_before_next_commit(self, action: Callable[[], None]) -> None:
         """Run ``action`` (for example another writer's commit) first."""
@@ -120,6 +131,24 @@ class FakeHuggingFaceApi:
             head = self.repositories[repository].head
             return self._append_commit(
                 repository, {**head.files, **files}, message, parent=head.oid
+            )
+
+    def delete_directly(
+        self, repository: str, paths: Iterable[str], message: str = "Delete"
+    ) -> str:
+        """Another writer's commit that deletes ``paths``."""
+        with self._lock:
+            head = self.repositories[repository].head
+            removed = set(paths)
+            return self._append_commit(
+                repository,
+                {
+                    path: content
+                    for path, content in head.files.items()
+                    if path not in removed
+                },
+                message,
+                parent=head.oid,
             )
 
     # HfApi surface -------------------------------------------------------
@@ -160,8 +189,9 @@ class FakeHuggingFaceApi:
     ) -> str:
         self._sequence += 1
         oid = hashlib.sha1(f"{repository}:{self._sequence}".encode()).hexdigest()
+        date = None if self.commit_clock is None else self.commit_clock()
         self.repositories[repository].commits.append(
-            FakeCommit(oid, parent, message, files, dict(added or {}))
+            FakeCommit(oid, parent, message, files, dict(added or {}), date)
         )
         return oid
 
@@ -209,6 +239,8 @@ class FakeHuggingFaceApi:
                 parent=head.oid,
                 added=added,
             )
+        if self._after_commit_failures:
+            raise self._after_commit_failures.pop(0)
         return SimpleNamespace(oid=oid, commit_url=f"https://fake/{oid}")
 
     def hf_hub_download(
@@ -260,11 +292,22 @@ class FakeHuggingFaceApi:
             for commit in repository.commits:
                 content = commit.files.get(path)
                 if content is not None and content != previous:
-                    last = commit.oid
+                    last = commit
                 previous = content
             if last is not None:
                 entries.append(
-                    SimpleNamespace(path=path, last_commit=SimpleNamespace(oid=last))
+                    SimpleNamespace(
+                        path=path,
+                        last_commit=SimpleNamespace(
+                            oid=last.oid,
+                            title=last.message.split("\n", 1)[0],
+                            date=(
+                                None
+                                if last.date is None
+                                else datetime.fromtimestamp(last.date, UTC)
+                            ),
+                        ),
+                    )
                 )
         return entries
 
