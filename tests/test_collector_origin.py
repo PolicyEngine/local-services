@@ -218,6 +218,38 @@ def test_modules_without_a_setting_use_the_production_collector(tmp_path) -> Non
         telemetry.close(0)
 
 
+@pytest.mark.usefixtures("future_origin_trusted")
+@pytest.mark.parametrize(
+    ("settings", "expected_origin"),
+    [
+        ({"development_collector_url": ""}, PRODUCTION_COLLECTOR_URL),
+        (
+            {
+                "development_collector_url": "",
+                "collector_origin": FUTURE_COLLECTOR_ORIGIN,
+            },
+            FUTURE_COLLECTOR_ORIGIN,
+        ),
+    ],
+)
+def test_modules_treat_an_empty_development_url_as_unset(
+    tmp_path, settings, expected_origin
+) -> None:
+    context = ModuleContext(os.getpid())
+    telemetry = telemetry_module(tmp_path, context, **settings)
+    graph = orrery_module(tmp_path, context, **settings)
+    telemetry.initialize()
+    try:
+        graph.initialize()
+        try:
+            assert context.services["collector_session"].origin == expected_origin
+            assert telemetry.delivery.collector_url == expected_origin
+        finally:
+            graph.close(0)
+    finally:
+        telemetry.close(0)
+
+
 def test_modules_refuse_an_untrusted_configured_origin(tmp_path) -> None:
     untrusted_origin = "https://untrusted.example"
     with pytest.raises(ValueError, match=UNTRUSTED_COLLECTOR_ORIGIN_ERROR):
