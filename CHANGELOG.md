@@ -1,3 +1,11 @@
+## [0.7.0] - 2026-10-22
+
+### Added
+
+- Add the release writer and the interface's `publish_release`, `promote_build`, `withdraw_build` and `release_receipt` calls. Each build is written to `releases/<release>/<build>/` with an updated `releases.json` in one commit pinned to `main`'s head, re-applied after a parent-commit conflict, and checked against the shared rules: no new tags, no `latest*.json` files, no change to an existing build folder, and no change of `current` while any `latest*.json` file exists. Each request carries a `request_id`, so a repeated change is applied again while a resent request is applied once. Nothing calls the writer yet. A change still pending an hour after its hand-over is refused (`REQUEST_EXPIRED`), and a promotion is refused (`NEWER_CHANGE_LANDED`) when a promotion, or a publication that makes its build current, to the same release and requested after it landed first, so a queued change never puts back an older current build. Withdrawals never change `current`, so they are never refused for order and never count as newer. Request times more than five minutes after the Hub's date for the commit that records them are ignored, so one machine whose clock runs fast cannot block or unprotect other machines' changes. A publication overtaken in that way still lists its build and leaves `current` as the newer change set it, so two publications that land at once both keep their builds. Every release receipt names the release's current build after the change (`current`), so a caller can tell whether a publication made its build current.
+- Add `microcosm_emitter_interface.releases`: the shape of each dataset repository's `releases.json`, the changes the release writer makes (publish a build, make a build current, withdraw a build), and the checks every write must pass, so Microcosm and the emitter run the same code. A `releases.json` above 4 MiB, or nested too deeply to decode, is refused as invalid, and so is a manifest nested too deeply.
+
+
 ## [0.6.0] - 2026-10-21
 
 ### Added
