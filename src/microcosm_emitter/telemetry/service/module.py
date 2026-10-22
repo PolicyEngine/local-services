@@ -59,8 +59,10 @@ class TelemetryModule:
                     self.context.services,
                     configured_collector_origin(self.configuration),
                 ),
-                development_collector_url=self.configuration.get(
-                    DEVELOPMENT_COLLECTOR_URL_SETTING
+                # Empty settings count as unset, as configured_collector_origin
+                # treats them, so the delivery and the session agree.
+                development_collector_url=(
+                    self.configuration.get(DEVELOPMENT_COLLECTOR_URL_SETTING) or None
                 ),
                 collector_origin=(
                     self.configuration.get(COLLECTOR_ORIGIN_SETTING) or None
