@@ -19,13 +19,11 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from microcosm_emitter.core.auth import (
-    CollectorSession,
-    _collector_origin,
-    _development_collector_url,
-    huggingface_token,
+from microcosm_emitter.core.auth import CollectorSession, huggingface_token
+from microcosm_emitter.core.collector_origin import (
+    DEVELOPMENT_COLLECTOR_URL_SETTING,
+    configured_collector_origin,
 )
-from microcosm_emitter.core.constants import PRODUCTION_COLLECTOR_URL
 from microcosm_emitter.host.constants import TICK_SECONDS
 from microcosm_emitter.host.contracts import JsonObject, ModuleContext
 from microcosm_emitter.huggingface.service.delivery import (
@@ -130,7 +128,9 @@ class HuggingFaceModule:
 
     With ``collector_submissions`` true in the configuration, bundles that
     describe their build are also submitted to the collector after their
-    Hugging Face commit; ``development_collector_url`` points at a loopback
+    Hugging Face commit, at the origin ``configured_collector_origin`` chooses
+    for every module: ``collector_origin`` selects one of the trusted
+    collector origins, and ``development_collector_url`` points at a loopback
     collector. Collector submissions are off by default.
     """
 
@@ -233,12 +233,10 @@ class HuggingFaceModule:
             self.delivery.warn_once("collector", COLLECTOR_WORKER_ERROR_MESSAGE)
 
     def _collector_delivery(self, queue: HandoverQueue) -> CollectorSubmissionDelivery:
-        development_url = self.configuration.get("development_collector_url")
-        origin = (
-            _development_collector_url(development_url)
-            if development_url
-            else _collector_origin(PRODUCTION_COLLECTOR_URL)
-        )
+        # The same origin the telemetry and Orrery modules resolve; an
+        # untrusted origin raises ValueError, which turns submissions off.
+        origin = configured_collector_origin(self.configuration)
+        development_url = self.configuration.get(DEVELOPMENT_COLLECTOR_URL_SETTING)
         session = CollectorSession(
             origin, credential=self.collector_credential, scope=SUBMIT_SCOPE
         )
