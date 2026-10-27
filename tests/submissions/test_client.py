@@ -917,6 +917,40 @@ def test_a_403_without_a_code_at_a_status_check_exchanges_again(
     assert collector.status_requests == [submission_id, submission_id]
 
 
+@pytest.mark.parametrize(
+    ("request_name", "collector_status"),
+    [("status", None), ("receipt", "succeeded")],
+)
+def test_another_users_token_at_a_status_check_keeps_awaiting(
+    collector, tmp_path, request_name, collector_status
+) -> None:
+    """403 ``submission_owned_by_another_user``: the collector has the
+    submission, and only this token's user cannot read it, for example when
+    the next emitter on the machine runs with another Hugging Face token. The
+    submission did not fail, so checks go on, as for a refused token."""
+    client, submission_id = accepted_submission(collector, tmp_path)
+    refusal = (403, "submission_owned_by_another_user")
+    if request_name == "status":
+        collector.status_answers = [refusal]
+    else:
+        collector.finish(submission_id, "succeeded", result={})
+        collector.receipt_answers = [refusal]
+
+    checked = client.check_status(submission_id)
+
+    assert (
+        checked.status,
+        checked.error_code,
+        checked.collector_status,
+        checked.receipt,
+    ) == (
+        "awaiting_final_status",
+        "COLLECTOR_REFUSED_403",
+        collector_status,
+        None,
+    )
+
+
 def test_an_expired_session_at_a_status_check_is_exchanged_again(
     collector, tmp_path
 ) -> None:
