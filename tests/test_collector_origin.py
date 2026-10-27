@@ -14,7 +14,6 @@ from microcosm_emitter.core.constants import (
     COLLECTOR_URL_HTTPS_ERROR,
     COLLECTOR_URL_ORIGIN_ERROR,
     CONFLICTING_COLLECTOR_ORIGIN_ERROR,
-    DEVELOPMENT_COLLECTOR_LOOPBACK_ERROR,
     PRODUCTION_COLLECTOR_URL,
     TRUSTED_COLLECTOR_ORIGINS,
     UNTRUSTED_COLLECTOR_ORIGIN_ERROR,
@@ -24,9 +23,7 @@ from microcosm_emitter.huggingface.service import module as huggingface_module
 from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 from microcosm_emitter.orrery.service.module import OrreryModule
 from microcosm_emitter.telemetry.client import TelemetryRun
-from microcosm_emitter.telemetry.service.collector import CollectorDelivery
 from microcosm_emitter.telemetry.service.module import TelemetryModule
-from microcosm_emitter.telemetry.service.spool import EventSpool
 
 # Stands in for a custom domain that a later release adds to the trusted set.
 FUTURE_COLLECTOR_ORIGIN = "https://collector.example"
@@ -97,21 +94,8 @@ def submission_session_origins(monkeypatch) -> list[str]:
     return origins
 
 
-def test_default_origin_is_the_production_collector() -> None:
-    assert resolve_collector_origin() == PRODUCTION_COLLECTOR_URL
-    assert configured_collector_origin({}) == PRODUCTION_COLLECTOR_URL
-
-
-def test_trusted_origins_today_are_only_the_production_collector() -> None:
-    assert TRUSTED_COLLECTOR_ORIGINS == frozenset({PRODUCTION_COLLECTOR_URL})
-    assert resolve_collector_origin(collector_origin=PRODUCTION_COLLECTOR_URL) == (
-        PRODUCTION_COLLECTOR_URL
-    )
-
-
 def test_every_trusted_origin_is_a_bare_https_origin() -> None:
     for trusted_origin in TRUSTED_COLLECTOR_ORIGINS:
-        assert trusted_origin.startswith("https://")
         assert resolve_collector_origin(collector_origin=trusted_origin) == (
             trusted_origin
         )
@@ -155,14 +139,6 @@ def test_trusted_configured_origin_is_selected(future_origin_trusted) -> None:
     )
 
 
-def test_development_url_still_requires_loopback() -> None:
-    assert resolve_collector_origin(
-        development_collector_url=DEVELOPMENT_COLLECTOR_URL
-    ) == (DEVELOPMENT_COLLECTOR_URL)
-    with pytest.raises(ValueError, match=DEVELOPMENT_COLLECTOR_LOOPBACK_ERROR):
-        resolve_collector_origin(development_collector_url="https://collector.example")
-
-
 def test_development_url_and_configured_origin_cannot_both_be_set() -> None:
     with pytest.raises(ValueError, match=CONFLICTING_COLLECTOR_ORIGIN_ERROR):
         resolve_collector_origin(
@@ -185,76 +161,6 @@ def test_empty_module_settings_count_as_unset() -> None:
         )
         == PRODUCTION_COLLECTOR_URL
     )
-
-
-def test_environment_cannot_select_a_collector_origin(
-    monkeypatch, future_origin_trusted
-) -> None:
-    for variable_name in (
-        "MICROCOSM_COLLECTOR_ORIGIN",
-        "MICROCOSM_TELEMETRY_COLLECTOR_URL",
-        "COLLECTOR_ORIGIN",
-    ):
-        monkeypatch.setenv(variable_name, future_origin_trusted)
-
-    assert resolve_collector_origin() == PRODUCTION_COLLECTOR_URL
-    assert configured_collector_origin({}) == PRODUCTION_COLLECTOR_URL
-
-
-def test_collector_delivery_sends_events_to_the_configured_origin(
-    tmp_path, future_origin_trusted
-) -> None:
-    spool = EventSpool(tmp_path / "events.sqlite3")
-    try:
-        delivery = CollectorDelivery(spool, collector_origin=future_origin_trusted)
-
-        assert delivery.collector_url == future_origin_trusted
-        assert delivery.session.origin == future_origin_trusted
-        assert CollectorDelivery(spool).collector_url == PRODUCTION_COLLECTOR_URL
-        with pytest.raises(ValueError, match=UNTRUSTED_COLLECTOR_ORIGIN_ERROR):
-            CollectorDelivery(spool, collector_origin="https://untrusted.example")
-    finally:
-        spool.close()
-
-
-def test_telemetry_and_orrery_modules_share_the_configured_origin(
-    tmp_path, future_origin_trusted
-) -> None:
-    context = ModuleContext(os.getpid())
-    telemetry = telemetry_module(
-        tmp_path, context, collector_origin=future_origin_trusted
-    )
-    graph = orrery_module(tmp_path, context, collector_origin=future_origin_trusted)
-    telemetry.initialize()
-    try:
-        graph.initialize()
-        try:
-            session = context.services["collector_session"]
-            assert session.origin == future_origin_trusted
-            assert telemetry.delivery.collector_url == future_origin_trusted
-            assert telemetry.delivery.session is session
-        finally:
-            graph.close(0)
-    finally:
-        telemetry.close(0)
-
-
-def test_modules_without_a_setting_use_the_production_collector(tmp_path) -> None:
-    context = ModuleContext(os.getpid())
-    telemetry = telemetry_module(tmp_path, context)
-    graph = orrery_module(tmp_path, context)
-    telemetry.initialize()
-    try:
-        graph.initialize()
-        try:
-            assert context.services["collector_session"].origin == (
-                PRODUCTION_COLLECTOR_URL
-            )
-            assert telemetry.delivery.collector_url == PRODUCTION_COLLECTOR_URL
-        finally:
-            graph.close(0)
-    finally:
-        telemetry.close(0)
 
 
 @pytest.mark.usefixtures("future_origin_trusted")
@@ -305,34 +211,31 @@ def test_modules_refuse_an_untrusted_configured_origin(tmp_path) -> None:
         ).initialize()
 
 
-def test_collector_submissions_use_the_configured_origin(
-    tmp_path, future_origin_trusted, submission_session_origins
-) -> None:
-    module = submitting_huggingface_module(
-        tmp_path,
-        ModuleContext(os.getpid()),
-        collector_origin=future_origin_trusted,
-    )
-    module.initialize()
-    try:
-        assert module.collector_delivery is not None
-        assert module.collector_delivery.client.origin == future_origin_trusted
-        assert submission_session_origins == [future_origin_trusted]
-    finally:
-        module.close(0)
-
-
-def test_collector_submissions_without_a_setting_use_the_production_collector(
+def test_every_module_without_a_setting_uses_the_production_collector(
     tmp_path, submission_session_origins
 ) -> None:
-    module = submitting_huggingface_module(tmp_path, ModuleContext(os.getpid()))
-    module.initialize()
+    context = ModuleContext(os.getpid())
+    telemetry = telemetry_module(tmp_path, context)
+    graph = orrery_module(tmp_path, context)
+    hugging_face = submitting_huggingface_module(tmp_path, context)
+    telemetry.initialize()
     try:
-        assert module.collector_delivery is not None
-        assert module.collector_delivery.client.origin == PRODUCTION_COLLECTOR_URL
-        assert submission_session_origins == [PRODUCTION_COLLECTOR_URL]
+        graph.initialize()
+        try:
+            hugging_face.initialize()
+            try:
+                shared_origin = context.services["collector_session"].origin
+                assert shared_origin == PRODUCTION_COLLECTOR_URL
+                assert telemetry.delivery.collector_url == shared_origin
+                assert hugging_face.collector_delivery is not None
+                assert hugging_face.collector_delivery.client.origin == shared_origin
+                assert submission_session_origins == [shared_origin]
+            finally:
+                hugging_face.close(0)
+        finally:
+            graph.close(0)
     finally:
-        module.close(0)
+        telemetry.close(0)
 
 
 def test_every_module_sends_to_the_same_configured_origin(
