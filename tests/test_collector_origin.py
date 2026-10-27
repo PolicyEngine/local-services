@@ -375,8 +375,17 @@ def test_every_module_sends_to_the_same_configured_origin(
             "collector_origin": FUTURE_COLLECTOR_ORIGIN,
             "development_collector_url": DEVELOPMENT_COLLECTOR_URL,
         },
+        {"collector_origin": True},
+        {"collector_origin": [FUTURE_COLLECTOR_ORIGIN]},
+        {"development_collector_url": 1},
     ],
-    ids=["untrusted origin", "origin and development URL"],
+    ids=[
+        "untrusted origin",
+        "origin and development URL",
+        "origin as a boolean",
+        "origin as a list",
+        "development URL as a number",
+    ],
 )
 def test_collector_submissions_refuse_an_unusable_origin_at_start(
     tmp_path, capsys, submission_session_origins, settings
@@ -394,3 +403,5 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
     finally:
         module.close(0)
     assert "collector submissions are off" in capsys.readouterr().err
+    with pytest.raises(ValueError):
+        configured_collector_origin(settings)
