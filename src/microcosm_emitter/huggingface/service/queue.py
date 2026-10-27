@@ -767,11 +767,12 @@ class HandoverQueue:
         now: float,
         committed: bool = False,
         retry_after: float | None = None,
-    ) -> None:
+    ) -> bool:
         """Record one attempt; only the current lease holder may do so.
 
         A retried job waits ``retry_after`` seconds when given, otherwise the
-        backoff for its number of attempts.
+        backoff for its number of attempts. Returns whether it was recorded:
+        False when the lease was lost.
         """
         with self._sessions.begin() as session:
             row = session.scalar(
@@ -786,7 +787,7 @@ class HandoverQueue:
                 .returning(HandoverJob)
             )
             if row is None:
-                return
+                return False
             row.receipt = dict(receipt)
             if retry:
                 row.next_attempt_at = now + (
@@ -811,6 +812,7 @@ class HandoverQueue:
                     )
             if committed:
                 self._schedule(session, job.target).last_commit_at = now
+            return True
 
     def requests_with_status(
         self,

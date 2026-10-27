@@ -21,6 +21,7 @@ on, so an emitter release with this code changes nothing by default.
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -71,6 +72,19 @@ FIRST_STATUS_CHECK_SECONDS: Final = 10.0
 MAX_STATUS_CHECK_SECONDS: Final = 600.0
 #: A submission in one of these states is never sent or checked again.
 SETTLED_SUBMISSION_STATUSES: Final = FINAL_STATUSES
+#: Submission states reported on standard error when the hand-over settles.
+REPORTED_SUBMISSION_STATUSES: Final = frozenset({"rejected", "failed"})
+#: One line per such submission. The emitter host shares the build's
+#: standard error, so it reaches the build's log.
+SUBMISSION_OUTCOME_MESSAGE: Final = (
+    "Microcosm collector submission {status}: {kind} for hand-over "
+    "{handover_id} (submission {submission_id}), {error_code}. The hand-over's "
+    "collector_submission_receipt has the details."
+)
+
+
+def print_to_standard_error(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def status_check_delay(checks_made: int) -> float:
@@ -101,8 +115,10 @@ class CollectorSubmissionDelivery:
         client: CollectorSubmissionClient,
         *,
         clock: Callable[[], float] = time.time,
+        report: Callable[[str], None] = print_to_standard_error,
     ) -> None:
         self.queue, self.client, self.clock = queue, client, clock
+        self.report = report
 
     @property
     def target(self) -> str:
@@ -207,13 +223,27 @@ class CollectorSubmissionDelivery:
             job.attempts + 1,
             result.submissions,
         )
-        self.queue.finish_job(
+        recorded = self.queue.finish_job(
             job,
             receipt=receipt,
             retry=result.retry,
             now=self.clock(),
             retry_after=result.retry_after,
         )
+        if recorded and not result.retry:
+            # The hand-over settled in this attempt: report each submission
+            # that ended without success, once.
+            for entry in result.submissions:
+                if entry["status"] in REPORTED_SUBMISSION_STATUSES:
+                    self.report(
+                        SUBMISSION_OUTCOME_MESSAGE.format(
+                            status=entry["status"],
+                            kind=entry["kind"],
+                            handover_id=job.handover_id,
+                            submission_id=entry.get("submission_id") or "not created",
+                            error_code=entry.get("error_code"),
+                        )
+                    )
 
     def _attempt(self, job: ClaimedJob) -> AttemptResult:
         if len(bundle_folder(job.request)) > MAX_FOLDER_CHARACTERS:
