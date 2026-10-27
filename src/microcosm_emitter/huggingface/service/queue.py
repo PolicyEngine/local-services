@@ -766,8 +766,14 @@ class HandoverQueue:
         retry: bool,
         now: float,
         committed: bool = False,
-    ) -> None:
-        """Record one attempt; only the current lease holder may do so."""
+        retry_after: float | None = None,
+    ) -> bool:
+        """Record one attempt; only the current lease holder may do so.
+
+        A retried job waits ``retry_after`` seconds when given, otherwise the
+        backoff for its number of attempts. Returns whether it was recorded:
+        False when the lease was lost.
+        """
         with self._sessions.begin() as session:
             row = session.scalar(
                 update(HandoverJob)
@@ -781,10 +787,12 @@ class HandoverQueue:
                 .returning(HandoverJob)
             )
             if row is None:
-                return
+                return False
             row.receipt = dict(receipt)
             if retry:
-                row.next_attempt_at = now + retry_delay(row.attempts)
+                row.next_attempt_at = now + (
+                    retry_delay(row.attempts) if retry_after is None else retry_after
+                )
             else:
                 row.status = str(receipt["status"])
                 still_pending = session.scalar(
@@ -804,6 +812,7 @@ class HandoverQueue:
                     )
             if committed:
                 self._schedule(session, job.target).last_commit_at = now
+            return True
 
     def requests_with_status(
         self,
