@@ -1,10 +1,17 @@
 """A loopback stand-in for the collector's artifact intake and its bucket.
 
 It follows the submission contract (PolicyEngine/microcosm-collector,
-``docs/artifact-submissions.md`` at ``673df3d``) closely enough to drive the
-emitter: the scoped token exchange, creation with signed upload URLs,
-single-creation uploads, completion with problems, and status codes the tests
-choose.
+``docs/artifact-submissions.md`` on ``main``, served by collector#12's
+``intake_api.py``) closely enough to drive the emitter: the scoped token
+exchange, creation with signed upload URLs, single-creation uploads,
+completion with problems, the status document and the receipt, and status
+codes the tests choose.
+
+``finish`` plays the collector's worker: it moves a submission to a status
+the test names (``processing``, or a final ``succeeded``, ``rejected`` or
+``failed``), with the handler's ``result`` or a ``rejection``.
+``hold_status_checks`` makes status requests wait, as ``hold_uploads`` does
+for uploads.
 
 ``intake`` chooses the collector the tests talk to: ``"on"``, ``"off"`` (the
 exchange and every submission path answer 404 ``intake_not_enabled``) or
@@ -75,6 +82,20 @@ class FakeCollector:
         self.complete_statuses: list[int] = []
         #: Whole completion answers the tests choose: (status, document).
         self.complete_answers: list[tuple[int, dict[str, Any]]] = []
+        #: The submission ID of each status and receipt request, in order.
+        self.status_requests: list[str] = []
+        self.receipt_requests: list[str] = []
+        #: Statuses, optionally with a ``code``, or whole answers
+        #: (status, document), the tests choose for status and receipt requests.
+        self.status_answers: list[int | tuple[int, Any]] = []
+        self.receipt_answers: list[int | tuple[int, Any]] = []
+        #: Answer receipts with a ``receipt_sha256`` that does not match them.
+        self.corrupt_receipts = False
+        #: Set when a status request arrives; status requests wait for
+        #: ``status_checks_released`` while ``hold_status_checks`` is on.
+        self.status_check_started = threading.Event()
+        self.status_checks_released = threading.Event()
+        self.status_checks_released.set()
         #: Store each upload with its bytes reversed, so its SHA-256 differs.
         self.corrupt_uploads = False
         self.sign_stored_files = False
@@ -154,6 +175,25 @@ class FakeCollector:
                         return collector._complete(self, self.path.split("/")[3])
                 self._json(404, {"detail": "Not Found"})
 
+            def do_GET(self) -> None:
+                if self.path.startswith("/v1/submissions/"):
+                    collector.status_check_started.set()
+                    collector.status_checks_released.wait(30)
+                with collector._lock:
+                    if collector.intake != "on":
+                        return collector._intake_not_available(self)
+                    scope = self._token_scope()
+                    if scope is None:
+                        return self._json(401, {"detail": "invalid"})
+                    if scope != "artifacts:submit":
+                        return self._json(403, {"detail": "scope"})
+                    parts = self.path.split("/")
+                    if len(parts) == 4 and parts[1:3] == ["v1", "submissions"]:
+                        return collector._status(self, parts[3])
+                    if len(parts) == 5 and parts[4] == "receipt":
+                        return collector._receipt(self, parts[3])
+                self._json(404, {"detail": "Not Found"})
+
             def do_PUT(self) -> None:
                 collector.upload_started.set()
                 collector.uploads_released.wait(30)
@@ -224,6 +264,34 @@ class FakeCollector:
     def release_uploads(self) -> None:
         self.uploads_released.set()
 
+    def hold_status_checks(self) -> None:
+        """Make every status and receipt request wait until released."""
+        self.status_checks_released.clear()
+
+    def release_status_checks(self) -> None:
+        self.status_checks_released.set()
+
+    def finish(
+        self,
+        submission_id: str,
+        status: str,
+        *,
+        result: dict[str, Any] | None = None,
+        rejection: dict[str, str] | None = None,
+    ) -> None:
+        """Move a submission to ``status``, as the collector's worker would."""
+        with self._lock:
+            submission = self.submissions[submission_id]
+            submission["status"] = status
+            if submission["job"] is not None:
+                submission["job"] = {**submission["job"], "attempts": 1}
+            final = status in {"succeeded", "rejected", "failed"}
+            submission["finished_at"] = (
+                "2026-10-20T09:05:00.000000+00:00" if final else None
+            )
+            submission["result"] = result if status == "succeeded" else None
+            submission["rejection"] = rejection if status != "succeeded" else None
+
     def start(self) -> FakeCollector:
         for thread in self._threads:
             thread.start()
@@ -285,7 +353,15 @@ class FakeCollector:
         created = submission_id not in self.submissions
         self.submissions.setdefault(
             submission_id,
-            {"body": body, "status": "awaiting_upload", "job": None, "rejection": None},
+            {
+                "body": body,
+                "status": "awaiting_upload",
+                "job": None,
+                "rejection": None,
+                "result": None,
+                "accepted_at": None,
+                "finished_at": None,
+            },
         )
         submission = self.submissions[submission_id]
         uploads = []
@@ -318,30 +394,117 @@ class FakeCollector:
             {**self._status_document(submission_id), "uploads": uploads},
         )
 
-    def _status_document(self, submission_id: str) -> dict[str, Any]:
-        """The contract's status document for one submission."""
-        submission = self.submissions[submission_id]
-        files = sorted(
+    @staticmethod
+    def _files(submission: dict[str, Any]) -> list[dict[str, Any]]:
+        return sorted(
             (
                 {key: file[key] for key in ("name", "role", "size", "sha256")}
                 for file in submission["body"]["files"]
             ),
             key=lambda file: file["name"],
         )
-        canonical = json.dumps(files, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _canonical_sha256(value: Any) -> str:
+        """The contract's canonical JSON, hashed."""
+        canonical = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def _status_document(self, submission_id: str) -> dict[str, Any]:
+        """The contract's status document for one submission."""
+        submission = self.submissions[submission_id]
         return {
             "contract_version": 1,
             "submission_id": submission_id,
             "kind": submission["body"]["kind"],
             "status": submission["status"],
-            "files_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "files_sha256": self._canonical_sha256(self._files(submission)),
             "created_at": "2026-10-20T09:00:00.000000+00:00",
             "updated_at": "2026-10-20T09:00:00.000000+00:00",
-            "accepted_at": None,
-            "finished_at": None,
+            "accepted_at": submission["accepted_at"],
+            "finished_at": submission["finished_at"],
             "job": submission["job"],
             "rejection": submission["rejection"],
         }
+
+    def receipt_document(self, submission_id: str) -> dict[str, Any]:
+        """The contract's receipt, with its ``receipt_sha256``, as
+        collector#12's ``receipt_document`` builds it."""
+        submission = self.submissions[submission_id]
+        body = submission["body"]
+        files = self._files(submission)
+        if submission["job"] is not None:
+            # Completion recorded each object's generation.
+            files = [{**file, "generation": "1760866403123456"} for file in files]
+        receipt: dict[str, Any] = {
+            "contract_version": 1,
+            "submission_id": submission_id,
+            "kind": body["kind"],
+            "status": submission["status"],
+            "licensed_data": body["licensed_data"],
+            "provenance": body["provenance"],
+            "files_sha256": self._canonical_sha256(self._files(submission)),
+            "files": files,
+            "submitted_by": "fixture-builder",
+            "created_at": "2026-10-20T09:00:00.000000+00:00",
+            "accepted_at": submission["accepted_at"],
+            "finished_at": submission["finished_at"],
+            "job": submission["job"],
+            "result": submission["result"],
+            "rejection": submission["rejection"],
+        }
+        receipt["receipt_sha256"] = self._canonical_sha256(receipt)
+        return receipt
+
+    def _chosen_answer(
+        self, handler: Any, answers: list[int | tuple[int, Any]]
+    ) -> bool:
+        """Send the next answer a test chose, if any."""
+        if not answers:
+            return False
+        answer = answers.pop(0)
+        if isinstance(answer, tuple) and isinstance(answer[1], dict):
+            handler._json(*answer)
+        else:
+            self._chosen(handler, answer)
+        return True
+
+    def _unknown_submission(self, handler: Any) -> None:
+        handler._json(
+            404,
+            {"detail": "Submission was not found.", "code": "submission_not_found"},
+        )
+
+    def _status(self, handler: Any, submission_id: str) -> None:
+        self.status_requests.append(submission_id)
+        if self._chosen_answer(handler, self.status_answers):
+            return
+        if submission_id not in self.submissions:
+            return self._unknown_submission(handler)
+        handler._json(200, self._status_document(submission_id))
+
+    def _receipt(self, handler: Any, submission_id: str) -> None:
+        self.receipt_requests.append(submission_id)
+        if self._chosen_answer(handler, self.receipt_answers):
+            return
+        submission = self.submissions.get(submission_id)
+        if submission is None:
+            return self._unknown_submission(handler)
+        if submission["status"] not in {"succeeded", "rejected", "failed"}:
+            return handler._json(
+                409,
+                {
+                    "detail": "Submission is not final yet.",
+                    "code": "submission_not_final",
+                    "status": submission["status"],
+                },
+            )
+        receipt = self.receipt_document(submission_id)
+        if self.corrupt_receipts:
+            receipt["receipt_sha256"] = "0" * 64
+        handler._json(200, receipt)
 
     def _store(self, handler: Any, object_name: str, body: bytes) -> None:
         self.uploads.append(object_name)
@@ -394,6 +557,7 @@ class FakeCollector:
             }
             return handler._json(200, self._status_document(submission_id))
         submission["status"] = "queued"
+        submission["accepted_at"] = "2026-10-20T09:01:00.000000+00:00"
         submission["job"] = {
             "job_id": "job-" + submission_id.removeprefix("sub-"),
             "processing_round": 1,

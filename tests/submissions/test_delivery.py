@@ -1,4 +1,5 @@
-"""Bundles reach the collector after their Hugging Face commit, when switched on."""
+"""Bundles reach the collector after their Hugging Face commit, when switched on,
+and each submission's status is checked until it is final."""
 
 import hashlib
 import threading
@@ -103,11 +104,13 @@ def test_a_described_bundle_reaches_the_collector_after_its_commit(
         b'{"schema": 8}',
     ]
     receipt = collector_receipt(controls, request)
-    assert receipt["status"] == "submitted"
+    assert receipt["status"] == "awaiting_final_status"
     assert receipt["error_code"] is None
     [submitted] = receipt["submissions"]
     assert submitted["kind"] == "calibration-diagnostics"
-    assert submitted["status"] == "accepted"
+    assert submitted["status"] == "awaiting_final_status"
+    assert submitted["collector_status"] == "queued"
+    assert submitted["receipt"] is None
     assert submitted["submission_id"] in controls.collector.submissions
 
 
@@ -122,7 +125,7 @@ def test_a_bundle_naming_orrery_inputs_submits_both_kinds(submitting_module):
         "calibration-diagnostics",
         "orrery-inputs",
     ]
-    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
 
 
 def test_collector_submissions_are_off_by_default(default_module):
@@ -165,7 +168,7 @@ def test_the_collector_waits_for_the_hugging_face_commit(submitting_module):
     assert waiting["status"] == "pending"
     assert waiting["error_code"] == "WAITING_FOR_HUGGING_FACE"
     assert controls.collector.created
-    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
 
 
 def test_a_bundle_hugging_face_refused_is_not_submitted(submitting_module, monkeypatch):
@@ -211,7 +214,7 @@ def test_without_intake_the_submission_is_retried_about_hourly(
     # Not attempted again within the hour, and nothing was submitted.
     assert still_pending["attempts"] == pending["attempts"]
     assert len(controls.collector.created) == 1
-    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
 
 
 def test_a_refused_submission_fails_its_collector_hand_over(submitting_module):
@@ -246,7 +249,7 @@ def test_the_module_tick_delivers_to_both_destinations(submitting_module):
     controls.module.tick(time.monotonic())
 
     assert len(controls.hub.commits(PRIVATE_REPOSITORY)) == 1
-    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
 
 
 def test_files_microcosm_rewrites_after_staging_are_submitted_as_handed_over(
@@ -264,7 +267,7 @@ def test_files_microcosm_rewrites_after_staging_are_submitted_as_handed_over(
 
     cycle(controls)
 
-    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
     assert sorted(controls.collector.objects.values()) == [
         b'{"outputs": {}}',
         b'{"schema": 8}',
@@ -630,7 +633,7 @@ def test_an_unexpected_error_in_a_submission_releases_its_row(
     controls.clock.advance(5)
     del controls.module.collector_delivery.client.submit
     assert controls.module.collector_delivery.run_cycle() == 1
-    assert collector_receipt(controls, request)["status"] == "submitted"
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
 
 
 # The collector row's lease while an attempt runs ---------------------------
@@ -725,7 +728,7 @@ def test_a_second_emitter_never_claims_a_collector_row_during_its_upload(
     # Only the first emitter's client can be accepted; the second's records
     # every submission as pending.
     assert wait_until(
-        lambda: collector_receipt(first, request)["status"] == "submitted",
+        lambda: collector_receipt(first, request)["status"] == "awaiting_final_status",
         seconds=10,
     ), "the first emitter's result was not recorded"
 
@@ -743,3 +746,238 @@ def test_a_collector_row_is_free_within_one_lease_after_shutdown(two_emitters):
         seconds=SHORT_SUBMISSION_LEASE_SECONDS * 3,
     ), "the collector row stayed leased after shutdown"
     assert second_client.submitted
+
+
+# Status checks after completion --------------------------------------------
+#
+# The contract: once completion is accepted, poll
+# ``GET /v1/submissions/{id}`` until the status is final, then read
+# ``GET /v1/submissions/{id}/receipt``. The emitter does it from the
+# hand-over queue: the first check 10 seconds after acceptance, then each
+# wait twice the last, up to ten minutes.
+
+FIRST_CHECK_SECONDS = 10
+
+
+def accepted_bundle(controls, **options):
+    """Stage a described bundle and run one cycle, in which the collector
+    accepts its completion; return the request and its submission ID."""
+    request = bundle(controls, **options)
+    stage(controls, request)
+    cycle(controls)
+    receipt = collector_receipt(controls, request)
+    assert receipt["status"] == "awaiting_final_status", receipt
+    [entry] = receipt["submissions"]
+    return request, entry["submission_id"]
+
+
+def check_after(controls, seconds):
+    controls.clock.advance(seconds)
+    controls.module.collector_delivery.run_cycle()
+
+
+def test_a_succeeded_submission_stores_its_receipt(submitting_module):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    result = {"processed_by": "intake-only", "verified_files": 2}
+    controls.collector.finish(submission_id, "succeeded", result=result)
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == ("succeeded", None)
+    [entry] = receipt["submissions"]
+    assert (entry["status"], entry["collector_status"]) == ("succeeded", "succeeded")
+    assert entry["rejection"] is None
+    assert entry["receipt"] == controls.collector.receipt_document(submission_id)
+    assert entry["receipt"]["result"] == result
+    # Settled: never checked again.
+    requests = len(controls.collector.status_requests)
+    check_after(controls, 3600)
+    assert len(controls.collector.status_requests) == requests
+
+
+def test_a_submission_awaits_its_final_status_while_the_worker_runs(
+    submitting_module,
+):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+    controls.collector.finish(submission_id, "processing")
+    check_after(controls, 2 * FIRST_CHECK_SECONDS)
+
+    receipt = collector_receipt(controls, request)
+    assert receipt["status"] == "awaiting_final_status"
+    [entry] = receipt["submissions"]
+    assert (entry["status"], entry["collector_status"]) == (
+        "awaiting_final_status",
+        "processing",
+    )
+    assert controls.collector.status_requests == [submission_id, submission_id]
+    assert controls.collector.receipt_requests == []
+
+
+def test_status_checks_back_off_from_ten_seconds_to_ten_minutes(submitting_module):
+    controls = submitting_module
+    accepted_bundle(controls)
+    accepted_at = controls.clock.now
+    checked_at = []
+
+    for _ in range(1900):
+        check_after(controls, 1)
+        while len(checked_at) < len(controls.collector.status_requests):
+            checked_at.append(controls.clock.now - accepted_at)
+
+    # Waits of 10, 20, 40, 80, 160 and 320 seconds, then ten minutes.
+    assert checked_at == [10, 30, 70, 150, 310, 630, 1230, 1830]
+
+
+@pytest.mark.parametrize(
+    ("final_status", "code"),
+    [("rejected", "content_mismatch"), ("failed", "worker_error")],
+)
+def test_a_submission_that_did_not_succeed_keeps_the_collectors_reason(
+    submitting_module, final_status, code
+):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    rejection = {"code": code, "message": f"The worker reported {code}."}
+    controls.collector.finish(submission_id, final_status, rejection=rejection)
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == (final_status, code)
+    [entry] = receipt["submissions"]
+    assert (entry["status"], entry["error_code"]) == (final_status, code)
+    assert entry["rejection"] == rejection
+    assert entry["receipt"] == controls.collector.receipt_document(submission_id)
+
+
+def test_a_rejection_at_completion_stores_its_receipt_in_the_same_attempt(
+    submitting_module,
+):
+    controls = submitting_module
+    controls.collector.corrupt_uploads = True
+    request = bundle(controls)
+    stage(controls, request)
+
+    cycle(controls)
+
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == (
+        "rejected",
+        "stored_object_mismatch",
+    )
+    [entry] = receipt["submissions"]
+    assert entry["rejection"]["code"] == "stored_object_mismatch"
+    # Rejected at completion: no job ran.
+    assert entry["receipt"]["job"] is None
+
+
+def test_one_rejected_kind_makes_the_hand_over_rejected(submitting_module):
+    controls = submitting_module
+    request = bundle(controls, contents={**CONTENTS, **ORRERY_CONTENTS})
+    stage(controls, request)
+    cycle(controls)
+    entries = {
+        entry["kind"]: entry
+        for entry in collector_receipt(controls, request)["submissions"]
+    }
+    rejection = {"code": "content_mismatch", "message": "Bytes differ."}
+    controls.collector.finish(
+        entries["calibration-diagnostics"]["submission_id"], "succeeded", result={}
+    )
+    controls.collector.finish(
+        entries["orrery-inputs"]["submission_id"], "rejected", rejection=rejection
+    )
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == (
+        "rejected",
+        "content_mismatch",
+    )
+    assert {entry["kind"]: entry["status"] for entry in receipt["submissions"]} == {
+        "calibration-diagnostics": "succeeded",
+        "orrery-inputs": "rejected",
+    }
+
+
+def test_a_submission_the_collector_lost_is_created_again(submitting_module):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    del controls.collector.submissions[submission_id]
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+    lost = collector_receipt(controls, request)
+    check_after(controls, 300)
+
+    assert (lost["status"], lost["error_code"]) == ("pending", "SUBMISSION_NOT_FOUND")
+    assert len(controls.collector.created) == 2
+    assert collector_receipt(controls, request)["status"] == "awaiting_final_status"
+
+
+def test_status_checks_resume_in_the_next_emitter_on_the_machine(
+    module_factory, collector
+):
+    """A build's emitter can exit before the collector's worker finishes, as
+    a Modal container does at the end of a build. The submission stays in
+    the hand-over database, and the next emitter started on the machine with
+    the same database checks it."""
+    first = module_factory.start(
+        collector_submissions=True, development_collector_url=collector.origin
+    )
+    try:
+        request, submission_id = accepted_bundle(first)
+    finally:
+        first.module.close(0)
+    collector.finish(submission_id, "succeeded", result={"verified_files": 2})
+
+    second = module_factory.start(
+        collector_submissions=True, development_collector_url=collector.origin
+    )
+    try:
+        second.clock.advance(FIRST_CHECK_SECONDS)
+        second.module.collector_delivery.run_cycle()
+        receipt = collector_receipt(second, request)
+    finally:
+        second.module.close(0)
+
+    assert receipt["status"] == "succeeded"
+    [entry] = receipt["submissions"]
+    assert entry["receipt"] == collector.receipt_document(submission_id)
+
+
+def test_hugging_face_commits_land_during_a_held_status_check(
+    module_with_workers, monkeypatch
+):
+    """Status checks run on the collector's worker: a slow one never delays
+    a Hugging Face commit, and the build's own calls answer at once."""
+    from microcosm_emitter.submissions import delivery as delivery_module
+
+    monkeypatch.setattr(
+        delivery_module, "FIRST_STATUS_CHECK_SECONDS", 0.05, raising=False
+    )
+    controls = module_with_workers
+    controls.hub.create_repository(STAGING_REPOSITORY, {"README.md": b"staging"})
+    controls.collector.hold_status_checks()
+    request = bundle(controls)
+    try:
+        assert stage(controls, request)["status"] == "pending"
+        assert controls.collector.status_check_started.wait(10), (
+            "no status check started"
+        )
+
+        stage_progress(controls, flush=True)
+
+        assert wait_until(
+            lambda: staging_holds(controls, "runs/staging-run-1/progress.json"),
+            seconds=5,
+        )
+        receipt = collector_receipt(controls, request)
+        assert receipt["status"] == "awaiting_final_status"
+    finally:
+        controls.collector.release_status_checks()

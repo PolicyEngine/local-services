@@ -1,4 +1,5 @@
-"""Submitting one planned submission: exchange, create, upload, complete."""
+"""Submitting one planned submission: exchange, create, upload, complete;
+then checking its status until it is final, and fetching its receipt."""
 
 import hashlib
 import socket
@@ -402,26 +403,32 @@ def test_an_unknown_submission_at_completion_is_created_again(
     assert len(collector.created) == 2
 
 
-def test_a_stored_object_with_another_digest_fails_the_submission(
+def test_a_stored_object_with_another_digest_is_rejected_with_a_receipt(
     collector, tmp_path
 ) -> None:
-    """Completion answers 200 ``rejected`` with ``stored_object_mismatch``."""
+    """Completion answers 200 ``rejected`` with ``stored_object_mismatch``.
+    The contract still says to poll the status, then read the receipt."""
     collector.corrupt_uploads = True
+    client = submission_client(collector)
 
-    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+    outcome = client.submit(planned_submission(tmp_path))
+    checked = client.check_status(outcome.submission_id)
 
-    assert (outcome.status, outcome.error_code) == (
-        "failed",
+    assert (outcome.status, outcome.collector_status) == ("accepted", "rejected")
+    assert (checked.status, checked.error_code) == (
+        "rejected",
         "stored_object_mismatch",
     )
-    assert outcome.collector_status == "rejected"
+    assert checked.rejection["code"] == "stored_object_mismatch"
+    # Rejected at completion: the submission never had a job.
+    assert checked.receipt["job"] is None
 
 
 @pytest.mark.parametrize(
     ("final_status", "code"),
     [("rejected", "content_mismatch"), ("failed", "worker_error")],
 )
-def test_a_final_completion_answer_that_did_not_succeed_fails(
+def test_a_final_completion_answer_is_accepted_with_its_status(
     collector, tmp_path, final_status, code
 ) -> None:
     collector.complete_answers = [
@@ -438,9 +445,10 @@ def test_a_final_completion_answer_that_did_not_succeed_fails(
 
     outcome = submission_client(collector).submit(planned_submission(tmp_path))
 
+    # Final for the collector; the status check then fetches the receipt.
     assert (outcome.status, outcome.error_code, outcome.collector_status) == (
-        "failed",
-        code,
+        "accepted",
+        None,
         final_status,
     )
 
@@ -680,3 +688,258 @@ def test_completion_after_uploads_that_outlast_the_token_uses_a_fresh_token(
         "the completion after a long upload used an expired token"
     )
     assert collector.exchange_requests == [{"scope": "artifacts:submit"}] * 2
+
+
+# Checking an accepted submission's status, and fetching its receipt ---------
+
+
+def accepted_submission(collector, tmp_path, **options):
+    """A client, and the ID of a submission it created and completed."""
+    client = submission_client(collector, **options)
+    outcome = client.submit(planned_submission(tmp_path))
+    assert (outcome.status, outcome.collector_status) == ("accepted", "queued")
+    return client, outcome.submission_id
+
+
+@pytest.mark.parametrize("collector_status", ["queued", "processing"])
+def test_a_submission_not_final_yet_awaits_its_final_status(
+    collector, tmp_path, collector_status
+) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    if collector_status == "processing":
+        collector.finish(submission_id, "processing")
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code, checked.collector_status) == (
+        "awaiting_final_status",
+        None,
+        collector_status,
+    )
+    assert checked.receipt is None
+    assert collector.status_requests == [submission_id]
+    # The receipt is read only once the status is final.
+    assert collector.receipt_requests == []
+
+
+def test_a_succeeded_submission_brings_its_receipt(collector, tmp_path) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    result = {"processed_by": "intake-only", "verified_files": 2}
+    collector.finish(submission_id, "succeeded", result=result)
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code, checked.collector_status) == (
+        "succeeded",
+        None,
+        "succeeded",
+    )
+    assert checked.rejection is None
+    assert checked.receipt == collector.receipt_document(submission_id)
+    assert checked.receipt["result"] == result
+    assert collector.status_requests == [submission_id]
+    assert collector.receipt_requests == [submission_id]
+
+
+@pytest.mark.parametrize(
+    ("final_status", "code"),
+    [
+        ("rejected", "content_mismatch"),
+        ("rejected", "object_missing"),
+        ("failed", "worker_error"),
+        ("failed", "attempts_exhausted"),
+        ("failed", "worker_unavailable"),
+    ],
+)
+def test_a_submission_that_did_not_succeed_brings_the_collectors_reason(
+    collector, tmp_path, final_status, code
+) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    rejection = {"code": code, "message": f"The worker reported {code}."}
+    collector.finish(submission_id, final_status, rejection=rejection)
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code, checked.collector_status) == (
+        final_status,
+        code,
+        final_status,
+    )
+    assert checked.rejection == rejection
+    assert checked.receipt == collector.receipt_document(submission_id)
+
+
+def test_a_final_status_whose_receipt_is_not_final_keeps_awaiting(
+    collector, tmp_path
+) -> None:
+    """An operator's reprocessing can return a final submission to queued
+    between the two requests: the receipt then answers 409."""
+    client, submission_id = accepted_submission(collector, tmp_path)
+    collector.finish(submission_id, "succeeded", result={})
+    collector.receipt_answers = [
+        (
+            409,
+            {
+                "detail": "Submission is not final yet.",
+                "code": "submission_not_final",
+                "status": "queued",
+            },
+        )
+    ]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.collector_status, checked.receipt) == (
+        "awaiting_final_status",
+        "queued",
+        None,
+    )
+
+
+def test_a_receipt_whose_digest_does_not_match_is_not_kept(collector, tmp_path) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    collector.finish(submission_id, "succeeded", result={})
+    collector.corrupt_receipts = True
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code, checked.receipt) == (
+        "awaiting_final_status",
+        "INVALID_RESPONSE",
+        None,
+    )
+
+
+def test_a_receipt_for_another_submission_is_not_kept(collector, tmp_path) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    collector.finish(submission_id, "succeeded", result={})
+    other = {**collector.receipt_document(submission_id), "submission_id": "sub-other"}
+    collector.receipt_answers = [(200, other)]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code) == (
+        "awaiting_final_status",
+        "INVALID_RESPONSE",
+    )
+
+
+@pytest.mark.parametrize("request_name", ["status", "receipt"])
+def test_an_unknown_submission_at_a_status_check_is_created_again(
+    collector, tmp_path, request_name
+) -> None:
+    """404 ``submission_not_found``, for example after the collector's
+    database was reset: the submission is created again."""
+    client, submission_id = accepted_submission(collector, tmp_path)
+    if request_name == "status":
+        del collector.submissions[submission_id]
+    else:
+        collector.finish(submission_id, "succeeded", result={})
+        collector.receipt_answers = [(404, "submission_not_found")]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code) == ("pending", "SUBMISSION_NOT_FOUND")
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_a_collector_outage_at_a_status_check_keeps_awaiting(
+    collector, tmp_path, status
+) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    collector.status_answers = [status]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code, checked.collector_status) == (
+        "awaiting_final_status",
+        "COLLECTOR_UNAVAILABLE",
+        None,
+    )
+
+
+def test_a_receipt_outage_keeps_awaiting_with_the_final_status_seen(
+    collector, tmp_path
+) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    collector.finish(submission_id, "succeeded", result={})
+    collector.receipt_answers = [503]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code, checked.collector_status) == (
+        "awaiting_final_status",
+        "COLLECTOR_UNAVAILABLE",
+        "succeeded",
+    )
+
+
+@pytest.mark.parametrize("intake", ["off", "absent"])
+def test_a_collector_without_intake_at_a_status_check_waits_an_hour(
+    collector, tmp_path, intake
+) -> None:
+    clock = ManualClock()
+    client, submission_id = accepted_submission(collector, tmp_path, clock=clock)
+    collector.intake = intake
+
+    first = client.check_status(submission_id)
+    requests_after_first = len(collector.status_requests)
+    clock.now += 1800
+    second = client.check_status(submission_id)
+
+    assert (first.status, first.error_code, first.retry_after) == (
+        "awaiting_final_status",
+        "COLLECTOR_INTAKE_NOT_ENABLED",
+        3600.0,
+    )
+    assert (second.status, second.error_code) == (
+        "awaiting_final_status",
+        "COLLECTOR_INTAKE_NOT_ENABLED",
+    )
+    # Nothing is sent to that collector within the hour.
+    assert len(collector.status_requests) == requests_after_first
+
+
+def test_a_403_without_a_code_at_a_status_check_exchanges_again(
+    collector, tmp_path
+) -> None:
+    client, submission_id = accepted_submission(collector, tmp_path)
+    exchanges_before = len(collector.exchange_requests)
+    collector.status_answers = [403]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.collector_status) == (
+        "awaiting_final_status",
+        "queued",
+    )
+    assert len(collector.exchange_requests) == exchanges_before + 1
+    assert collector.status_requests == [submission_id, submission_id]
+
+
+def test_an_expired_session_at_a_status_check_is_exchanged_again(
+    collector, tmp_path
+) -> None:
+    invalidations = Invalidations()
+    client, submission_id = accepted_submission(
+        collector, tmp_path, invalidations=invalidations
+    )
+    collector.status_answers = [401]
+
+    checked = client.check_status(submission_id)
+
+    assert (checked.status, checked.error_code) == (
+        "awaiting_final_status",
+        "COLLECTOR_UNAVAILABLE",
+    )
+    assert invalidations.count == 1
+
+
+def test_a_status_check_reads_no_file(collector, tmp_path) -> None:
+    """Status checks never need the build's files: they may be gone."""
+    client, submission_id = accepted_submission(collector, tmp_path)
+    for name in ("calibration_diagnostics.json", "build_manifest.json"):
+        (tmp_path / name).unlink()
+    collector.finish(submission_id, "succeeded", result={})
+
+    assert client.check_status(submission_id).status == "succeeded"
