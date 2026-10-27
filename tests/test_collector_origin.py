@@ -5,6 +5,7 @@ import os
 import pytest
 
 from microcosm_emitter.core import collector_origin as collector_origin_module
+from microcosm_emitter.core.auth import CollectorSession
 from microcosm_emitter.core.collector_origin import (
     configured_collector_origin,
     resolve_collector_origin,
@@ -19,6 +20,8 @@ from microcosm_emitter.core.constants import (
     UNTRUSTED_COLLECTOR_ORIGIN_ERROR,
 )
 from microcosm_emitter.host.contracts import ModuleContext
+from microcosm_emitter.huggingface.service import module as huggingface_module
+from microcosm_emitter.huggingface.service.module import HuggingFaceModule
 from microcosm_emitter.orrery.service.module import OrreryModule
 from microcosm_emitter.telemetry.client import TelemetryRun
 from microcosm_emitter.telemetry.service.collector import CollectorDelivery
@@ -56,6 +59,42 @@ def orrery_module(tmp_path, context: ModuleContext, **settings) -> OrreryModule:
     return OrreryModule(
         {"spool_path": str(tmp_path / "graphs.sqlite3"), **settings}, context
     )
+
+
+def submitting_huggingface_module(
+    tmp_path, context: ModuleContext, **settings
+) -> HuggingFaceModule:
+    """The Hugging Face module with collector submissions switched on.
+
+    It reaches neither the Hub nor a collector: these tests only start it.
+    """
+    return HuggingFaceModule(
+        {
+            "handover_database_path": str(tmp_path / "events.handovers.sqlite3"),
+            "collector_submissions": True,
+            **settings,
+        },
+        context,
+        api_factory=lambda: None,
+        collector_credential=lambda: None,
+        background_workers=False,
+    )
+
+
+@pytest.fixture
+def submission_session_origins(monkeypatch) -> list[str]:
+    """The origin of each `artifacts:submit` session the Hugging Face module opens."""
+    origins: list[str] = []
+
+    class RecordingCollectorSession(CollectorSession):
+        def __init__(self, origin: str, **options) -> None:
+            origins.append(origin)
+            super().__init__(origin, **options)
+
+    monkeypatch.setattr(
+        huggingface_module, "CollectorSession", RecordingCollectorSession
+    )
+    return origins
 
 
 def test_default_origin_is_the_production_collector() -> None:
@@ -264,3 +303,94 @@ def test_modules_refuse_an_untrusted_configured_origin(tmp_path) -> None:
             ModuleContext(os.getpid()),
             collector_origin=untrusted_origin,
         ).initialize()
+
+
+def test_collector_submissions_use_the_configured_origin(
+    tmp_path, future_origin_trusted, submission_session_origins
+) -> None:
+    module = submitting_huggingface_module(
+        tmp_path,
+        ModuleContext(os.getpid()),
+        collector_origin=future_origin_trusted,
+    )
+    module.initialize()
+    try:
+        assert module.collector_delivery is not None
+        assert module.collector_delivery.client.origin == future_origin_trusted
+        assert submission_session_origins == [future_origin_trusted]
+    finally:
+        module.close(0)
+
+
+def test_collector_submissions_without_a_setting_use_the_production_collector(
+    tmp_path, submission_session_origins
+) -> None:
+    module = submitting_huggingface_module(tmp_path, ModuleContext(os.getpid()))
+    module.initialize()
+    try:
+        assert module.collector_delivery is not None
+        assert module.collector_delivery.client.origin == PRODUCTION_COLLECTOR_URL
+        assert submission_session_origins == [PRODUCTION_COLLECTOR_URL]
+    finally:
+        module.close(0)
+
+
+def test_every_module_sends_to_the_same_configured_origin(
+    tmp_path, future_origin_trusted, submission_session_origins
+) -> None:
+    context = ModuleContext(os.getpid())
+    telemetry = telemetry_module(
+        tmp_path, context, collector_origin=future_origin_trusted
+    )
+    graph = orrery_module(tmp_path, context, collector_origin=future_origin_trusted)
+    hugging_face = submitting_huggingface_module(
+        tmp_path, context, collector_origin=future_origin_trusted
+    )
+    telemetry.initialize()
+    try:
+        graph.initialize()
+        try:
+            hugging_face.initialize()
+            try:
+                shared_origin = context.services["collector_session"].origin
+                assert shared_origin == future_origin_trusted
+                assert telemetry.delivery.collector_url == shared_origin
+                assert hugging_face.collector_delivery is not None
+                assert hugging_face.collector_delivery.client.origin == shared_origin
+                assert submission_session_origins == [shared_origin]
+            finally:
+                hugging_face.close(0)
+        finally:
+            graph.close(0)
+    finally:
+        telemetry.close(0)
+
+
+@pytest.mark.usefixtures("future_origin_trusted")
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"collector_origin": "https://untrusted.example"},
+        {
+            "collector_origin": FUTURE_COLLECTOR_ORIGIN,
+            "development_collector_url": DEVELOPMENT_COLLECTOR_URL,
+        },
+    ],
+    ids=["untrusted origin", "origin and development URL"],
+)
+def test_collector_submissions_refuse_an_unusable_origin_at_start(
+    tmp_path, capsys, submission_session_origins, settings
+) -> None:
+    module = submitting_huggingface_module(
+        tmp_path, ModuleContext(os.getpid()), **settings
+    )
+    module.initialize()
+    try:
+        # A collector setting never stops the Hugging Face module: it turns
+        # collector submissions off and keeps the Hugging Face delivery.
+        assert module.collector_delivery is None
+        assert module.delivery is not None
+        assert submission_session_origins == []
+    finally:
+        module.close(0)
+    assert "collector submissions are off" in capsys.readouterr().err
