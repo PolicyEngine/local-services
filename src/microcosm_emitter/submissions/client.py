@@ -1,14 +1,21 @@
 """Submit one planned submission to the collector's artifact intake.
 
-The steps follow the collector's submission contract: exchange the build's
-Hugging Face token for an ``artifacts:submit`` credential, create the
-submission, upload each file the collector still lacks to its signed URL, and
-complete it. Every step can be repeated: the collector names a submission by
-its content, so a later attempt continues where an earlier one stopped.
+The steps follow the collector's submission contract
+(PolicyEngine/microcosm-collector, ``docs/artifact-submissions.md``): exchange
+the build's Hugging Face token for an ``artifacts:submit`` credential, create
+the submission, upload each file the collector still lacks to its signed URL,
+and complete it. Every step can be repeated: the collector names a submission
+by its content, so a later attempt continues where an earlier one stopped.
+
+Once completion is accepted, ``check_status`` asks for the submission's
+status (``GET /v1/submissions/{id}``) and, once it is final, reads its
+receipt (``GET /v1/submissions/{id}/receipt``).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -59,8 +66,13 @@ COLLECTOR_INTAKE_NOT_ENABLED: Final = "COLLECTOR_INTAKE_NOT_ENABLED"
 SUBMISSION_NOT_FOUND: Final = "SUBMISSION_NOT_FOUND"
 #: A final status the collector reports without a rejection code.
 COLLECTOR_REJECTED: Final = "COLLECTOR_REJECTED"
-#: Final statuses that mean the submission will not succeed.
-UNSUCCESSFUL_STATUSES: Final = frozenset({"rejected", "failed"})
+#: The contract's submission statuses, and those that are final.
+SUBMISSION_STATUSES: Final = frozenset(
+    {"awaiting_upload", "queued", "processing", "succeeded", "rejected", "failed"}
+)
+FINAL_STATUSES: Final = frozenset({"succeeded", "rejected", "failed"})
+#: The emitter's state for an accepted submission whose status is not final.
+AWAITING_FINAL_STATUS: Final = "awaiting_final_status"
 CREDENTIAL_REJECTED: Final = "CREDENTIAL_REJECTED"
 COLLECTOR_UNAVAILABLE: Final = "COLLECTOR_UNAVAILABLE"
 INVALID_RESPONSE: Final = "INVALID_RESPONSE"
@@ -86,6 +98,69 @@ class SubmissionOutcome:
     submission_id: str | None = None
     collector_status: str | None = None
     retry_after: float | None = None
+
+
+@dataclass(frozen=True)
+class StatusCheckOutcome:
+    """One status check of a submission whose completion was accepted.
+
+    ``status`` is:
+
+    - ``awaiting_final_status``: the collector has not reported a final
+      status yet, or did not answer (``error_code`` says why);
+    - ``succeeded``, ``rejected`` or ``failed``: the collector's final status,
+      with its ``receipt``; for ``rejected`` and ``failed``, ``rejection`` is
+      the collector's ``{code, message}`` and ``error_code`` its code;
+    - ``failed`` without a receipt: the collector refused the request for
+      good (``error_code`` says how);
+    - ``pending``: the collector has no such submission
+      (``SUBMISSION_NOT_FOUND``), so it is created again.
+
+    ``collector_status`` is the contract status last reported, if any.
+    """
+
+    status: Literal[
+        "awaiting_final_status", "succeeded", "rejected", "failed", "pending"
+    ]
+    error_code: str | None = None
+    collector_status: str | None = None
+    rejection: dict[str, Any] | None = None
+    receipt: dict[str, Any] | None = None
+    retry_after: float | None = None
+
+
+def canonical_sha256(value: Any) -> str:
+    """SHA-256 of the contract's canonical JSON: keys sorted, no whitespace,
+    non-ASCII characters escaped."""
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def receipt_matches(receipt: Any, submission_id: str) -> bool:
+    """Whether a receipt is final, names ``submission_id`` and carries the
+    ``receipt_sha256`` of its other fields, as the contract derives it."""
+    if not isinstance(receipt, Mapping):
+        return False
+    digest = receipt.get("receipt_sha256")
+    return (
+        receipt.get("submission_id") == submission_id
+        and receipt.get("status") in FINAL_STATUSES
+        and isinstance(digest, str)
+        and digest
+        == canonical_sha256(
+            {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+        )
+    )
+
+
+def _json_object(response: httpx.Response) -> Mapping[str, Any] | None:
+    try:
+        document = response.json()
+    except ValueError:
+        return None
+    return document if isinstance(document, Mapping) else None
 
 
 def upload_url_allowed(url: str, *, allow_loopback: bool) -> bool:
@@ -230,9 +305,12 @@ class CollectorSubmissionClient:
             return SubmissionOutcome("failed", f"COLLECTOR_REFUSED_{status}")
         return SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE)
 
-    def _post(self, path: str, token: str, body: Any = None) -> httpx.Response:
+    def _send(
+        self, method: str, path: str, token: str, body: Any = None
+    ) -> httpx.Response:
         try:
-            return self._http.post(
+            return self._http.request(
+                method,
                 self.origin + path,
                 json=body,
                 headers={"Authorization": f"Bearer {token}"},
@@ -243,21 +321,21 @@ class CollectorSubmissionClient:
                 SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE)
             ) from None
 
-    def _post_in_scope(
-        self, path: str, token: str, body: Any = None
+    def _send_in_scope(
+        self, method: str, path: str, token: str, body: Any = None
     ) -> tuple[httpx.Response, str]:
-        """Post, and once more with a fresh token after a 403 without a code.
+        """Send, and once more with a fresh token after a 403 without a code.
 
         A 403 without a ``code`` means the token's scope does not allow the
         request; a fresh ``artifacts:submit`` token is tried once, and a second
         such refusal is final. A 403 with a code (for example
         ``submission_owned_by_another_user``) is final at once.
         """
-        response = self._post(path, token, body)
+        response = self._send(method, path, token, body)
         if response.status_code == 403 and self._error_code(response) is None:
             self._invalidate_credential()
             token = self._token()
-            response = self._post(path, token, body)
+            response = self._send(method, path, token, body)
         return response, token
 
     def _uploads(self, response: httpx.Response, planned: PlannedSubmission) -> tuple:
@@ -331,7 +409,9 @@ class CollectorSubmissionClient:
             return waiting
         try:
             token = self._token()
-            created, token = self._post_in_scope(SUBMISSIONS_PATH, token, planned.body)
+            created, token = self._send_in_scope(
+                "POST", SUBMISSIONS_PATH, token, planned.body
+            )
             if created.status_code not in {200, 201}:
                 return self._settled_answer(created, names_submission=False)
             submission_id, uploads = self._uploads(created, planned)
@@ -340,8 +420,8 @@ class CollectorSubmissionClient:
             # The uploads can outlast the token. Ask the session again: it
             # exchanges for a new token only when this one is about to expire.
             token = self._token()
-            completed, token = self._post_in_scope(
-                f"{SUBMISSIONS_PATH}/{submission_id}/complete", token
+            completed, token = self._send_in_scope(
+                "POST", f"{SUBMISSIONS_PATH}/{submission_id}/complete", token
             )
         except _StepFailedError as failure:
             return failure.outcome
@@ -356,26 +436,100 @@ class CollectorSubmissionClient:
                 submission_id,
                 retry_after=answer.retry_after,
             )
-        try:
-            document = completed.json()
-        except ValueError:
-            document = None
-        if not isinstance(document, Mapping):
-            document = {}
+        # 202 (queued or processing) or 200 (final, for example ``rejected``
+        # with ``stored_object_mismatch``): either way the contract's next
+        # step is to check the status, then read the receipt once final.
+        document = _json_object(completed) or {}
         collector_status = document.get("status")
-        if not isinstance(collector_status, str):
+        if collector_status not in SUBMISSION_STATUSES:
             collector_status = None
-        if collector_status in UNSUCCESSFUL_STATUSES:
-            # For example ``stored_object_mismatch``: stored objects are never
-            # replaced, so repeating the submission cannot succeed.
-            rejection = document.get("rejection")
-            code = rejection.get("code") if isinstance(rejection, Mapping) else None
-            return SubmissionOutcome(
-                "failed",
-                code if isinstance(code, str) and code else COLLECTOR_REJECTED,
-                submission_id,
-                collector_status,
-            )
         return SubmissionOutcome(
             "accepted", submission_id=submission_id, collector_status=collector_status
+        )
+
+    def check_status(self, submission_id: str) -> StatusCheckOutcome:
+        """Ask for an accepted submission's status; read its receipt once final.
+
+        Reads no file, so it works after the build's files are gone. Safe to
+        repeat: both requests only read.
+        """
+        waiting = self._waiting_for_intake()
+        if waiting is not None:
+            return StatusCheckOutcome(
+                AWAITING_FINAL_STATUS,
+                waiting.error_code,
+                retry_after=waiting.retry_after,
+            )
+        path = f"{SUBMISSIONS_PATH}/{submission_id}"
+        collector_status: str | None = None
+        try:
+            token = self._token()
+            answered, token = self._send_in_scope("GET", path, token)
+            if answered.status_code != 200:
+                return self._unanswered_check(answered, None)
+            status = (_json_object(answered) or {}).get("status")
+            if status not in SUBMISSION_STATUSES:
+                return StatusCheckOutcome(AWAITING_FINAL_STATUS, INVALID_RESPONSE)
+            collector_status = str(status)
+            if collector_status not in FINAL_STATUSES:
+                return StatusCheckOutcome(
+                    AWAITING_FINAL_STATUS, collector_status=collector_status
+                )
+            receipt_answer, token = self._send_in_scope("GET", f"{path}/receipt", token)
+        except _StepFailedError as failure:
+            # No answer, or no credential: keep checking. A refused Hugging
+            # Face token is final only for submitting, never for the result.
+            return StatusCheckOutcome(
+                AWAITING_FINAL_STATUS,
+                failure.outcome.error_code,
+                collector_status,
+                retry_after=failure.outcome.retry_after,
+            )
+        if receipt_answer.status_code == 409:
+            # ``submission_not_final``: reprocessing returned it to ``queued``.
+            status = (_json_object(receipt_answer) or {}).get("status")
+            return StatusCheckOutcome(
+                AWAITING_FINAL_STATUS,
+                collector_status=str(status)
+                if status in SUBMISSION_STATUSES
+                else collector_status,
+            )
+        if receipt_answer.status_code != 200:
+            return self._unanswered_check(receipt_answer, collector_status)
+        receipt = _json_object(receipt_answer)
+        if receipt is None or not receipt_matches(receipt, submission_id):
+            return StatusCheckOutcome(
+                AWAITING_FINAL_STATUS, INVALID_RESPONSE, collector_status
+            )
+        final_status = receipt["status"]
+        if final_status == "succeeded":
+            return StatusCheckOutcome(
+                "succeeded", collector_status=final_status, receipt=dict(receipt)
+            )
+        rejection = receipt.get("rejection")
+        rejection = dict(rejection) if isinstance(rejection, Mapping) else None
+        code = None if rejection is None else rejection.get("code")
+        return StatusCheckOutcome(
+            final_status,
+            code if isinstance(code, str) and code else COLLECTOR_REJECTED,
+            final_status,
+            rejection,
+            dict(receipt),
+        )
+
+    def _unanswered_check(
+        self, response: httpx.Response, collector_status: str | None
+    ) -> StatusCheckOutcome:
+        """What a status or receipt request answered with an error means."""
+        answer = self._settled_answer(response, names_submission=True)
+        if answer.error_code == SUBMISSION_NOT_FOUND:
+            return StatusCheckOutcome("pending", SUBMISSION_NOT_FOUND)
+        if answer.status == "failed":
+            # 403 ``submission_owned_by_another_user``, 413 or 422.
+            return StatusCheckOutcome("failed", answer.error_code, collector_status)
+        return StatusCheckOutcome(
+            AWAITING_FINAL_STATUS,
+            answer.error_code,
+            collector_status,
+            retry_after=answer.retry_after,
         )

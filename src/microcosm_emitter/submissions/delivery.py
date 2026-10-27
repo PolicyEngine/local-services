@@ -6,6 +6,15 @@ hand-over's Hugging Face row has staged the bundle, because the submission's
 provenance names that commit. Then each planned submission is submitted until
 the collector accepts or refuses it.
 
+Accepted submissions stay in the queue, ``awaiting_final_status``, and their
+status is checked with the same row's leases, attempts and retries: the
+first check ``FIRST_STATUS_CHECK_SECONDS`` after acceptance, each later wait
+twice the last, up to ``MAX_STATUS_CHECK_SECONDS``. Once the collector reports
+a final status, its receipt is stored in the row's receipt, with the
+collector's reason for a ``rejected`` or ``failed`` submission. The row lives
+in the hand-over database, so an emitter that exits first leaves the checks
+to the next emitter started with that database.
+
 Collector submissions are off unless the module configuration switches them
 on, so an emitter release with this code changes nothing by default.
 """
@@ -19,9 +28,14 @@ from typing import Any, Final
 
 from microcosm_emitter.huggingface.service.delivery import HeldLeases, never_stop
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
-from microcosm_emitter.submissions.client import CollectorSubmissionClient
+from microcosm_emitter.submissions.client import (
+    AWAITING_FINAL_STATUS,
+    FINAL_STATUSES,
+    CollectorSubmissionClient,
+)
 from microcosm_emitter.submissions.planning import (
     MAX_FOLDER_CHARACTERS,
+    PlannedSubmission,
     bundle_folder,
     planned_submissions,
 )
@@ -51,6 +65,20 @@ NOT_STAGED_ON_HUGGING_FACE: Final = "NOT_STAGED_ON_HUGGING_FACE"
 COLLECTOR_FOLDER_TOO_LONG: Final = "COLLECTOR_FOLDER_TOO_LONG"
 #: The emitter hit an unexpected error of its own during an attempt.
 LOCAL_ERROR: Final = "LOCAL_ERROR"
+#: When an accepted submission's status is first checked, and the longest
+#: wait between two checks; each wait is twice the last.
+FIRST_STATUS_CHECK_SECONDS: Final = 10.0
+MAX_STATUS_CHECK_SECONDS: Final = 600.0
+#: A submission in one of these states is never sent or checked again.
+SETTLED_SUBMISSION_STATUSES: Final = FINAL_STATUSES
+
+
+def status_check_delay(checks_made: int) -> float:
+    """How long to wait for the next status check after ``checks_made``."""
+    return min(
+        MAX_STATUS_CHECK_SECONDS,
+        FIRST_STATUS_CHECK_SECONDS * float(2 ** min(checks_made, 16)),
+    )
 
 
 @dataclass(frozen=True)
@@ -207,33 +235,106 @@ class CollectorSubmissionDelivery:
         results: dict[str, dict[str, Any]] = {}
         waits: list[float] = []
         for planned in planned_submissions(job.request, revision, job.files):
-            settled = earlier.get(planned.kind)
-            if settled is not None and settled["status"] in {"accepted", "failed"}:
-                results[planned.kind] = settled
+            entry = earlier.get(planned.kind)
+            if entry is not None and entry["status"] in SETTLED_SUBMISSION_STATUSES:
+                results[planned.kind] = entry
                 continue
-            outcome = self.client.submit(planned)
-            if outcome.retry_after is not None:
-                waits.append(outcome.retry_after)
-            results[planned.kind] = {
-                "kind": planned.kind,
-                "status": outcome.status,
+            if entry is None or entry["status"] != AWAITING_FINAL_STATUS:
+                entry = self._submit(planned, waits)
+                if entry["collector_status"] in FINAL_STATUSES:
+                    # Completion already answered with a final status: read
+                    # the receipt now.
+                    entry = self._check(entry, waits)
+            else:
+                entry = self._check(entry, waits)
+            results[planned.kind] = entry
+        return self._result(list(results.values()), waits)
+
+    def _submit(self, planned: PlannedSubmission, waits: list[float]) -> dict[str, Any]:
+        """Submit; an accepted submission then awaits its final status."""
+        outcome = self.client.submit(planned)
+        if outcome.retry_after is not None:
+            waits.append(outcome.retry_after)
+        accepted = outcome.status == "accepted"
+        return {
+            "kind": planned.kind,
+            "status": AWAITING_FINAL_STATUS if accepted else outcome.status,
+            "error_code": outcome.error_code,
+            "submission_id": outcome.submission_id,
+            "collector_status": outcome.collector_status,
+            "rejection": None,
+            "receipt": None,
+            "status_checks": 0,
+            "awaiting_final_status_since": self.clock() if accepted else None,
+        }
+
+    def _check(self, entry: Mapping[str, Any], waits: list[float]) -> dict[str, Any]:
+        """Check an accepted submission's status; keep its receipt once final."""
+        outcome = self.client.check_status(entry["submission_id"])
+        if outcome.retry_after is not None:
+            waits.append(outcome.retry_after)
+        if outcome.status == "pending":
+            # The collector lost it: the next attempt creates it again.
+            return {
+                **entry,
+                "status": "pending",
                 "error_code": outcome.error_code,
-                "submission_id": outcome.submission_id,
-                "collector_status": outcome.collector_status,
+                "collector_status": None,
+                "status_checks": 0,
+                "awaiting_final_status_since": None,
             }
-        submissions = list(results.values())
-        pending = [entry for entry in submissions if entry["status"] == "pending"]
-        failed = [entry for entry in submissions if entry["status"] == "failed"]
-        if pending:
+        return {
+            **entry,
+            "status": outcome.status,
+            "error_code": outcome.error_code,
+            "collector_status": outcome.collector_status
+            or entry.get("collector_status"),
+            "rejection": outcome.rejection,
+            "receipt": outcome.receipt,
+            "status_checks": int(entry.get("status_checks") or 0) + 1,
+        }
+
+    @staticmethod
+    def _result(submissions: list[dict[str, Any]], waits: list[float]) -> AttemptResult:
+        """The hand-over's state from its submissions' states.
+
+        Still sending one of them is ``pending``; then waiting for one's final
+        status is ``awaiting_final_status``. Once every one is settled, the
+        hand-over is ``rejected`` if the collector rejected one, else
+        ``failed`` if one failed, else ``succeeded``; ``error_code`` is that
+        submission's.
+        """
+        by_status: dict[str, list[dict[str, Any]]] = {}
+        for entry in submissions:
+            by_status.setdefault(entry["status"], []).append(entry)
+        if "pending" in by_status:
             return AttemptResult(
                 "pending",
-                pending[0]["error_code"],
+                by_status["pending"][0]["error_code"],
                 submissions,
                 retry=True,
                 retry_after=max(waits) if waits else None,
             )
-        if failed:
+        if AWAITING_FINAL_STATUS in by_status:
+            awaiting = by_status[AWAITING_FINAL_STATUS]
             return AttemptResult(
-                "failed", failed[0]["error_code"], submissions, retry=False
+                AWAITING_FINAL_STATUS,
+                awaiting[0]["error_code"],
+                submissions,
+                retry=True,
+                retry_after=max(waits)
+                if waits
+                else min(
+                    status_check_delay(int(entry.get("status_checks") or 0))
+                    for entry in awaiting
+                ),
             )
-        return AttemptResult("submitted", None, submissions, retry=False)
+        for final_status in ("rejected", "failed"):
+            if final_status in by_status:
+                return AttemptResult(
+                    final_status,
+                    by_status[final_status][0]["error_code"],
+                    submissions,
+                    retry=False,
+                )
+        return AttemptResult("succeeded", None, submissions, retry=False)
