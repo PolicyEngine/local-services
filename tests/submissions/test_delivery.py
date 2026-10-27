@@ -1036,3 +1036,76 @@ def test_a_succeeded_submission_is_not_reported(submitting_module, capsys):
 
     assert collector_receipt(controls, request)["status"] == "succeeded"
     assert report_lines(capsys, request.handover_id()) == []
+
+
+# The overall time limit on status checks -----------------------------------
+#
+# The collector's recovery brings every job to a final status within three
+# attempts or dispatches of at most about an hour each. The emitter checks
+# for a day after acceptance; a submission still not final then is recorded
+# as timed out, and reported.
+
+DAY_SECONDS = 24 * 3600
+
+
+def status_checks_until_past_the_day(controls):
+    """Run cycles until 15 minutes past a day after acceptance: a minute
+    apart, then a second apart from 15 minutes before the day. Return when
+    each status check ran, in seconds after acceptance."""
+    accepted_at = controls.clock.now
+    checked_at = []
+
+    def run_after(seconds):
+        check_after(controls, seconds)
+        while len(checked_at) < len(controls.collector.status_requests):
+            checked_at.append(controls.clock.now - accepted_at)
+
+    while controls.clock.now - accepted_at < DAY_SECONDS - 900:
+        run_after(60)
+    while controls.clock.now - accepted_at < DAY_SECONDS + 900:
+        run_after(1)
+    return checked_at
+
+
+@pytest.mark.parametrize("answer", ["not final", "outage"])
+def test_a_submission_not_final_within_a_day_times_out(
+    submitting_module, capsys, answer
+):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    if answer == "outage":
+        controls.collector.status_answers = [503] * 1000
+
+    checked_at = status_checks_until_past_the_day(controls)
+    checks = len(controls.collector.status_requests)
+    check_after(controls, 3600)
+
+    # The last check falls on the limit itself, not up to ten minutes late.
+    assert checked_at[-1] == DAY_SECONDS
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == (
+        "timed_out",
+        "FINAL_STATUS_TIMED_OUT",
+    )
+    [entry] = receipt["submissions"]
+    assert (entry["status"], entry["receipt"]) == ("timed_out", None)
+    # The status completion reported; an outage leaves it the last one seen.
+    assert entry["collector_status"] == "queued"
+    # Never checked again once timed out.
+    assert len(controls.collector.status_requests) == checks
+    [line] = report_lines(capsys, request.handover_id())
+    assert "timed_out" in line and submission_id in line, line
+
+
+def test_a_final_status_found_after_a_long_absence_is_still_stored(
+    submitting_module,
+):
+    """An emitter started days later checks once more before the limit
+    applies, so a result the collector holds is never thrown away."""
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    controls.collector.finish(submission_id, "succeeded", result={})
+
+    check_after(controls, 3 * DAY_SECONDS)
+
+    assert collector_receipt(controls, request)["status"] == "succeeded"
