@@ -32,6 +32,7 @@ No call raises into the build: not because the emitter is missing, slow or refus
 | Telemetry event | `client.telemetry.stage(...)`, `transition_stage`, `progress`, `calibration_progress`, `fail`, `refuse`, `complete`, `emit` (each one `emit_telemetry`) | `telemetry` |
 | Staging run files under `runs/<run_id>/` | `stage_run_files(StageRunFiles(...))`, `run_files_receipt`, `read_back_run_files` | `huggingface` |
 | Staged dataset bundle, each file with its role | `stage_dataset_bundle(StageDatasetBundle(...))`, `dataset_bundle_receipt`, `check_write_access` | `huggingface` |
+| What the collector made of a bundle that carries `CollectorProvenance`: each submission's status, the collector's reason for a rejection, and its receipt (answers at once; the emitter checks in the background) | `collector_submission_receipt` | `huggingface` |
 | Release publication: release, build, whether current, files with roles | `publish_release(PublishRelease(...))`, `promote_build`, `withdraw_build`, `release_receipt` | `huggingface` |
 | Orrery inputs | `orrery_inventory`, `hand_over_orrery_inputs`, `orrery_receipt`, `retry_orrery_inputs` | `orrery` |
 
