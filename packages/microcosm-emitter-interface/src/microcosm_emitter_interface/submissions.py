@@ -95,7 +95,11 @@ class CollectorSubmission(TypedDict):
     - ``failed`` without a ``receipt``: the emitter could not submit it, and
       ``error_code`` says why (for example ``COLLECTOR_REFUSED_422``).
     - ``timed_out``: still not final a day after acceptance; the emitter
-      stopped checking. ``collector_status`` is the last status seen.
+      stopped checking. ``collector_status`` is the last status seen, and
+      ``error_code`` is ``FINAL_STATUS_TIMED_OUT``, or
+      ``COLLECTOR_REFUSED_403`` when the last check was refused because the
+      token belongs to another Hugging Face user than the one who submitted
+      it.
 
     ``collector_status`` is the collector's status for the submission
     (``awaiting_upload``, ``queued``, ``processing``, ``succeeded``,

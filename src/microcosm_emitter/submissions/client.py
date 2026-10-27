@@ -64,6 +64,11 @@ CREDENTIAL_MISSING: Final = "CREDENTIAL_MISSING"
 COLLECTOR_INTAKE_NOT_ENABLED: Final = "COLLECTOR_INTAKE_NOT_ENABLED"
 #: Completion, status or receipt found no such submission: create it again.
 SUBMISSION_NOT_FOUND: Final = "SUBMISSION_NOT_FOUND"
+#: A status or receipt request answered 403
+#: ``submission_owned_by_another_user``: the token's Hugging Face user did not
+#: create the submission. The submission keeps awaiting its final status with
+#: this code, the only 403 that does.
+OWNED_BY_ANOTHER_USER: Final = "COLLECTOR_REFUSED_403"
 #: A final status the collector reports without a rejection code.
 COLLECTOR_REJECTED: Final = "COLLECTOR_REJECTED"
 #: The contract's submission statuses, and those that are final.
@@ -525,17 +530,21 @@ class CollectorSubmissionClient:
         answer = self._settled_answer(response, names_submission=True)
         if answer.error_code == SUBMISSION_NOT_FOUND:
             return StatusCheckOutcome("pending", SUBMISSION_NOT_FOUND)
-        owned_by_another_user = (
+        if (
             response.status_code == 403
             and self._error_code(response) == "submission_owned_by_another_user"
-        )
-        if answer.status == "failed" and not owned_by_another_user:
-            # A fresh token refused by a 403 without a code, 413 or 422.
+        ):
+            # The collector has the submission, and only this token's Hugging
+            # Face user cannot read it (another emitter on the machine may run
+            # with the user's token), so checks go on, as for a refused
+            # Hugging Face token.
+            return StatusCheckOutcome(
+                AWAITING_FINAL_STATUS, OWNED_BY_ANOTHER_USER, collector_status
+            )
+        if answer.status == "failed":
+            # A fresh token refused by a 403 without a code, a 403 with
+            # another code, 413 or 422.
             return StatusCheckOutcome("failed", answer.error_code, collector_status)
-        # Includes 403 ``submission_owned_by_another_user``: the collector
-        # has the submission, and only this token's Hugging Face user cannot
-        # read it (another emitter on the machine may run with the user's
-        # token), so checks go on, as for a refused Hugging Face token.
         return StatusCheckOutcome(
             AWAITING_FINAL_STATUS,
             answer.error_code,

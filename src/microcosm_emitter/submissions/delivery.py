@@ -35,6 +35,7 @@ from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueu
 from microcosm_emitter.submissions.client import (
     AWAITING_FINAL_STATUS,
     FINAL_STATUSES,
+    OWNED_BY_ANOTHER_USER,
     CollectorSubmissionClient,
 )
 from microcosm_emitter.submissions.planning import (
@@ -338,8 +339,16 @@ class CollectorSubmissionDelivery:
             self._seconds_left(checked) <= 0
         ):
             # Checked once more at or after the limit, so a final status the
-            # collector already holds is still stored.
-            checked.update(status=TIMED_OUT, error_code=FINAL_STATUS_TIMED_OUT)
+            # collector already holds is still stored. A last check refused
+            # because the token's Hugging Face user did not submit it keeps
+            # that code: the collector has the submission and may have
+            # finished it, which FINAL_STATUS_TIMED_OUT alone would hide.
+            checked.update(
+                status=TIMED_OUT,
+                error_code=OWNED_BY_ANOTHER_USER
+                if outcome.error_code == OWNED_BY_ANOTHER_USER
+                else FINAL_STATUS_TIMED_OUT,
+            )
         return checked
 
     def _seconds_left(self, entry: Mapping[str, Any]) -> float:
