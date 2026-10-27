@@ -11,9 +11,12 @@ status is checked with the same row's leases, attempts and retries: the
 first check ``FIRST_STATUS_CHECK_SECONDS`` after acceptance, each later wait
 twice the last, up to ``MAX_STATUS_CHECK_SECONDS``. Once the collector reports
 a final status, its receipt is stored in the row's receipt, with the
-collector's reason for a ``rejected`` or ``failed`` submission. The row lives
-in the hand-over database, so an emitter that exits first leaves the checks
-to the next emitter started with that database.
+collector's reason for a ``rejected`` or ``failed`` submission. A submission
+still not final ``FINAL_STATUS_TIME_LIMIT_SECONDS`` after acceptance is
+``timed_out``. Each submission that ends ``rejected``, ``failed`` or
+``timed_out`` is reported on standard error. The row lives in the hand-over
+database, so an emitter that exits first leaves the checks to the next
+emitter started with that database.
 
 Collector submissions are off unless the module configuration switches them
 on, so an emitter release with this code changes nothing by default.
@@ -70,10 +73,18 @@ LOCAL_ERROR: Final = "LOCAL_ERROR"
 #: wait between two checks; each wait is twice the last.
 FIRST_STATUS_CHECK_SECONDS: Final = 10.0
 MAX_STATUS_CHECK_SECONDS: Final = 600.0
+#: How long after acceptance the emitter keeps checking a submission's
+#: status. The collector's recovery brings every job to a final status within
+#: three attempts or dispatches of about an hour each, so a day leaves a wide
+#: margin, including for an emitter that is not running for part of it.
+FINAL_STATUS_TIME_LIMIT_SECONDS: Final = 24 * 3600.0
+#: A submission still not final at the time limit.
+TIMED_OUT: Final = "timed_out"
+FINAL_STATUS_TIMED_OUT: Final = "FINAL_STATUS_TIMED_OUT"
 #: A submission in one of these states is never sent or checked again.
-SETTLED_SUBMISSION_STATUSES: Final = FINAL_STATUSES
+SETTLED_SUBMISSION_STATUSES: Final = FINAL_STATUSES | {TIMED_OUT}
 #: Submission states reported on standard error when the hand-over settles.
-REPORTED_SUBMISSION_STATUSES: Final = frozenset({"rejected", "failed"})
+REPORTED_SUBMISSION_STATUSES: Final = frozenset({"rejected", "failed", TIMED_OUT})
 #: One line per such submission. The emitter host shares the build's
 #: standard error, so it reaches the build's log.
 SUBMISSION_OUTCOME_MESSAGE: Final = (
@@ -313,7 +324,7 @@ class CollectorSubmissionDelivery:
                 "status_checks": 0,
                 "awaiting_final_status_since": None,
             }
-        return {
+        checked = {
             **entry,
             "status": outcome.status,
             "error_code": outcome.error_code,
@@ -323,16 +334,31 @@ class CollectorSubmissionDelivery:
             "receipt": outcome.receipt,
             "status_checks": int(entry.get("status_checks") or 0) + 1,
         }
+        if checked["status"] == AWAITING_FINAL_STATUS and (
+            self._seconds_left(checked) <= 0
+        ):
+            # Checked once more at or after the limit, so a final status the
+            # collector already holds is still stored.
+            checked.update(status=TIMED_OUT, error_code=FINAL_STATUS_TIMED_OUT)
+        return checked
 
-    @staticmethod
-    def _result(submissions: list[dict[str, Any]], waits: list[float]) -> AttemptResult:
+    def _seconds_left(self, entry: Mapping[str, Any]) -> float:
+        """How long the time limit still allows checking ``entry``."""
+        since = entry.get("awaiting_final_status_since")
+        if not isinstance(since, int | float):
+            since = self.clock()
+        return since + FINAL_STATUS_TIME_LIMIT_SECONDS - self.clock()
+
+    def _result(
+        self, submissions: list[dict[str, Any]], waits: list[float]
+    ) -> AttemptResult:
         """The hand-over's state from its submissions' states.
 
         Still sending one of them is ``pending``; then waiting for one's final
         status is ``awaiting_final_status``. Once every one is settled, the
         hand-over is ``rejected`` if the collector rejected one, else
-        ``failed`` if one failed, else ``succeeded``; ``error_code`` is that
-        submission's.
+        ``failed`` if one failed, else ``timed_out`` if one timed out, else
+        ``succeeded``; ``error_code`` is that submission's.
         """
         by_status: dict[str, list[dict[str, Any]]] = {}
         for entry in submissions:
@@ -347,19 +373,24 @@ class CollectorSubmissionDelivery:
             )
         if AWAITING_FINAL_STATUS in by_status:
             awaiting = by_status[AWAITING_FINAL_STATUS]
+            next_check = (
+                max(waits)
+                if waits
+                else min(
+                    status_check_delay(int(entry.get("status_checks") or 0))
+                    for entry in awaiting
+                )
+            )
+            # The last check falls on the time limit itself.
+            seconds_left = min(self._seconds_left(entry) for entry in awaiting)
             return AttemptResult(
                 AWAITING_FINAL_STATUS,
                 awaiting[0]["error_code"],
                 submissions,
                 retry=True,
-                retry_after=max(waits)
-                if waits
-                else min(
-                    status_check_delay(int(entry.get("status_checks") or 0))
-                    for entry in awaiting
-                ),
+                retry_after=max(0.0, min(next_check, seconds_left)),
             )
-        for final_status in ("rejected", "failed"):
+        for final_status in ("rejected", "failed", TIMED_OUT):
             if final_status in by_status:
                 return AttemptResult(
                     final_status,
