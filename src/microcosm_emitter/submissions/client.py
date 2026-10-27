@@ -112,7 +112,8 @@ class StatusCheckOutcome:
       with its ``receipt``; for ``rejected`` and ``failed``, ``rejection`` is
       the collector's ``{code, message}`` and ``error_code`` its code;
     - ``failed`` without a receipt: the collector refused the request for
-      good (``error_code`` says how);
+      good (``error_code`` says how), but never because the submission
+      belongs to another Hugging Face user, which keeps it awaiting;
     - ``pending``: the collector has no such submission
       (``SUBMISSION_NOT_FOUND``), so it is created again.
 
@@ -524,9 +525,17 @@ class CollectorSubmissionClient:
         answer = self._settled_answer(response, names_submission=True)
         if answer.error_code == SUBMISSION_NOT_FOUND:
             return StatusCheckOutcome("pending", SUBMISSION_NOT_FOUND)
-        if answer.status == "failed":
-            # 403 ``submission_owned_by_another_user``, 413 or 422.
+        owned_by_another_user = (
+            response.status_code == 403
+            and self._error_code(response) == "submission_owned_by_another_user"
+        )
+        if answer.status == "failed" and not owned_by_another_user:
+            # A fresh token refused by a 403 without a code, 413 or 422.
             return StatusCheckOutcome("failed", answer.error_code, collector_status)
+        # Includes 403 ``submission_owned_by_another_user``: the collector
+        # has the submission, and only this token's Hugging Face user cannot
+        # read it (another emitter on the machine may run with the user's
+        # token), so checks go on, as for a refused Hugging Face token.
         return StatusCheckOutcome(
             AWAITING_FINAL_STATUS,
             answer.error_code,
