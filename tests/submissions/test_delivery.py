@@ -981,3 +981,58 @@ def test_hugging_face_commits_land_during_a_held_status_check(
         assert receipt["status"] == "awaiting_final_status"
     finally:
         controls.collector.release_status_checks()
+
+
+# A submission that ends without success is reported ------------------------
+#
+# The emitter host is the build's child process and shares its standard
+# error, so a line there reaches the build's log.
+
+
+def report_lines(capsys, handover_id):
+    return [
+        line for line in capsys.readouterr().err.splitlines() if handover_id in line
+    ]
+
+
+@pytest.mark.parametrize(
+    ("final_status", "code"),
+    [("rejected", "content_mismatch"), ("failed", "worker_error")],
+)
+def test_a_submission_that_did_not_succeed_is_reported_once(
+    submitting_module, capsys, final_status, code
+):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    rejection = {"code": code, "message": f"The worker reported {code}."}
+    controls.collector.finish(submission_id, final_status, rejection=rejection)
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+    check_after(controls, 3600)
+
+    [line] = report_lines(capsys, request.handover_id())
+    for expected in (final_status, code, "calibration-diagnostics", submission_id):
+        assert expected in line, line
+
+
+def test_a_submission_the_collector_refuses_is_reported(submitting_module, capsys):
+    controls = submitting_module
+    request = bundle(controls)
+    stage(controls, request)
+    controls.collector.create_statuses = [422]
+
+    cycle(controls)
+
+    [line] = report_lines(capsys, request.handover_id())
+    assert "failed" in line and "COLLECTOR_REFUSED_422" in line, line
+
+
+def test_a_succeeded_submission_is_not_reported(submitting_module, capsys):
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    controls.collector.finish(submission_id, "succeeded", result={})
+
+    check_after(controls, FIRST_CHECK_SECONDS)
+
+    assert collector_receipt(controls, request)["status"] == "succeeded"
+    assert report_lines(capsys, request.handover_id()) == []
