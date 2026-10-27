@@ -12,6 +12,7 @@ from typing import Any
 
 from microcosm_emitter.core.auth import _collector_origin, _development_collector_url
 from microcosm_emitter.core.constants import (
+    COLLECTOR_SETTING_TYPE_ERROR,
     CONFLICTING_COLLECTOR_ORIGIN_ERROR,
     PRODUCTION_COLLECTOR_URL,
     TRUSTED_COLLECTOR_ORIGINS,
@@ -33,8 +34,13 @@ def resolve_collector_origin(
     must be a loopback URL, for tests and local development.
     ``collector_origin`` must be one of ``TRUSTED_COLLECTOR_ORIGINS``: it can
     choose among the origins this release already trusts, never a new one.
+    A setting that is not a string raises ``ValueError``, like any other
+    refused setting.
     """
 
+    for setting in (development_collector_url, collector_origin):
+        if setting is not None and not isinstance(setting, str):
+            raise ValueError(COLLECTOR_SETTING_TYPE_ERROR)
     if development_collector_url is not None and collector_origin is not None:
         raise ValueError(CONFLICTING_COLLECTOR_ORIGIN_ERROR)
     if development_collector_url is not None:

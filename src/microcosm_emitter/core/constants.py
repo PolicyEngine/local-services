@@ -55,6 +55,9 @@ UNTRUSTED_COLLECTOR_ORIGIN_ERROR: Final = (
 CONFLICTING_COLLECTOR_ORIGIN_ERROR: Final = (
     "set a development collector URL or a collector origin, not both"
 )
+COLLECTOR_SETTING_TYPE_ERROR: Final = (
+    "a development collector URL or collector origin must be a string"
+)
 COLLECTOR_RESPONSE_TOO_LARGE_ERROR: Final = "collector response exceeds 1 MiB"
 
 DEFAULT_TOKEN_LIFETIME_SECONDS: Final = 3_600
