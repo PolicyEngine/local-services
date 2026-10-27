@@ -56,8 +56,8 @@ def resolve_collector_origin(
 def configured_collector_origin(configuration: Mapping[str, Any]) -> str:
     """Return the origin a module's configuration selects.
 
-    An empty or null setting counts as unset, as modules have always treated
-    ``development_collector_url``.
+    An empty or null setting counts as unset, as the Orrery and Hugging Face
+    modules already did for ``development_collector_url``.
     """
 
     return resolve_collector_origin(
