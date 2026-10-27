@@ -1097,6 +1097,50 @@ def test_a_submission_not_final_within_a_day_times_out(
     assert "timed_out" in line and submission_id in line, line
 
 
+@pytest.mark.parametrize(
+    ("request_name", "collector_status"),
+    [("status", "queued"), ("receipt", "succeeded")],
+)
+def test_checks_refused_to_another_user_time_out_with_that_refusal(
+    submitting_module, capsys, request_name, collector_status
+):
+    """Every check answered 403 ``submission_owned_by_another_user`` (the
+    emitters running that day have another Hugging Face user's token than the
+    one that submitted it): checks go on until the day ends, and the
+    timed-out submission keeps the refusal as its code. The collector has the
+    submission and may have finished it, so ``FINAL_STATUS_TIMED_OUT`` alone
+    would hide why no final status was stored."""
+    controls = submitting_module
+    request, submission_id = accepted_bundle(controls)
+    refusals = [(403, "submission_owned_by_another_user")] * 1000
+    if request_name == "status":
+        controls.collector.status_answers = refusals
+    else:
+        controls.collector.finish(submission_id, "succeeded", result={})
+        controls.collector.receipt_answers = refusals
+
+    checked_at = status_checks_until_past_the_day(controls)
+    checks = len(controls.collector.status_requests)
+    check_after(controls, 3600)
+
+    assert checked_at[-1] == DAY_SECONDS
+    receipt = collector_receipt(controls, request)
+    assert (receipt["status"], receipt["error_code"]) == (
+        "timed_out",
+        "COLLECTOR_REFUSED_403",
+    )
+    [entry] = receipt["submissions"]
+    assert (
+        entry["status"],
+        entry["error_code"],
+        entry["collector_status"],
+        entry["receipt"],
+    ) == ("timed_out", "COLLECTOR_REFUSED_403", collector_status, None)
+    assert len(controls.collector.status_requests) == checks
+    [line] = report_lines(capsys, request.handover_id())
+    assert "timed_out" in line and "COLLECTOR_REFUSED_403" in line, line
+
+
 def test_a_final_status_found_after_a_long_absence_is_still_stored(
     submitting_module,
 ):
