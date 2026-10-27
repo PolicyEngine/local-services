@@ -268,6 +268,9 @@ SENT_BY: dict[str, Callable[[EmitterClient, Path], Any]] = {
     "huggingface-handover-receipt": lambda client, directory: (
         client.dataset_bundle_receipt("fixture-handover")
     ),
+    "huggingface-collector-submission-receipt": lambda client, directory: (
+        client.collector_submission_receipt("fixture-handover")
+    ),
     "huggingface-check-write-access": lambda client, directory: (
         client.check_write_access(FIXTURE_PRIVATE_REPOSITORY)
     ),
@@ -364,6 +367,7 @@ def test_calls_for_a_module_the_emitter_did_not_load_are_not_sent(tmp_path):
         )
     )
     assert client.telemetry.complete() is False
+    assert client.collector_submission_receipt("fixture-handover") is None
     assert transport.requests == []
     receipt = client.orrery_receipt("fixture-publication")
     assert receipt["status"] == "pending"

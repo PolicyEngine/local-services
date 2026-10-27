@@ -46,6 +46,9 @@ RELEASED_FIXTURE_DIGESTS = {
     "protocol-v1/huggingface-withdraw-build.json": (
         "ad15257013d831c5830818668b222a12c0c8b53c5236ac0ff9733bbfd76c98be"
     ),
+    "protocol-v1/huggingface-collector-submission-receipt.json": (
+        "b78d274efc46d60d9b3bd02033f87807967434cc1cf4511998702bbad936bcdb"
+    ),
     "protocol-v1/huggingface-check-write-access.json": (
         "750b7eb8c7c9ea4112bb60560522d3b1591c6c9838239a5a54d72f90c095a631"
     ),

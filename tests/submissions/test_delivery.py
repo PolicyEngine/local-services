@@ -1109,3 +1109,78 @@ def test_a_final_status_found_after_a_long_absence_is_still_stored(
     check_after(controls, 3 * DAY_SECONDS)
 
     assert collector_receipt(controls, request)["status"] == "succeeded"
+
+
+# What a build reads ---------------------------------------------------------
+
+
+class ModuleTransport:
+    """Answers an interface client's queries with the module, in this thread,
+    as the emitter host would over its socket."""
+
+    def __init__(self, module) -> None:
+        self.module = module
+
+    def send(self, module, message, *, timeout=None):
+        raise AssertionError("collector receipts are queries")
+
+    def query(self, module, message, *, timeout=None):
+        assert module == "huggingface"
+        return self.module.query(dict(message))
+
+    def close(self) -> None:
+        pass
+
+
+def build_client(controls):
+    """The interface client a build holds, answered by this module."""
+    from pathlib import Path
+
+    from microcosm_emitter_interface.client import EmitterClient
+    from microcosm_emitter_interface.launcher import EmitterProcess
+
+    return EmitterClient(
+        EmitterProcess(
+            process=None,
+            transport=ModuleTransport(controls.module),
+            runtime_directory=Path("/nonexistent"),
+            description={"modules": ["huggingface"], "protocol_versions": [1]},
+        )
+    )
+
+
+def test_a_build_reads_each_state_of_its_submissions_at_once(submitting_module):
+    """The build asks; the answer comes from the queue without waiting for
+    any status check."""
+    controls = submitting_module
+    client = build_client(controls)
+    request, submission_id = accepted_bundle(controls)
+    awaiting = client.collector_submission_receipt(request.handover_id())
+    rejection = {"code": "content_mismatch", "message": "Bytes differ."}
+    controls.collector.finish(submission_id, "rejected", rejection=rejection)
+    check_after(controls, FIRST_CHECK_SECONDS)
+
+    rejected = client.collector_submission_receipt(request.handover_id())
+
+    assert (awaiting["status"], awaiting["submissions"][0]["collector_status"]) == (
+        "awaiting_final_status",
+        "queued",
+    )
+    assert (rejected["status"], rejected["error_code"]) == (
+        "rejected",
+        "content_mismatch",
+    )
+    [entry] = rejected["submissions"]
+    assert entry["rejection"] == rejection
+    assert entry["receipt"]["submission_id"] == submission_id
+
+
+def test_a_build_reads_nothing_when_submissions_are_off(default_module):
+    controls = default_module
+    request = bundle(controls)
+    stage(controls, request)
+
+    assert (
+        build_client(controls).collector_submission_receipt(request.handover_id())
+        is None
+    )
