@@ -5,13 +5,16 @@ The collector's artifact intake (PolicyEngine/microcosm-collector,
 submission. A bundle hand-over says so with ``CollectorProvenance``; without
 it, the bundle goes only to Hugging Face. The emitter submits only while its
 collector submissions are switched on.
+
+``CollectorSubmissionReceipt`` is what ``EmitterClient.collector_submission_receipt``
+answers: the emitter's latest record of what the collector made of a bundle.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal, NotRequired, TypedDict
 
 from microcosm_emitter_interface.identifiers import safe_identifier
 
@@ -61,3 +64,88 @@ class CollectorProvenance:
             "licensed_data": self.licensed_data,
             "release": self.release,
         }
+
+
+class CollectorRejection(TypedDict):
+    """The collector's reason for a ``rejected`` or ``failed`` submission.
+
+    The collector's own codes are ``stored_object_mismatch``,
+    ``content_mismatch`` and ``object_missing`` (``rejected``), and
+    ``worker_error``, ``attempts_exhausted`` and ``worker_unavailable``
+    (``failed``); a worker handler may use its own.
+    """
+
+    code: str
+    message: str
+
+
+class CollectorSubmission(TypedDict):
+    """One submission of a bundle: ``calibration-diagnostics`` or
+    ``orrery-inputs``.
+
+    ``status``:
+
+    - ``pending``: not yet accepted; the emitter retries it.
+    - ``awaiting_final_status``: completion accepted it; the emitter checks
+      its status in the background.
+    - ``succeeded``, ``rejected`` or ``failed`` with a ``receipt``: the
+      collector's final status, and its receipt. For ``rejected`` and
+      ``failed``, ``rejection`` holds the collector's reason and
+      ``error_code`` its code.
+    - ``failed`` without a ``receipt``: the emitter could not submit it, and
+      ``error_code`` says why (for example ``COLLECTOR_REFUSED_422``).
+    - ``timed_out``: still not final a day after acceptance; the emitter
+      stopped checking. ``collector_status`` is the last status seen.
+
+    ``collector_status`` is the collector's status for the submission
+    (``awaiting_upload``, ``queued``, ``processing``, ``succeeded``,
+    ``rejected`` or ``failed``) as last reported.
+    """
+
+    kind: str
+    status: Literal[
+        "pending",
+        "awaiting_final_status",
+        "succeeded",
+        "rejected",
+        "failed",
+        "timed_out",
+    ]
+    error_code: str | None
+    submission_id: str | None
+    collector_status: str | None
+    rejection: NotRequired[CollectorRejection | None]
+    receipt: NotRequired[dict[str, Any] | None]
+    status_checks: NotRequired[int]
+    #: When completion accepted it, in seconds since the epoch on the
+    #: emitter's clock.
+    awaiting_final_status_since: NotRequired[float | None]
+
+
+class CollectorSubmissionReceipt(TypedDict):
+    """The emitter's latest record of a bundle hand-over's collector submissions.
+
+    ``status`` sums up its ``submissions``: ``pending`` while one is still
+    being sent, then ``awaiting_final_status`` while the emitter checks one's
+    status. Once every one is settled it is ``rejected`` if the collector
+    rejected one, else ``failed`` if one failed, else ``timed_out`` if one
+    timed out, else ``succeeded``; ``error_code`` is then that submission's.
+    ``skipped`` means nothing was sent: Hugging Face refused the bundle
+    (``NOT_STAGED_ON_HUGGING_FACE``), or its folder is longer than the
+    collector accepts (``COLLECTOR_FOLDER_TOO_LONG``).
+    """
+
+    handover_id: str
+    destination: Literal["collector"]
+    status: Literal[
+        "pending",
+        "awaiting_final_status",
+        "succeeded",
+        "rejected",
+        "failed",
+        "timed_out",
+        "skipped",
+    ]
+    error_code: str | None
+    attempts: int
+    submissions: list[CollectorSubmission]

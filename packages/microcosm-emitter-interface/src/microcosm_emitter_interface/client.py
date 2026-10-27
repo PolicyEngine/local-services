@@ -76,6 +76,7 @@ from microcosm_emitter_interface.staging import (
     unavailable_read_back,
     unavailable_run_files_receipt,
 )
+from microcosm_emitter_interface.submissions import CollectorSubmissionReceipt
 from microcosm_emitter_interface.telemetry import (
     TelemetryCommand,
     TelemetryRecorder,
@@ -476,6 +477,34 @@ class EmitterClient:
 
     def dataset_bundle_receipt(self, handover_id: str) -> DatasetBundleReceipt | None:
         return cast(DatasetBundleReceipt | None, self._handover_receipt(handover_id))
+
+    def collector_submission_receipt(
+        self, handover_id: str
+    ) -> CollectorSubmissionReceipt | None:
+        """What the collector made of a bundle's submissions, so far.
+
+        The emitter submits a bundle that carries ``CollectorProvenance`` after
+        its Hugging Face commit, then checks each submission's status in the
+        background until it is final. This call answers at once from the
+        emitter's queue and never waits for either: a ``rejected`` or
+        ``failed`` receipt carries the collector's reason. ``None`` when
+        collector submissions are off, the bundle described no build or named
+        no file the collector takes, or no emitter answered.
+        """
+        response = self._query(
+            HUGGING_FACE_MODULE,
+            lambda: {
+                "protocol_version": PROTOCOL_VERSION,
+                "command": "collector_submission_receipt",
+                "handover_id": handover_id,
+            },
+            kind="collector_submission",
+            timeout=STAGING_REQUEST_TIMEOUT_SECONDS,
+        )
+        value = None if response is None else response.get("receipt")
+        return (
+            cast(CollectorSubmissionReceipt, value) if isinstance(value, dict) else None
+        )
 
     def check_write_access(self, repository: str) -> WriteAccess:
         """Whether the build's credential can reach and write ``repository``."""
