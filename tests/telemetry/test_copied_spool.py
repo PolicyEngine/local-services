@@ -293,7 +293,12 @@ def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
 
 @pytest.mark.parametrize(
     ("failure", "expected_exit_code"),
-    [("no login", 3), ("login refused", 4), ("collector unreachable", 5)],
+    [
+        ("no login", 3),
+        ("login refused", 4),
+        ("unsendable login", 4),
+        ("collector unreachable", 5),
+    ],
 )
 def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     collector,
@@ -312,6 +317,8 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
         monkeypatch.delenv("HF_TOKEN")
     elif failure == "login refused":
         collector.exchange_status = 403
+    elif failure == "unsendable login":
+        monkeypatch.setenv("HF_TOKEN", f"{OPERATOR_LOGIN} pasted twice")
     else:
         collector_url = UNREACHABLE_COLLECTOR_URL
     capsys.readouterr()
@@ -324,6 +331,10 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     assert exit_code == expected_exit_code
     assert output.out == ""
     assert output.err.strip()
+    if failure == "unsendable login":
+        # Never sent, so not refused by the collector.
+        assert "an HTTP header cannot carry" in output.err
+        assert OPERATOR_LOGIN not in output.err
     # A missing or refused login must not make the copy's runs local-only.
     assert hashlib.sha256(copy.read_bytes()).hexdigest() == digest
     # Nor is the copy opened for writing, which would leave a lock file beside
