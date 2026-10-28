@@ -1,6 +1,7 @@
 """Every module sends the builder's Hugging Face token to one trusted origin."""
 
 import os
+import time
 
 import pytest
 from given_token import GIVEN_COLLECTOR_TOKEN, given_token_variables, set_variables
@@ -341,3 +342,52 @@ def test_telemetry_refuses_to_start_with_an_unusable_given_token(
     assert GIVEN_COLLECTOR_TOKEN not in error
     assert GIVEN_COLLECTOR_TOKEN not in str(refusal.value)
     assert not (tmp_path / "events.sqlite3").exists()
+
+
+def test_orrery_sends_a_given_token_only_to_the_collector_and_ends_it_alone(
+    tmp_path, monkeypatch
+) -> None:
+    set_variables(monkeypatch, given_token_variables(DEVELOPMENT_COLLECTOR_URL))
+    context = ModuleContext(os.getpid())
+    telemetry = telemetry_module(
+        tmp_path, context, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    # The Orrery module gets its credential from the collector session, and
+    # sends it to its publication origin: by default another service.
+    (tmp_path / "default").mkdir()
+    (tmp_path / "collector").mkdir()
+    publishing_elsewhere = orrery_module(
+        tmp_path / "default",
+        context,
+        development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+    )
+    publishing_to_the_collector = orrery_module(
+        tmp_path / "collector",
+        context,
+        development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+        publication_origin=DEVELOPMENT_COLLECTOR_URL,
+    )
+    modules = (telemetry, publishing_elsewhere, publishing_to_the_collector)
+    for module in modules:
+        module.initialize()
+    try:
+        assert publishing_elsewhere.delivery.credential() == ("missing", None)
+        assert publishing_to_the_collector.delivery.credential() == (
+            "ok",
+            GIVEN_COLLECTOR_TOKEN,
+        )
+
+        # Orrery received a 401: the token ends for Orrery, not for telemetry.
+        publishing_to_the_collector.delivery.invalidate_credential()
+
+        assert publishing_to_the_collector.delivery.credential() == (
+            "token_rejected",
+            None,
+        )
+        assert telemetry.delivery.session.credential() == (
+            "ok",
+            GIVEN_COLLECTOR_TOKEN,
+        )
+    finally:
+        for module in modules:
+            module.close(time.monotonic())
