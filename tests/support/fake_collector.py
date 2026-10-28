@@ -24,7 +24,9 @@ run for the Hugging Face user whose credential the token was exchanged for
 (201 again for the same user and metadata, 403 for another user, 409 for
 other metadata), and ``POST /v1/runs/{run_id}/events`` stores events by
 ``event_id`` for that user's runs (202). ``refuse_issued_tokens`` makes every
-token issued so far answer 401, as a new signing key would.
+token issued so far answer 401, as a new signing key would, and
+``telemetry_status`` answers every telemetry request with a status the tests
+choose.
 
 The exchange takes ``lifetime_seconds`` with ``telemetry:write`` only, as
 microcosm-collector's exchange for builds on other machines does, and grants
@@ -90,6 +92,8 @@ class FakeCollector:
         self.exchange_credentials: list[str] = []
         #: Registered telemetry runs: their owner and registration.
         self.runs: dict[str, dict[str, Any]] = {}
+        #: A status the tests choose for every telemetry request.
+        self.telemetry_status: int | None = None
         #: Stored telemetry events, by event ID.
         self.events: dict[str, dict[str, Any]] = {}
         #: The Hugging Face credential each issued token was exchanged for,
@@ -391,6 +395,8 @@ class FakeCollector:
         )
 
     def _telemetry(self, handler: Any, body: dict[str, Any]) -> None:
+        if self.telemetry_status is not None:
+            return self._chosen(handler, self.telemetry_status)
         scope = handler._token_scope()
         if scope is None:
             return handler._json(401, {"detail": "invalid"})

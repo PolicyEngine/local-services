@@ -476,3 +476,29 @@ def test_only_deliver_recovers_a_copy_left_with_an_unfinished_write(
         "stage_inputs",
         "write_outputs",
     ]
+
+
+def test_deliver_stops_at_its_time_limit_with_the_events_pending(
+    collector, operator_login, tmp_path, capsys
+) -> None:
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
+    collector.telemetry_status = 503
+    capsys.readouterr()
+
+    exit_code = cli.main(
+        [
+            "deliver",
+            "--spool",
+            str(copy),
+            "--time-limit-seconds",
+            "1",
+            "--development-collector-url",
+            collector.origin,
+        ]
+    )
+
+    output = capsys.readouterr()
+    assert exit_code == 5
+    assert json.loads(output.out)["runs"][0]["undelivered_events"] == 2
+    # The limit bounds the whole delivery, whether the collector answers or not.
+    assert "at the time limit (--time-limit-seconds 1)" in output.err
