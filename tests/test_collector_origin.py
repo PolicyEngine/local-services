@@ -83,10 +83,14 @@ def submission_session_origins(monkeypatch) -> list[str]:
 
 
 def test_every_trusted_origin_is_a_bare_https_origin() -> None:
+    # A module configuration can select any trusted origin, the Cloud Run
+    # address included, with or without a trailing slash.
     for trusted_origin in TRUSTED_COLLECTOR_ORIGINS:
-        assert resolve_collector_origin(collector_origin=trusted_origin) == (
-            trusted_origin
-        )
+        for value in (trusted_origin, trusted_origin + "/"):
+            assert resolve_collector_origin(collector_origin=value) == trusted_origin
+            assert configured_collector_origin({"collector_origin": value}) == (
+                trusted_origin
+            )
 
 
 def test_configured_origin_outside_the_trusted_set_is_refused() -> None:
@@ -110,16 +114,6 @@ def test_configured_origin_must_be_an_origin_even_when_its_host_is_trusted() -> 
     with pytest.raises(ValueError, match=COLLECTOR_URL_HTTPS_ERROR):
         resolve_collector_origin(
             collector_origin=CLOUD_RUN_COLLECTOR_URL.replace("https://", "http://")
-        )
-
-
-def test_a_build_can_still_select_the_cloud_run_address() -> None:
-    for value in (CLOUD_RUN_COLLECTOR_URL, CLOUD_RUN_COLLECTOR_URL + "/"):
-        assert resolve_collector_origin(collector_origin=value) == (
-            CLOUD_RUN_COLLECTOR_URL
-        )
-        assert configured_collector_origin({"collector_origin": value}) == (
-            CLOUD_RUN_COLLECTOR_URL
         )
 
 
@@ -159,6 +153,7 @@ def test_empty_module_settings_count_as_unset() -> None:
             CLOUD_RUN_COLLECTOR_URL,
         ),
     ],
+    ids=["default origin", "cloud run address"],
 )
 def test_modules_treat_an_empty_development_url_as_unset(
     tmp_path, settings, expected_origin
