@@ -2,7 +2,8 @@
 
 An emitter without a Hugging Face credential, such as one in a Modal
 container, can be given a telemetry-only collector token instead, through
-the variables named in ``core.constants``; ``CollectorSession`` then uses it.
+the variables named in ``core.constants``; ``CollectorSession`` then uses it,
+and sends it only to the collector it was obtained from.
 """
 
 from __future__ import annotations

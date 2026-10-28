@@ -29,7 +29,7 @@ from microcosm_emitter.compatibility import (
 DISTRIBUTION_NAME = "microcosm-emitter"
 
 #: Exit codes of `telemetry-token`, one per kind of failure; 2 is a usage
-#: error, as for every command.
+#: error, as for every command, and 7 any error the others do not name.
 EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
@@ -112,8 +112,9 @@ def _add_development_collector_url(parser: argparse.ArgumentParser) -> None:
 def telemetry_token(arguments: argparse.Namespace) -> int:
     """Print a telemetry token, its expiry and the collector origin as JSON.
 
-    The token goes to standard output only; a failure prints one line on
-    standard error, without the token or the collector's answer body.
+    The token goes to standard output only. A failure prints one line on
+    standard error, without the token, the Hugging Face credential or the
+    collector's answer body; ``main`` turns any other error into exit 7.
     """
     from microcosm_emitter.core.auth import (
         exchange_huggingface_credential,
