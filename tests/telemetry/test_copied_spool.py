@@ -330,3 +330,44 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     # it, even where the collector is unreachable and nothing would be written.
     assert sorted(copy.parent.iterdir()) == listing
     assert modes(copy) == (0o755, 0o644)
+
+
+def test_deliver_keeps_the_runs_pending_when_its_login_is_refused_partway(
+    collector, operator_login, tmp_path, monkeypatch, capsys
+) -> None:
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
+    exchange = auth_module._http_post
+
+    def login_revoked_after_the_first_exchange(url, *arguments, **options):
+        answer = exchange(url, *arguments, **options)
+        # Then the collector's signing key changes, so the token just issued
+        # gets 401, and the operator's Hugging Face login is revoked, so
+        # exchanging it again is refused.
+        collector.refuse_issued_tokens()
+        collector.exchange_status = 401
+        return answer
+
+    monkeypatch.setattr(
+        auth_module, "_http_post", login_revoked_after_the_first_exchange
+    )
+    capsys.readouterr()
+
+    exit_code = cli.main(
+        [
+            "deliver",
+            "--spool",
+            str(copy),
+            "--development-collector-url",
+            collector.origin,
+        ]
+    )
+
+    output = capsys.readouterr()
+    assert len(collector.exchange_requests) == 3  # the build's, then deliver's two
+    assert exit_code == 4
+    assert "refused the Hugging Face credential" in output.err
+    # The refusal is about this machine's login, not the copy's run, which
+    # stays pending for a login that works.
+    assert [
+        (run["upload_state"], run["undelivered_events"]) for run in spool_status(copy)
+    ] == [("pending", 2)]
