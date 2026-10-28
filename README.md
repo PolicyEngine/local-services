@@ -28,7 +28,7 @@ The build process imports only the adapter, not the service implementation. It s
 
 The host is never a separately started system service: such a service would not see the build's environment variables. `--skip-unavailable-modules` starts the host without requested modules that this emitter release does not install, so a newer build can still use an older emitter's modules.
 
-Only a host started by `microcosm-emitter host` answers a `hello` request on the socket. It returns the emitter version, the socket protocol versions it accepts, the modules it loaded and the requested modules it skipped (`microcosm_emitter.compatibility.HelloResponse`). A host started with `python -m microcosm_emitter.host`, as by the in-process launcher, refuses `hello` like any unknown action. `microcosm-emitter version` prints the emitter version and protocol versions as JSON. Every emitter release must keep accepting every protocol version that builds still send (`microcosm_emitter.compatibility`).
+Only a host started by `microcosm-emitter host` answers a `hello` request on the socket. It returns the emitter version, the socket protocol versions it accepts, the modules it loaded and the requested modules it skipped (`microcosm_emitter.compatibility.HelloResponse`). A host started with `python -m microcosm_emitter.host`, as by the in-process launcher, refuses `hello` like any unknown action. `microcosm-emitter version` prints the emitter version, the protocol versions and the collector origin the emitter sends to without a module setting (`collector_origin`) as JSON. Every emitter release must keep accepting every protocol version that builds still send (`microcosm_emitter.compatibility`).
 
 With `--skip-unavailable-modules`, the host still refuses to start if none of the requested modules is installed, and refuses each request to a skipped module as it refuses one to an unknown module.
 
@@ -43,6 +43,24 @@ The adapter bounds socket calls and reports telemetry failures without failing t
 The service uses the existing Hugging Face credential from the environment or local login cache. The collector validates PolicyEngine membership before issuing a short-lived write credential. Missing or rejected credentials permanently mark that producer's events as local-only. Permanent HTTP client errors when registering a run or uploading events also keep only the affected producer's records local; HTTP 408, 429, server errors and network failures remain retryable. HTTP 401 invalidates the short-lived credential for renewal. The production destination belongs to the package: by default the collector's production hostname (`PRODUCTION_COLLECTOR_URL`). A module's `collector_origin` setting can choose only among the package's trusted collector origins, `TRUSTED_COLLECTOR_ORIGINS`: the hostname and the Cloud Run address of the same production service (`CLOUD_RUN_COLLECTOR_URL`, the earlier default). No interface release passes `collector_origin` today, so rolling back the hostname needs a new emitter release. Development overrides accept loopback addresses only, and no environment variable changes the destination.
 
 The queue upgrades the existing `20261007_01` Alembic revision to `20261008_02`, adding graph-job records without changing producer sequences, event IDs or upload eligibility. Unversioned databases are rejected without schema modification. There is no raw SQL, automatic schema adoption, or parallel legacy implementation. The hosted telemetry collector and calibration dashboard do not change.
+
+## Builds on machines without a Hugging Face credential
+
+A build on Modal runs without the operator's Hugging Face credential, so its emitter cannot exchange one. Instead, the operator's workstation obtains a collector token for it when it launches the build, and passes it in three environment variables.
+
+- **On the workstation:** `microcosm-emitter telemetry-token --lifetime-seconds N` exchanges this machine's Hugging Face credential, at the collector origin that `version` prints, for a token with scope `telemetry:write` that lasts `N` seconds or as long as the collector allows (it caps the lifetime). It prints one JSON object on standard output, `{"access_token", "expires_at", "collector_origin"}`, where `expires_at` is an ISO 8601 UTC time counted from before the request, and nothing else. Each failure prints one line on standard error, never the token, and has its own exit code:
+
+  | Exit code | Meaning |
+  | --- | --- |
+  | 0 | The token is printed |
+  | 2 | A usage error, such as a lifetime below 1 or a `--development-collector-url` that is not a loopback address |
+  | 3 | No Hugging Face credential (`HF_TOKEN`, `HUGGINGFACE_TOKEN` or `hf auth login`); nothing was sent |
+  | 4 | The collector refused the credential (401, or 403 for a user outside the PolicyEngine organization) |
+  | 5 | The collector was unreachable or gave no usable token |
+  | 6 | The collector answered 422: it does not accept `lifetime_seconds`, so it predates tokens for other machines |
+
+- **On the other machine:** the launcher sets `MICROCOSM_COLLECTOR_TOKEN`, `MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT` and `MICROCOSM_COLLECTOR_ORIGIN` from that output. With them, `CollectorSession` sends that token and never reads or exchanges a Hugging Face credential; a session for another scope, such as collector submissions, has no credential. None of the variables chooses where the emitter sends: `MICROCOSM_COLLECTOR_ORIGIN` is only compared with the origin the module settings resolve, and a different origin, a missing variable or an unreadable expiry stops the telemetry module at start, with one line on standard error that names the variable.
+- **When the token stops working:** it cannot be renewed where it is used. Once it has expired, or the collector answers 401, it is not sent again, and the run stays pending with the reason `collector_token_expired` or `collector_token_rejected` (in the run's `local_only_reason` column) instead of becoming local-only. One line on standard error says so, the build continues, and the module's drain at shutdown ends at once. Any later emitter with a Hugging Face login of the same user that opens that spool delivers the run and clears the reason.
 
 ## Graph publication
 
