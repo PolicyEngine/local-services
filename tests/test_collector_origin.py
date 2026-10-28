@@ -306,8 +306,19 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
             },
             "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
         ),
+        (
+            given_token_variables(
+                DEVELOPMENT_COLLECTOR_URL, token=f"{GIVEN_COLLECTOR_TOKEN}\nsecond-part"
+            ),
+            "MICROCOSM_COLLECTOR_TOKEN",
+        ),
     ],
-    ids=["token for another collector", "incomplete variables", "unreadable expiry"],
+    ids=[
+        "token for another collector",
+        "incomplete variables",
+        "unreadable expiry",
+        "token with a line break",
+    ],
 )
 def test_telemetry_refuses_to_start_with_an_unusable_given_token(
     tmp_path, monkeypatch, capsys, variables, named_variable
@@ -321,11 +332,12 @@ def test_telemetry_refuses_to_start_with_an_unusable_given_token(
         development_collector_url=DEVELOPMENT_COLLECTOR_URL,
     )
 
-    with pytest.raises(ValueError, match=named_variable):
+    with pytest.raises(ValueError, match=named_variable) as refusal:
         module.initialize()
 
     error = capsys.readouterr().err
     assert "Microcosm telemetry cannot start" in error
     assert named_variable in error
     assert GIVEN_COLLECTOR_TOKEN not in error
+    assert GIVEN_COLLECTOR_TOKEN not in str(refusal.value)
     assert not (tmp_path / "events.sqlite3").exists()

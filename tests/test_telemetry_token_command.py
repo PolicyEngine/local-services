@@ -38,15 +38,18 @@ def operator_login(monkeypatch):
 
 
 def telemetry_token(collector_url: str, lifetime_seconds: int) -> int:
-    return cli.main(
-        [
-            "telemetry-token",
-            "--lifetime-seconds",
-            str(lifetime_seconds),
-            "--development-collector-url",
-            collector_url,
-        ]
-    )
+    try:
+        return cli.main(
+            [
+                "telemetry-token",
+                "--lifetime-seconds",
+                str(lifetime_seconds),
+                "--development-collector-url",
+                collector_url,
+            ]
+        )
+    except SystemExit as usage_error:
+        return usage_error.code
 
 
 def test_prints_a_telemetry_token_for_the_requested_lifetime(
@@ -84,12 +87,17 @@ def test_prints_a_telemetry_token_for_the_requested_lifetime(
         ("collector unreachable", 5),
         ("collector answers 503", 5),
         ("collector without lifetime_seconds (422)", 6),
+        ("lifetime below 1", 2),
+        ("development collector that is not loopback", 2),
+        # http.client's error for this header quotes the whole credential.
+        ("credential with a line break", 7),
     ],
 )
 def test_each_failure_has_its_own_exit_code_and_prints_nothing(
     collector, operator_login, monkeypatch, capsys, failure, expected_exit_code
 ) -> None:
     collector_url = collector.origin
+    lifetime_seconds = STAGE_LIFETIME_SECONDS
     if failure == "no Hugging Face login":
         monkeypatch.delenv("HF_TOKEN")
     elif failure == "credential refused with 401":
@@ -100,17 +108,23 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
         collector_url = UNREACHABLE_COLLECTOR_URL
     elif failure == "collector answers 503":
         collector.exchange_status = 503
+    elif failure == "lifetime below 1":
+        lifetime_seconds = 0
+    elif failure == "development collector that is not loopback":
+        collector_url = "https://collector.example"
+    elif failure == "credential with a line break":
+        monkeypatch.setenv("HF_TOKEN", f"{SYNTHETIC_HUGGING_FACE_TOKEN}\nsecond-part")
     else:
         collector.accepts_lifetime_seconds = False
 
-    exit_code = telemetry_token(collector_url, STAGE_LIFETIME_SECONDS)
+    exit_code = telemetry_token(collector_url, lifetime_seconds)
 
     output = capsys.readouterr()
     assert exit_code == expected_exit_code
     assert output.out == ""
     assert output.err.strip()
     assert SYNTHETIC_HUGGING_FACE_TOKEN not in output.err
-    if failure == "no Hugging Face login":
+    if expected_exit_code in {2, 3, 7}:
         assert collector.exchange_requests == []
 
 
