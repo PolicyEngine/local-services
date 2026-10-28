@@ -33,7 +33,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from microcosm_emitter.core.auth import CollectorSession
+from microcosm_emitter.core.auth import CollectorSession, SessionResult
 from microcosm_emitter.core.collector_origin import resolve_collector_origin
 from microcosm_emitter.core.constants import DRAIN_RETRY_SECONDS
 from microcosm_emitter.core.database import create_read_only_spool_engine
@@ -111,24 +111,23 @@ def _read_only_spool(path: Path) -> Iterator[Connection]:
             engine.dispose()
 
 
-#: Why ``deliver_spool`` stopped before opening the file: no Hugging Face
-#: login, a login the collector refused, or a collector it could not reach.
-LoginFailure = Literal["missing", "rejected", "unavailable"]
-
-
 @dataclass(frozen=True)
 class SpoolDelivery:
     """What ``deliver_spool`` did with a spool database.
 
     ``outcome`` is ``delivered`` once nothing this login may deliver is
     pending, ``time_limit_passed`` when the collector stayed unavailable until
-    the time limit, or the login failure that stopped it before it opened the
-    file. ``runs_of_other_users`` lists the runs the collector refused this
-    login with 403, because another Hugging Face user registered them; they
-    stay pending in the file.
+    the time limit, or ``login_failed`` when it stopped before it opened the
+    file. ``login`` is the collector session's answer for this machine's
+    login: ``ok``, or with ``login_failed`` ``missing`` (no Hugging Face
+    login), ``rejected`` or ``unavailable`` (the collector could not be
+    reached or gave no usable token). ``runs_of_other_users`` lists the runs
+    the collector refused this login with 403, because another Hugging Face
+    user registered them; they stay pending in the file.
     """
 
-    outcome: Literal["delivered", "time_limit_passed"] | LoginFailure
+    outcome: Literal["delivered", "time_limit_passed", "login_failed"]
+    login: SessionResult = "ok"
     runs_of_other_users: tuple[str, ...] = ()
 
 
@@ -226,10 +225,9 @@ def deliver_spool(
         development_collector_url=development_collector_url
     )
     session = CollectorSession(origin, use_given_token=False)
-    result, _ = session.credential()
-    match result:
-        case "missing" | "rejected" | "unavailable":
-            return SpoolDelivery(result)
+    login = session.credential()
+    if login.result != "ok":
+        return SpoolDelivery("login_failed", login.result)
     with _unreadable_spool_errors():
         spool = EventSpool(path, as_copy=True)
     try:
@@ -248,7 +246,9 @@ def deliver_spool(
                 )
         return SpoolDelivery(
             outcome,
-            tuple(sorted({run_id for run_id, _ in delivery.runs_of_other_users})),
+            runs_of_other_users=tuple(
+                sorted({run_id for run_id, _ in delivery.runs_of_other_users})
+            ),
         )
     finally:
         spool.close()

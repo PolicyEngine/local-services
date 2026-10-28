@@ -81,8 +81,10 @@ SPOOL_PERMISSION_MESSAGE: Final = (
     "`status` needs to read the file; `deliver` also needs to write it and to "
     "create files in its directory."
 )
-#: Each failure to get a collector token: its exit code, and one line for
-#: standard error, where ``{answer}`` is empty or the HTTP status.
+#: Each failure to get a collector token, by the answer of
+#: ``exchange_huggingface_credential`` (`telemetry-token`) or of the
+#: ``CollectorSession`` that calls it (`deliver`): its exit code, and one line
+#: for standard error, where ``{answer}`` is empty or the HTTP status.
 CREDENTIAL_FAILURES: Final = {
     "missing": (
         ExitCode.MISSING_CREDENTIAL,
@@ -184,11 +186,10 @@ def deliver(arguments: argparse.Namespace) -> int:
         development_collector_url=arguments.development_collector_url,
         time_limit_seconds=arguments.time_limit_seconds,
     )
-    match delivery.outcome:
-        case "missing" | "rejected" | "unavailable" as failure:
-            exit_code, message = CREDENTIAL_FAILURES[failure]
-            print(message.format(answer=""), file=sys.stderr)
-            return exit_code
+    if delivery.outcome == "login_failed":
+        exit_code, message = CREDENTIAL_FAILURES[delivery.login]
+        print(message.format(answer=""), file=sys.stderr)
+        return exit_code
     print(json.dumps({"runs": spool_status(arguments.spool)}))
     if delivery.runs_of_other_users:
         print(
