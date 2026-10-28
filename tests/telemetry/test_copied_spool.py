@@ -222,7 +222,8 @@ def test_both_commands_refuse_a_file_they_cannot_use(
     exit_code = cli.main(arguments)
 
     output = capsys.readouterr()
-    assert exit_code == 7
+    # Not 7, which `telemetry-token` returns for an unexpected failure.
+    assert exit_code == 9
     assert output.out == ""
     assert message in output.err
     assert modes(spool_path)[1] == mode
