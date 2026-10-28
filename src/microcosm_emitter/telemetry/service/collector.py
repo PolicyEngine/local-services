@@ -15,6 +15,7 @@ from microcosm_emitter.core.auth import (
 )
 from microcosm_emitter.core.collector_origin import resolve_collector_origin
 from microcosm_emitter.core.constants import (
+    GIVEN_TOKEN_UNUSABLE_MESSAGE,
     INITIAL_RETRY_SECONDS,
     LOCAL_ONLY_MISSING_CREDENTIAL,
     LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION,
@@ -22,6 +23,8 @@ from microcosm_emitter.core.constants import (
     LOCAL_ONLY_REJECTED_REGISTRATION,
     MAX_RETRY_SECONDS,
     NO_CREDENTIAL_MESSAGE,
+    PENDING_GIVEN_TOKEN_EXPIRED,
+    PENDING_GIVEN_TOKEN_REJECTED,
     REJECTED_CREDENTIAL_MESSAGE,
     RUN_EVENTS_PATH_TEMPLATE,
     RUN_REGISTRATION_PATH,
@@ -35,6 +38,12 @@ from microcosm_emitter.telemetry.service.spool import EventSpool
 _RETRYABLE_CLIENT_ERRORS = frozenset(
     {HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS}
 )
+#: Session answers for a given token that can no longer be used, and the
+#: reason each pending run records.
+_UNUSABLE_GIVEN_TOKEN_REASONS = {
+    "token_expired": PENDING_GIVEN_TOKEN_EXPIRED,
+    "token_rejected": PENDING_GIVEN_TOKEN_REJECTED,
+}
 
 
 def _permanent_client_error(status: int) -> bool:
@@ -68,6 +77,10 @@ class CollectorDelivery:
         )
         self._registered: set[str] = set()
         self._warned_no_token = False
+        #: Set once the given collector token can no longer be used: nothing
+        #: more can be delivered until an emitter with a credential runs.
+        self.waiting_for_credential = False
+        self._recorded_waiting: set[str] = set()
         self._warned_denied: set[str] = set()
         self._next_attempt_at = 0.0
         self._retry_seconds = INITIAL_RETRY_SECONDS
@@ -129,9 +142,24 @@ class CollectorDelivery:
             self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
         elif result == "rejected":
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_CREDENTIAL)
+        elif result in _UNUSABLE_GIVEN_TOKEN_REASONS:
+            self._keep_pending(registration, _UNUSABLE_GIVEN_TOKEN_REASONS[result])
         elif result != "ok":
             self._defer_retry()
         return token
+
+    def _keep_pending(self, registration: Mapping[str, Any], reason: str) -> None:
+        """Leave the run for an emitter with a credential, saying why once."""
+
+        if not self.waiting_for_credential:
+            print(GIVEN_TOKEN_UNUSABLE_MESSAGE, file=sys.stderr, flush=True)
+            self.waiting_for_credential = True
+        registration_key = _registration_key(registration)
+        if registration_key not in self._recorded_waiting:
+            self.spool.record_pending_reason(
+                str(registration["run_id"]), str(registration["producer_id"]), reason
+            )
+            self._recorded_waiting.add(registration_key)
 
     def _register(self, registration: Mapping[str, Any], token: str) -> bool:
         registration_key = _registration_key(registration)
@@ -147,6 +175,10 @@ class CollectorDelivery:
         if status == HTTPStatus.CREATED:
             self._registered.add(registration_key)
             self._retry_seconds = INITIAL_RETRY_SECONDS
+            # A run left by an emitter whose given token became unusable.
+            self.spool.record_pending_reason(
+                str(registration["run_id"]), str(registration["producer_id"]), None
+            )
             return True
         if status == HTTPStatus.UNAUTHORIZED:
             self.session.invalidate()

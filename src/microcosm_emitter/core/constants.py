@@ -61,6 +61,13 @@ LOCAL_ONLY_REJECTED_CREDENTIAL: Final = "huggingface_credential_rejected"
 LOCAL_ONLY_REJECTED_REGISTRATION: Final = "run_registration_rejected"
 LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION: Final = "collector_authorization_rejected"
 LOCAL_ONLY_PRE_ELIGIBILITY: Final = "created_before_upload_eligibility"
+# Why a pending run waits: the collector token this emitter was given has
+# expired or was refused (401), and cannot be renewed where it is used. The
+# run stays pending, so an emitter with a Hugging Face login delivers it later.
+# Stored in the run's `local_only_reason` column, which the spool database
+# already has; a successful registration clears it.
+PENDING_GIVEN_TOKEN_EXPIRED: Final = "collector_token_expired"
+PENDING_GIVEN_TOKEN_REJECTED: Final = "collector_token_rejected"
 
 NO_CREDENTIAL_MESSAGE: Final = (
     "Microcosm telemetry is local-only: no ambient Hugging Face credential was "
@@ -69,6 +76,12 @@ NO_CREDENTIAL_MESSAGE: Final = (
 REJECTED_CREDENTIAL_MESSAGE: Final = (
     "Microcosm telemetry is local-only for this run: the ambient Hugging Face "
     "credential was not accepted as a PolicyEngine organization member. The "
+    "dataset build will continue."
+)
+GIVEN_TOKEN_UNUSABLE_MESSAGE: Final = (
+    "Microcosm telemetry is waiting: the collector token this emitter was given "
+    "has expired or was refused, and it cannot be renewed here. Queued events "
+    "stay pending for delivery by an emitter with a Hugging Face login. The "
     "dataset build will continue."
 )
 COLLECTOR_URL_HTTPS_ERROR: Final = "collector URL must be an HTTPS origin"

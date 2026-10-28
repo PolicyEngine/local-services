@@ -131,6 +131,9 @@ class TelemetryModule:
             if self.delivery is not None:
                 while time.monotonic() < deadline and self.spool.has_deliverable():
                     if not self.delivery.flush_once():
+                        if self.delivery.waiting_for_credential:
+                            # Nothing more can be delivered from here.
+                            break
                         time.sleep(
                             min(
                                 DRAIN_RETRY_SECONDS, max(0, deadline - time.monotonic())
