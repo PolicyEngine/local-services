@@ -18,13 +18,16 @@ import sys
 import time
 from datetime import UTC, datetime
 from importlib.metadata import version
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from microcosm_emitter.compatibility import (
     SUPPORTED_PROTOCOL_VERSIONS,
     EmitterDescription,
     VersionReport,
 )
+
+if TYPE_CHECKING:
+    from microcosm_emitter.core.auth import ExchangeFailureResult
 
 DISTRIBUTION_NAME = "microcosm-emitter"
 
@@ -35,7 +38,10 @@ EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
 EXIT_LIFETIME_UNSUPPORTED: Final = 6
 EXIT_UNEXPECTED_FAILURE: Final = 7
-TELEMETRY_TOKEN_FAILURES: Final = {
+#: Each exchange that gave no token: its exit code, and one line for standard
+#: error. The scope is `telemetry:write`, so ``intake_unavailable`` does not
+#: occur.
+TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = {
     "missing": (
         EXIT_MISSING_CREDENTIAL,
         "No Hugging Face credential was found: set HF_TOKEN or HUGGINGFACE_TOKEN, "
@@ -117,6 +123,7 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     collector's answer body; ``main`` turns any other error into exit 7.
     """
     from microcosm_emitter.core.auth import (
+        ExchangeFailure,
         exchange_huggingface_credential,
         huggingface_token,
     )
@@ -131,7 +138,7 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
         scope=TELEMETRY_SCOPE,
         lifetime_seconds=arguments.lifetime_seconds,
     )
-    if exchange.result != "ok":
+    if isinstance(exchange, ExchangeFailure):
         exit_code, message = TELEMETRY_TOKEN_FAILURES[exchange.result]
         answer = "no answer" if exchange.status is None else f"HTTP {exchange.status}"
         print(message.format(answer=answer), file=sys.stderr)

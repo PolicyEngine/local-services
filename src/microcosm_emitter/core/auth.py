@@ -183,9 +183,8 @@ def given_collector_token(
     return GivenCollectorToken(access_token, expiry.timestamp(), origin.rstrip("/"))
 
 
-#: What one exchange of a Hugging Face credential gave.
-ExchangeResult = Literal[
-    "ok",
+#: Why an exchange of a Hugging Face credential gave no token.
+ExchangeFailureResult = Literal[
     "missing",
     "rejected",
     "unavailable",
@@ -195,22 +194,34 @@ ExchangeResult = Literal[
 
 
 @dataclass(frozen=True)
-class TokenExchange:
-    """The collector's answer to one exchange of a Hugging Face credential.
+class ExchangedToken:
+    """A usable answer to an exchange: a 200 with a non-empty ``access_token``
+    and a positive whole number of seconds, ``expires_in``. Its repr leaves
+    the token out."""
 
-    ``result`` is ``ok``; ``missing`` (no Hugging Face credential, so nothing
-    was sent); ``rejected`` (401 or 403); ``intake_unavailable`` (the
-    collector has no intake for the requested scope: 404, or a 200 for
-    another scope); ``lifetime_unsupported`` (422 to ``lifetime_seconds``:
-    the collector's strict exchange body predates it); or ``unavailable`` (no
-    answer, or an answer without a usable token). Only ``ok`` carries
-    ``access_token`` and ``expires_in``.
+    access_token: str = field(repr=False)
+    expires_in: int
+
+
+@dataclass(frozen=True)
+class ExchangeFailure:
+    """An exchange of a Hugging Face credential that gave no token.
+
+    ``result`` is ``missing`` (no Hugging Face credential, so nothing was
+    sent); ``rejected`` (401 or 403); ``intake_unavailable`` (the collector
+    has no intake for the requested scope: 404, or a 200 for another scope);
+    ``lifetime_unsupported`` (422 to ``lifetime_seconds``: the collector's
+    strict exchange body predates it); or ``unavailable`` (no answer, or an
+    answer without a usable token). ``status`` is the collector's HTTP
+    status, or ``None`` when it did not answer.
     """
 
-    result: ExchangeResult
+    result: ExchangeFailureResult
     status: int | None = None
-    access_token: str | None = field(default=None, repr=False)
-    expires_in: int | None = None
+
+
+#: The collector's answer to one exchange of a Hugging Face credential.
+TokenExchange = ExchangedToken | ExchangeFailure
 
 
 def exchange_huggingface_credential(
@@ -231,7 +242,7 @@ def exchange_huggingface_credential(
     """
 
     if not hugging_face_token:
-        return TokenExchange("missing")
+        return ExchangeFailure("missing")
     body: dict[str, Any] = {} if scope is None else {"scope": scope}
     if lifetime_seconds is not None:
         body["lifetime_seconds"] = lifetime_seconds
@@ -240,18 +251,18 @@ def exchange_huggingface_credential(
             origin + TOKEN_EXCHANGE_PATH, body, hugging_face_token
         )
     except (OSError, TimeoutError):
-        return TokenExchange("unavailable")
+        return ExchangeFailure("unavailable")
     if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
-        return TokenExchange("rejected", status)
+        return ExchangeFailure("rejected", status)
     if lifetime_seconds is not None and status == HTTPStatus.UNPROCESSABLE_ENTITY:
-        return TokenExchange("lifetime_unsupported", status)
+        return ExchangeFailure("lifetime_unsupported", status)
     if scope not in (None, TELEMETRY_SCOPE) and (
         status == HTTPStatus.NOT_FOUND
         or (status == HTTPStatus.OK and answer.get("scope") != scope)
     ):
         # A collector released before intake answers 200 with a
         # telemetry:write token, and one with intake switched off 404.
-        return TokenExchange("intake_unavailable", status)
+        return ExchangeFailure("intake_unavailable", status)
     access_token = answer.get("access_token")
     expires_in = answer.get("expires_in")
     if (
@@ -261,8 +272,8 @@ def exchange_huggingface_credential(
         or type(expires_in) is not int
         or expires_in <= 0
     ):
-        return TokenExchange("unavailable", status)
-    return TokenExchange("ok", status, access_token, expires_in)
+        return ExchangeFailure("unavailable", status)
+    return ExchangedToken(access_token, expires_in)
 
 
 #: What ``CollectorSession.credential()`` answers. ``token_expired`` and
@@ -276,6 +287,16 @@ SessionResult = Literal[
     "token_expired",
     "token_rejected",
 ]
+#: The session's answer to each exchange that gave no token. The session
+#: never asks for a lifetime, so ``lifetime_unsupported`` does not occur; it
+#: would count as an answer without a usable token.
+_FAILED_EXCHANGE_ANSWERS: dict[ExchangeFailureResult, SessionResult] = {
+    "missing": "missing",
+    "rejected": "rejected",
+    "unavailable": "unavailable",
+    "intake_unavailable": "intake_unavailable",
+    "lifetime_unsupported": "unavailable",
+}
 
 
 class SessionCredential(NamedTuple):
@@ -355,12 +376,11 @@ class CollectorSession:
             exchange = exchange_huggingface_credential(
                 self.origin, self._credential(), scope=self.scope, post=self._post
             )
-            if exchange.result != "ok":
-                return SessionCredential(exchange.result)
-            token = exchange.access_token
+            if isinstance(exchange, ExchangeFailure):
+                return SessionCredential(_FAILED_EXCHANGE_ANSWERS[exchange.result])
             lifetime = max(MINIMUM_TOKEN_LIFETIME_SECONDS, exchange.expires_in)
-            self._session_token = (token, time.monotonic() + lifetime)
-            return SessionCredential("ok", token)
+            self._session_token = (exchange.access_token, time.monotonic() + lifetime)
+            return SessionCredential("ok", exchange.access_token)
 
     def _given_credential(self, given: GivenCollectorToken) -> SessionCredential:
         if (
