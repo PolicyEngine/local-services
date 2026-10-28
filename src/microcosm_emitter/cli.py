@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from datetime import UTC, datetime
 from importlib.metadata import version
 from typing import Final
 
@@ -106,20 +108,32 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     The token goes to standard output only; a failure prints one line on
     standard error, without the token or the collector's answer body.
     """
-    from microcosm_emitter.core.auth import exchange_telemetry_token
+    from microcosm_emitter.core.auth import (
+        exchange_huggingface_credential,
+        huggingface_token,
+    )
+    from microcosm_emitter.core.constants import TELEMETRY_SCOPE
 
     origin = arguments.collector_origin or _collector_origin(None)
-    exchange = exchange_telemetry_token(origin, arguments.lifetime_seconds)
+    # Counted from before the request, so it never overstates the expiry.
+    requested_at = time.time()
+    exchange = exchange_huggingface_credential(
+        origin,
+        huggingface_token(),
+        scope=TELEMETRY_SCOPE,
+        lifetime_seconds=arguments.lifetime_seconds,
+    )
     if exchange.result != "ok":
         exit_code, message = TELEMETRY_TOKEN_FAILURES[exchange.result]
         answer = "no answer" if exchange.status is None else f"HTTP {exchange.status}"
         print(message.format(answer=answer), file=sys.stderr)
         return exit_code
+    expires_at = datetime.fromtimestamp(requested_at + exchange.expires_in, UTC)
     print(
         json.dumps(
             {
                 "access_token": exchange.access_token,
-                "expires_at": exchange.expires_at,
+                "expires_at": expires_at.isoformat(timespec="seconds"),
                 "collector_origin": origin,
             }
         )
