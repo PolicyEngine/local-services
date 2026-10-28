@@ -13,6 +13,7 @@ from fake_collector import FakeCollector
 
 from microcosm_emitter import cli
 from microcosm_emitter.core import auth as auth_module
+from microcosm_emitter.core.auth import CollectorSession
 
 SYNTHETIC_HUGGING_FACE_TOKEN = "hf_synthetic_operator_token"
 STAGE_LIFETIME_SECONDS = 18 * 3600
@@ -111,3 +112,26 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
     assert SYNTHETIC_HUGGING_FACE_TOKEN not in output.err
     if failure == "no Hugging Face login":
         assert collector.exchange_requests == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"access_token": "", "expires_in": 3600},
+        {"access_token": "session-token"},
+        {"access_token": "session-token", "expires_in": 0},
+        {"access_token": "session-token", "expires_in": "3600"},
+    ],
+    ids=["empty token", "no lifetime", "zero lifetime", "lifetime as text"],
+)
+def test_a_token_answer_without_a_token_and_a_lifetime_is_unusable(
+    collector, operator_login, capsys, answer
+) -> None:
+    collector.exchange_answer = answer
+
+    exit_code = telemetry_token(collector.origin, STAGE_LIFETIME_SECONDS)
+
+    assert exit_code == 5
+    assert capsys.readouterr().out == ""
+    # The emitter's own sessions check an exchange answer the same way.
+    assert CollectorSession(collector.origin).credential() == ("unavailable", None)
