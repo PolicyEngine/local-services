@@ -1,5 +1,6 @@
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -7,7 +8,8 @@ import pytest
 from alembic import command
 from sqlalchemy.orm import Session
 
-from microcosm_emitter.core.auth import _development_collector_url
+from microcosm_emitter.core import auth as auth_module
+from microcosm_emitter.core.auth import CollectorSession, _development_collector_url
 from microcosm_emitter.core.constants import (
     PRODUCTION_COLLECTOR_URL,
 )
@@ -49,6 +51,31 @@ def _registration(run_id: str = "run-a") -> dict[str, object]:
         candidate_id="candidate-a",
         producer_id="producer-a",
     ).as_registration()
+
+
+DEVELOPMENT_COLLECTOR_URL = "http://127.0.0.1:8080"
+GIVEN_COLLECTOR_TOKEN = "synthetic-telemetry-token"
+
+
+def _given_token_environment(
+    monkeypatch, *, expires_in: timedelta = timedelta(hours=18)
+) -> None:
+    """The variables the Modal runner sets from `telemetry-token`'s output."""
+    expires_at = datetime.now(UTC) + expires_in
+    monkeypatch.setenv("MICROCOSM_COLLECTOR_TOKEN", GIVEN_COLLECTOR_TOKEN)
+    monkeypatch.setenv(
+        "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT", expires_at.isoformat(timespec="seconds")
+    )
+    monkeypatch.setenv("MICROCOSM_COLLECTOR_ORIGIN", DEVELOPMENT_COLLECTOR_URL)
+
+
+def _no_hugging_face_credential(monkeypatch) -> None:
+    def refuse() -> str:
+        raise AssertionError("read the Hugging Face credential")
+
+    monkeypatch.setattr(collector_module, "huggingface_token", refuse)
+    monkeypatch.setattr(auth_module, "huggingface_token", refuse)
+    monkeypatch.setattr(auth_module, "get_token", refuse)
 
 
 def _event(stage_id: str = "compile_targets") -> dict[str, object]:
@@ -247,6 +274,43 @@ def test_collector_delivery_exchanges_hf_token_then_flushes(
     assert requests[2][2] == "collector-token"
     assert requests[2][1] == {"events": [queued]}
     assert not spool.has_pending()
+
+
+def test_a_given_collector_token_replaces_the_hugging_face_exchange(
+    tmp_path, monkeypatch
+) -> None:
+    spool = EventSpool(tmp_path / "events.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    requests: list[tuple[str, str]] = []
+    _given_token_environment(monkeypatch)
+    _no_hugging_face_credential(monkeypatch)
+
+    def fake_post(url, payload, token, *, timeout=5.0):
+        requests.append((url.removeprefix(DEVELOPMENT_COLLECTOR_URL), token))
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", fake_post)
+    try:
+        delivery = CollectorDelivery(
+            spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+        )
+        assert delivery.flush_once()
+        assert requests == [
+            ("/v1/runs", GIVEN_COLLECTOR_TOKEN),
+            ("/v1/runs/run-a/events", GIVEN_COLLECTOR_TOKEN),
+        ]
+        assert spool.batch("run-a", "producer-a") == []
+        # The token only writes telemetry: a session for another scope, such
+        # as collector submissions, has no credential rather than reading the
+        # Hugging Face one.
+        submissions = CollectorSession(
+            DEVELOPMENT_COLLECTOR_URL, scope="artifacts:submit"
+        )
+        assert submissions.credential() == ("missing", None)
+    finally:
+        spool.close()
 
 
 def test_non_org_credential_keeps_event_local(tmp_path, monkeypatch, capsys) -> None:
