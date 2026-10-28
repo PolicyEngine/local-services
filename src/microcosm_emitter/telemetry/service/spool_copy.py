@@ -8,11 +8,15 @@ copy on the operator's workstation.
 
 Opening a spool with ``EventSpool`` migrates it and prunes it: events older
 than the retention period, and the oldest beyond the size limit, are deleted.
-So ``spool_status`` reads a copy in SQLite's read-only mode, changing nothing.
+So ``spool_status`` reads a copy in SQLite's read-only mode, changing nothing,
+and ``deliver_spool`` opens it without pruning: an event leaves the copy only
+when the collector acknowledges it. A copy may be delivered long after it was
+made, from any directory: the spool records no paths for telemetry.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TypedDict
 
@@ -21,9 +25,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from microcosm_emitter.core.auth import CollectorSession
+from microcosm_emitter.core.collector_origin import resolve_collector_origin
+from microcosm_emitter.core.constants import DRAIN_RETRY_SECONDS
 from microcosm_emitter.core.database import create_read_only_spool_engine
 from microcosm_emitter.core.migrations import require_known_revision
 from microcosm_emitter.core.models import TelemetryEventRecord, TelemetryRunRecord
+from microcosm_emitter.telemetry.service.collector import CollectorDelivery
+from microcosm_emitter.telemetry.service.spool import EventSpool
 
 
 class RunStatus(TypedDict):
@@ -76,3 +85,53 @@ def spool_status(path: Path) -> list[RunStatus]:
         raise UnreadableSpoolError(type(error).__name__) from None
     finally:
         engine.dispose()
+
+
+def deliver_spool(
+    path: Path,
+    *,
+    development_collector_url: str | None = None,
+    time_limit_seconds: float,
+) -> str:
+    """Deliver the pending runs of the spool database at ``path``.
+
+    It sends to the collector origin the emitter resolves, or to a loopback
+    ``development_collector_url``. It uses this machine's Hugging Face login,
+    never a collector token given to builds in the environment, and exchanges
+    it before opening the spool: a missing (``missing``), refused
+    (``rejected``) or unexchangeable (``unavailable``) login returns at once
+    and leaves the file unchanged, so its runs never become local-only for
+    want of a login here. The collector accepts a run registered on another
+    machine again from the same Hugging Face user, and counts events it
+    already has as duplicates.
+
+    Returns ``delivered`` once no pending event remains, or ``pending`` when
+    the collector was unavailable until ``time_limit_seconds`` passed.
+    """
+
+    origin = resolve_collector_origin(
+        development_collector_url=development_collector_url
+    )
+    session = CollectorSession(origin, environment={})
+    result, _ = session.credential()
+    if result != "ok":
+        return result
+    try:
+        spool = EventSpool(path, prune_on_open=False)
+    except (SQLAlchemyError, CommandError, RuntimeError, OSError) as error:
+        raise UnreadableSpoolError(type(error).__name__) from None
+    try:
+        delivery = CollectorDelivery(
+            spool, session=session, development_collector_url=development_collector_url
+        )
+        deadline = time.monotonic() + time_limit_seconds
+        while spool.has_deliverable():
+            if time.monotonic() >= deadline:
+                return "pending"
+            if not delivery.flush_once():
+                time.sleep(
+                    min(DRAIN_RETRY_SECONDS, max(0, deadline - time.monotonic()))
+                )
+        return "delivered"
+    finally:
+        spool.close()

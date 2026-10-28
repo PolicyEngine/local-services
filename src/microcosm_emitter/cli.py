@@ -8,7 +8,8 @@ user, including any Hugging Face credential. It is never a system service.
 launches a build on a machine without a Hugging Face credential, such as
 Modal: it obtains a collector token that can only write telemetry, for the
 emitter on that machine. `microcosm-emitter status --spool` reports on a
-spool database copied back from that machine without changing it.
+spool database copied back from that machine without changing it, and
+`microcosm-emitter deliver --spool` delivers it with this machine's login.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ from microcosm_emitter.compatibility import (
 
 DISTRIBUTION_NAME = "microcosm-emitter"
 
-#: Exit codes of `telemetry-token`, one per kind of failure; 2 is a usage
-#: error, as for every command.
+#: Exit codes of `telemetry-token` and `deliver`, one per kind of failure; 2
+#: is a usage error, as for every command.
 EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
@@ -41,7 +42,9 @@ UNREADABLE_SPOOL_MESSAGE: Final = (
     "The spool database cannot be read ({error_type}): the file is not a spool "
     "database, or a newer emitter release wrote it."
 )
-TELEMETRY_TOKEN_FAILURES: Final = {
+#: Each failure to get a collector token: its exit code, and one line for
+#: standard error, where ``{answer}`` is empty or the HTTP status.
+CREDENTIAL_FAILURES: Final = {
     "missing": (
         EXIT_MISSING_CREDENTIAL,
         "No Hugging Face credential was found: set HF_TOKEN or HUGGINGFACE_TOKEN, "
@@ -49,19 +52,25 @@ TELEMETRY_TOKEN_FAILURES: Final = {
     ),
     "rejected": (
         EXIT_REJECTED_CREDENTIAL,
-        "The collector refused the Hugging Face credential ({answer}): it issues "
+        "The collector refused the Hugging Face credential{answer}: it issues "
         "tokens only to members of the PolicyEngine organization.",
     ),
     "unavailable": (
         EXIT_COLLECTOR_UNAVAILABLE,
-        "The collector could not be reached or gave no usable token ({answer}).",
+        "The collector could not be reached or gave no usable token{answer}.",
     ),
     "lifetime_unsupported": (
         EXIT_LIFETIME_UNSUPPORTED,
-        "The collector refused the request ({answer}): it does not accept "
+        "The collector refused the request{answer}: it does not accept "
         "`lifetime_seconds`, so it cannot issue a token for another machine yet.",
     ),
 }
+DELIVERY_UNFINISHED_MESSAGE: Final = (
+    "Events are still pending after {seconds} seconds: the collector was "
+    "unavailable. Run `deliver` again later; delivered events are not sent twice."
+)
+#: How long `deliver` keeps trying by default.
+DEFAULT_DELIVERY_TIME_LIMIT_SECONDS: Final = 120
 
 
 def describe() -> EmitterDescription:
@@ -119,6 +128,39 @@ def status(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def deliver(arguments: argparse.Namespace) -> int:
+    """Deliver a spool database's pending runs with this machine's login, then
+    print its status as `status` does."""
+    from microcosm_emitter.telemetry.service.spool_copy import (
+        UnreadableSpoolError,
+        deliver_spool,
+        spool_status,
+    )
+
+    try:
+        result = deliver_spool(
+            arguments.spool,
+            development_collector_url=arguments.development_collector_url,
+            time_limit_seconds=arguments.time_limit_seconds,
+        )
+        if result in CREDENTIAL_FAILURES:
+            exit_code, message = CREDENTIAL_FAILURES[result]
+            print(message.format(answer=""), file=sys.stderr)
+            return exit_code
+        runs = spool_status(arguments.spool)
+    except UnreadableSpoolError as error:
+        print(UNREADABLE_SPOOL_MESSAGE.format(error_type=error), file=sys.stderr)
+        return EXIT_UNREADABLE_SPOOL
+    print(json.dumps({"runs": runs}))
+    if result != "delivered":
+        print(
+            DELIVERY_UNFINISHED_MESSAGE.format(seconds=arguments.time_limit_seconds),
+            file=sys.stderr,
+        )
+        return EXIT_COLLECTOR_UNAVAILABLE
+    return 0
+
+
 def _collector_origin(development_collector_url: str | None) -> str:
     from microcosm_emitter.core.collector_origin import resolve_collector_origin
 
@@ -130,13 +172,16 @@ def _collector_origin(development_collector_url: str | None) -> str:
         raise argparse.ArgumentTypeError(str(error)) from None
 
 
+def _development_collector_url(value: str) -> str:
+    _collector_origin(value)
+    return value
+
+
 def _add_development_collector_url(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--development-collector-url",
-        dest="collector_origin",
         metavar="URL",
-        type=_collector_origin,
-        default=None,
+        type=_development_collector_url,
         help="A loopback collector, for tests and local development. Without "
         "it, the collector origin that `version` prints.",
     )
@@ -150,11 +195,13 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     """
     from microcosm_emitter.core.auth import exchange_telemetry_token
 
-    origin = arguments.collector_origin or _collector_origin(None)
+    origin = _collector_origin(arguments.development_collector_url)
     exchange = exchange_telemetry_token(origin, arguments.lifetime_seconds)
     if exchange.result != "ok":
-        exit_code, message = TELEMETRY_TOKEN_FAILURES[exchange.result]
-        answer = "no answer" if exchange.status is None else f"HTTP {exchange.status}"
+        exit_code, message = CREDENTIAL_FAILURES[exchange.result]
+        answer = (
+            " (no answer)" if exchange.status is None else f" (HTTP {exchange.status})"
+        )
         print(message.format(answer=answer), file=sys.stderr)
         return exit_code
     print(
@@ -202,6 +249,20 @@ def main(argv: list[str] | None = None) -> int:
         "undelivered events, as JSON. Reads only: no network, no changes.",
     )
     _add_spool(status_parser)
+    deliver_parser = commands.add_parser(
+        "deliver",
+        help="Deliver a spool database's pending runs, such as a copy from a "
+        "build on another machine, with this machine's Hugging Face login, then "
+        "print its status as JSON. Never prunes undelivered events.",
+    )
+    _add_spool(deliver_parser)
+    deliver_parser.add_argument(
+        "--time-limit-seconds",
+        type=_positive_integer,
+        default=DEFAULT_DELIVERY_TIME_LIMIT_SECONDS,
+        help="How long to keep trying while the collector is unavailable.",
+    )
+    _add_development_collector_url(deliver_parser)
     if arguments[:1] == ["host"]:
         # The host parses its own options.
         from microcosm_emitter.host.__main__ import main as host_main
@@ -212,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         return telemetry_token(parsed)
     if parsed.command == "status":
         return status(parsed)
+    if parsed.command == "deliver":
+        return deliver(parsed)
     print(json.dumps(version_report()))
     return 0
 

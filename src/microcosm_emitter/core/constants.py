@@ -81,8 +81,9 @@ REJECTED_CREDENTIAL_MESSAGE: Final = (
 GIVEN_TOKEN_UNUSABLE_MESSAGE: Final = (
     "Microcosm telemetry is waiting: the collector token this emitter was given "
     "has expired or was refused, and it cannot be renewed here. Queued events "
-    "stay pending for delivery by an emitter with a Hugging Face login. The "
-    "dataset build will continue."
+    "stay pending for delivery by an emitter with a Hugging Face login, such as "
+    "`microcosm-emitter deliver --spool` on a copy of this spool. The dataset "
+    "build will continue."
 )
 COLLECTOR_URL_HTTPS_ERROR: Final = "collector URL must be an HTTPS origin"
 COLLECTOR_URL_ORIGIN_ERROR: Final = (

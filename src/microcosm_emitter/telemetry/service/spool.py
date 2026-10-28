@@ -38,9 +38,13 @@ from microcosm_emitter.telemetry.service.timestamps import utc_now
 
 
 class EventSpool:
-    """Small SQLite queue shared by successive emitter service processes."""
+    """Small SQLite queue shared by successive emitter service processes.
 
-    def __init__(self, path: Path | str) -> None:
+    Opening it prunes events past the retention limits, unless
+    ``prune_on_open`` is false, as for a copy delivered with `deliver`.
+    """
+
+    def __init__(self, path: Path | str, *, prune_on_open: bool = True) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.parent.chmod(0o700)
@@ -60,7 +64,8 @@ class EventSpool:
         self._session_factory = create_spool_session_factory(self._engine)
         self._lock = threading.RLock()
         self._last_prune_at = 0.0
-        self.prune()
+        if prune_on_open:
+            self.prune()
 
     def close(self) -> None:
         """Release pooled database connections; queued records remain durable."""
