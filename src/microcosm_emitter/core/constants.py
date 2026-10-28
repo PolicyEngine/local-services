@@ -123,8 +123,8 @@ GIVEN_TOKEN_ORIGIN_ERROR: Final = (
 # Printed by the telemetry or Orrery module, whichever the host starts first:
 # the host itself prints only a fixed startup failure, and exits.
 GIVEN_TOKEN_START_ERROR_MESSAGE: Final = (
-    "The Microcosm emitter cannot start: {reason}. It exits before any of its "
-    "modules runs."
+    "The Microcosm emitter cannot start: {reason}. It exits before accepting any "
+    "request from the build."
 )
 
 MINIMUM_TOKEN_LIFETIME_SECONDS: Final = 60
