@@ -307,7 +307,12 @@ def test_a_given_collector_token_replaces_the_hugging_face_exchange(
 
 
 @pytest.mark.parametrize(
-    "ending", ["expired", "refused at registration", "refused with events"]
+    "ending",
+    [
+        "expires within the safety margin",
+        "refused at registration",
+        "refused with events",
+    ],
 )
 def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
     tmp_path, monkeypatch, capsys, ending
@@ -321,7 +326,13 @@ def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
         monkeypatch,
         given_token_variables(
             DEVELOPMENT_COLLECTOR_URL,
-            expires_in=timedelta(hours=-1 if ending == "expired" else 18),
+            # The collector allows no clock leeway, so the last seconds of a
+            # token would get a 401: it counts as expired 30 s early.
+            expires_in=timedelta(
+                seconds=10
+                if ending == "expires within the safety margin"
+                else 18 * 3600
+            ),
         ),
     )
     _no_hugging_face_credential(monkeypatch)
@@ -350,14 +361,14 @@ def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
         assert (record.upload_state, record.local_only_reason) == (
             "pending",
             "collector_token_expired"
-            if ending == "expired"
+            if ending == "expires within the safety margin"
             else "collector_token_rejected",
         )
     assert spool.pending_runs() == [registration]
     assert (
         len(requests)
         == {
-            "expired": 0,
+            "expires within the safety margin": 0,
             "refused at registration": 1,
             "refused with events": 2,
         }[ending]
