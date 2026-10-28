@@ -225,7 +225,7 @@ def deliver_spool(
     origin = resolve_collector_origin(
         development_collector_url=development_collector_url
     )
-    session = CollectorSession(origin)
+    session = CollectorSession(origin, use_given_token=False)
     result, _ = session.credential()
     match result:
         case "missing" | "rejected" | "unavailable":

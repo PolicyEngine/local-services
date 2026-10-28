@@ -311,6 +311,10 @@ class CollectorSession:
     ``token_expired`` or ``token_rejected``. A given token obtained from
     another origin than ``origin`` raises ``GivenCollectorTokenError``: its
     origin is only compared, and never chooses where anything is sent.
+
+    ``use_given_token=False`` makes the session ignore those variables and
+    exchange this machine's Hugging Face credential, as `deliver --spool`
+    must: a token given to builds can be left in the operator's shell.
     """
 
     def __init__(
@@ -321,6 +325,7 @@ class CollectorSession:
         credential=None,
         scope=None,
         destination: str | None = None,
+        use_given_token: bool = True,
     ):
         import threading
 
@@ -331,7 +336,9 @@ class CollectorSession:
         self._credential = credential or huggingface_token
         self._session_token: tuple[str, float] | None = None
         self._lock = threading.Lock()
-        self.given_token = given_collector_token(os.environ)
+        self.given_token = (
+            given_collector_token(os.environ) if use_given_token else None
+        )
         if self.given_token is not None and self.given_token.origin != origin:
             raise GivenCollectorTokenError(GIVEN_TOKEN_ORIGIN_ERROR)
         self._given_token_rejected = False
