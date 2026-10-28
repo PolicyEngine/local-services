@@ -7,7 +7,14 @@ from typing import Final
 RETENTION_DAYS: Final = 7
 MAX_QUEUED_BYTES: Final = 100 * 1024 * 1024
 BATCH_SIZE: Final = 100
-PRODUCTION_COLLECTOR_URL: Final = (
+# The default destination: the collector's own hostname, which a load balancer
+# sends to the production Cloud Run service. It stays the same when that service
+# moves to another Google Cloud project and its Cloud Run address changes.
+PRODUCTION_COLLECTOR_URL: Final = "https://microcosm-collector.policyengine.org"
+# The production Cloud Run service's own address, the default before the
+# hostname. It reaches the same service, and stays trusted so that a build can
+# still select it with `collector_origin` if the hostname has to be rolled back.
+CLOUD_RUN_COLLECTOR_URL: Final = (
     "https://microcosm-telemetry-389282473430.us-central1.run.app"
 )
 # The only origins that may receive the builder's Hugging Face token. A module's
@@ -15,7 +22,9 @@ PRODUCTION_COLLECTOR_URL: Final = (
 # environment variable) chooses the destination. To move the collector, add its
 # new origin here and point PRODUCTION_COLLECTOR_URL at it, in one release; keep
 # the old origin listed while it still serves, so a build can still select it.
-TRUSTED_COLLECTOR_ORIGINS: Final = frozenset({PRODUCTION_COLLECTOR_URL})
+TRUSTED_COLLECTOR_ORIGINS: Final = frozenset(
+    {PRODUCTION_COLLECTOR_URL, CLOUD_RUN_COLLECTOR_URL}
+)
 
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 TOKEN_EXCHANGE_PATH: Final = "/v1/auth/huggingface/exchange"

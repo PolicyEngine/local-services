@@ -4,13 +4,13 @@ import os
 
 import pytest
 
-from microcosm_emitter.core import collector_origin as collector_origin_module
 from microcosm_emitter.core.auth import CollectorSession
 from microcosm_emitter.core.collector_origin import (
     configured_collector_origin,
     resolve_collector_origin,
 )
 from microcosm_emitter.core.constants import (
+    CLOUD_RUN_COLLECTOR_URL,
     COLLECTOR_URL_HTTPS_ERROR,
     COLLECTOR_URL_ORIGIN_ERROR,
     CONFLICTING_COLLECTOR_ORIGIN_ERROR,
@@ -25,19 +25,7 @@ from microcosm_emitter.orrery.service.module import OrreryModule
 from microcosm_emitter.telemetry.client import TelemetryRun
 from microcosm_emitter.telemetry.service.module import TelemetryModule
 
-# Stands in for a custom domain that a later release adds to the trusted set.
-FUTURE_COLLECTOR_ORIGIN = "https://collector.example"
 DEVELOPMENT_COLLECTOR_URL = "http://127.0.0.1:1"
-
-
-@pytest.fixture
-def future_origin_trusted(monkeypatch) -> str:
-    monkeypatch.setattr(
-        collector_origin_module,
-        "TRUSTED_COLLECTOR_ORIGINS",
-        frozenset({PRODUCTION_COLLECTOR_URL, FUTURE_COLLECTOR_ORIGIN}),
-    )
-    return FUTURE_COLLECTOR_ORIGIN
 
 
 def telemetry_module(tmp_path, context: ModuleContext, **settings) -> TelemetryModule:
@@ -111,32 +99,28 @@ def test_configured_origin_outside_the_trusted_set_is_refused() -> None:
             resolve_collector_origin(collector_origin=untrusted_origin)
 
 
-def test_configured_origin_must_be_an_origin_even_when_its_host_is_trusted(
-    future_origin_trusted,
-) -> None:
+def test_configured_origin_must_be_an_origin_even_when_its_host_is_trusted() -> None:
     for value in (
-        f"{future_origin_trusted}/v1",
-        f"{future_origin_trusted}?next=1",
-        future_origin_trusted.replace("https://", "https://user@"),
+        f"{CLOUD_RUN_COLLECTOR_URL}/v1",
+        f"{CLOUD_RUN_COLLECTOR_URL}?next=1",
+        CLOUD_RUN_COLLECTOR_URL.replace("https://", "https://user@"),
     ):
         with pytest.raises(ValueError, match=COLLECTOR_URL_ORIGIN_ERROR):
             resolve_collector_origin(collector_origin=value)
     with pytest.raises(ValueError, match=COLLECTOR_URL_HTTPS_ERROR):
         resolve_collector_origin(
-            collector_origin=future_origin_trusted.replace("https://", "http://")
+            collector_origin=CLOUD_RUN_COLLECTOR_URL.replace("https://", "http://")
         )
 
 
-def test_trusted_configured_origin_is_selected(future_origin_trusted) -> None:
-    assert resolve_collector_origin(collector_origin=future_origin_trusted) == (
-        future_origin_trusted
-    )
-    assert resolve_collector_origin(collector_origin=future_origin_trusted + "/") == (
-        future_origin_trusted
-    )
-    assert configured_collector_origin({"collector_origin": future_origin_trusted}) == (
-        future_origin_trusted
-    )
+def test_a_build_can_still_select_the_cloud_run_address() -> None:
+    for value in (CLOUD_RUN_COLLECTOR_URL, CLOUD_RUN_COLLECTOR_URL + "/"):
+        assert resolve_collector_origin(collector_origin=value) == (
+            CLOUD_RUN_COLLECTOR_URL
+        )
+        assert configured_collector_origin({"collector_origin": value}) == (
+            CLOUD_RUN_COLLECTOR_URL
+        )
 
 
 def test_development_url_and_configured_origin_cannot_both_be_set() -> None:
@@ -163,7 +147,6 @@ def test_empty_module_settings_count_as_unset() -> None:
     )
 
 
-@pytest.mark.usefixtures("future_origin_trusted")
 @pytest.mark.parametrize(
     ("settings", "expected_origin"),
     [
@@ -171,9 +154,9 @@ def test_empty_module_settings_count_as_unset() -> None:
         (
             {
                 "development_collector_url": "",
-                "collector_origin": FUTURE_COLLECTOR_ORIGIN,
+                "collector_origin": CLOUD_RUN_COLLECTOR_URL,
             },
-            FUTURE_COLLECTOR_ORIGIN,
+            CLOUD_RUN_COLLECTOR_URL,
         ),
     ],
 )
@@ -239,15 +222,15 @@ def test_every_module_without_a_setting_uses_the_production_collector(
 
 
 def test_every_module_sends_to_the_same_configured_origin(
-    tmp_path, future_origin_trusted, submission_session_origins
+    tmp_path, submission_session_origins
 ) -> None:
     context = ModuleContext(os.getpid())
     telemetry = telemetry_module(
-        tmp_path, context, collector_origin=future_origin_trusted
+        tmp_path, context, collector_origin=CLOUD_RUN_COLLECTOR_URL
     )
-    graph = orrery_module(tmp_path, context, collector_origin=future_origin_trusted)
+    graph = orrery_module(tmp_path, context, collector_origin=CLOUD_RUN_COLLECTOR_URL)
     hugging_face = submitting_huggingface_module(
-        tmp_path, context, collector_origin=future_origin_trusted
+        tmp_path, context, collector_origin=CLOUD_RUN_COLLECTOR_URL
     )
     telemetry.initialize()
     try:
@@ -256,7 +239,7 @@ def test_every_module_sends_to_the_same_configured_origin(
             hugging_face.initialize()
             try:
                 shared_origin = context.services["collector_session"].origin
-                assert shared_origin == future_origin_trusted
+                assert shared_origin == CLOUD_RUN_COLLECTOR_URL
                 assert telemetry.delivery.collector_url == shared_origin
                 assert hugging_face.collector_delivery is not None
                 assert hugging_face.collector_delivery.client.origin == shared_origin
@@ -269,17 +252,16 @@ def test_every_module_sends_to_the_same_configured_origin(
         telemetry.close(0)
 
 
-@pytest.mark.usefixtures("future_origin_trusted")
 @pytest.mark.parametrize(
     "settings",
     [
         {"collector_origin": "https://untrusted.example"},
         {
-            "collector_origin": FUTURE_COLLECTOR_ORIGIN,
+            "collector_origin": CLOUD_RUN_COLLECTOR_URL,
             "development_collector_url": DEVELOPMENT_COLLECTOR_URL,
         },
         {"collector_origin": True},
-        {"collector_origin": [FUTURE_COLLECTOR_ORIGIN]},
+        {"collector_origin": [CLOUD_RUN_COLLECTOR_URL]},
         {"development_collector_url": 1},
     ],
     ids=[
