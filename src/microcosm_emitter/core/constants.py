@@ -17,17 +17,22 @@ PRODUCTION_COLLECTOR_URL: Final = "https://microcosm-collector.policyengine.org"
 CLOUD_RUN_COLLECTOR_URL: Final = (
     "https://microcosm-telemetry-389282473430.us-central1.run.app"
 )
-# The only origins that may receive the builder's Hugging Face token. A module's
-# `collector_origin` setting must name one of them, and nothing else (no
-# environment variable) chooses the destination. To move the collector, add its
-# new origin here and point PRODUCTION_COLLECTOR_URL at it, in one release; keep
-# the old origin listed while it still serves, so a build can still select it.
-# Every origin listed must reach the same production collector: collector
-# submission rows queued under one are delivered through whichever one an
-# emitter resolves (`same_collector_origins`).
-TRUSTED_COLLECTOR_ORIGINS: Final = frozenset(
+# The two origins of the one production collector. Collector submission rows
+# queued under either are delivered through whichever one an emitter resolves
+# (`same_collector_origins`). Both reach the production collector, except that
+# while the collector moves to its own Google Cloud project the Cloud Run
+# address may reach the old service, which then answers only with maintenance
+# responses. Never add an origin that reaches a collector with its own live
+# data, such as a staging one: rows queued for it would go to production.
+PRODUCTION_COLLECTOR_ORIGIN_PAIR: Final = frozenset(
     {PRODUCTION_COLLECTOR_URL, CLOUD_RUN_COLLECTOR_URL}
 )
+# The only origins that may receive the builder's Hugging Face token. A module's
+# `collector_origin` setting must name one of them, and nothing else (no
+# environment variable) chooses the destination. Any origin added here beyond
+# the pair is another collector: rows queued for it go only to an emitter that
+# resolves that origin.
+TRUSTED_COLLECTOR_ORIGINS: Final = PRODUCTION_COLLECTOR_ORIGIN_PAIR
 
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 TOKEN_EXCHANGE_PATH: Final = "/v1/auth/huggingface/exchange"
