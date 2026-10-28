@@ -404,29 +404,48 @@ def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
         reopened.close()
 
 
-def test_non_org_credential_keeps_event_local(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    "credential",
+    ["hf-outsider", "hf-member with a pasted space"],
+    ids=["outside the organization", "not sendable in a header"],
+)
+def test_a_refused_or_unsendable_credential_keeps_events_local(
+    tmp_path, monkeypatch, capsys, credential
+) -> None:
     spool = EventSpool(tmp_path / "events.sqlite3")
     registration = _registration()
     spool.register(registration)
     spool.append(registration, _event())
     requests: list[dict[str, object]] = []
-    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-outsider")
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: credential)
 
-    def reject(url, payload, token, *, timeout=5.0):
+    def collector_refusing_outsiders(url, payload, token, *, timeout=5.0):
         requests.append(payload)
-        return 403, {"detail": "not a member"}
+        if token == "hf-outsider":
+            return 403, {"detail": "not a member"}
+        # The real request, which refuses a value no HTTP header can carry.
+        return auth_module._http_post(url, payload, token, timeout=timeout)
 
-    monkeypatch.setattr(collector_module, "_http_post", reject)
+    monkeypatch.setattr(collector_module, "_http_post", collector_refusing_outsiders)
     delivery = CollectorDelivery(
         spool,
         development_collector_url="http://127.0.0.1:8080",
     )
 
+    # Neither stops delivery: the run's events stay recorded, local-only, as
+    # for any credential the collector refuses.
     assert not delivery.flush_once()
     assert not delivery.flush_once()
     assert spool.has_pending()
     assert spool.pending_runs() == []
-    assert requests == [{}]
+    with Session(spool._engine) as session:
+        record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+        assert (record.upload_state, record.local_only_reason) == (
+            "local_only",
+            "huggingface_credential_rejected",
+        )
+    # An unsendable credential is never sent.
+    assert requests == ([{}] if credential == "hf-outsider" else [])
     assert capsys.readouterr().err.count("local-only for this run") == 1
 
 
