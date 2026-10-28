@@ -57,7 +57,8 @@ class ExitCode(IntEnum):
     #: login this user cannot read; it was not sent.
     MISSING_CREDENTIAL = 3
     #: `telemetry-token` and `deliver`: the collector refused the credential,
-    #: or it has characters that an HTTP header cannot carry and was not sent.
+    #: or it contains characters that cannot be sent as a bearer token and was
+    #: not sent.
     REJECTED_CREDENTIAL = 4
     #: `telemetry-token` and `deliver`: the collector could not be reached or
     #: gave no usable token. `deliver`: also, the time limit passed with events

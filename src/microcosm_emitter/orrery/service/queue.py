@@ -376,6 +376,11 @@ class GraphPublicationDelivery:
         try:
             status, token = self.credential()
             if token is None:
+                # The session's answer, such as credential_missing,
+                # credential_unsendable (a Hugging Face credential with
+                # characters that cannot be sent as a bearer token, never
+                # sent), credential_rejected, credential_unavailable or
+                # credential_withheld_from_destination; the job is retried.
                 self.queue.finish(
                     id_, error_code=f"credential_{status}", expected_lease=lease
                 )

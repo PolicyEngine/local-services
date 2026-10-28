@@ -156,11 +156,12 @@ def _this_machines_login() -> str | None:
 
 
 #: Why this machine's login gave ``deliver_spool`` no collector token:
-#: ``missing`` (no Hugging Face login), ``unsendable`` (it has characters that
-#: an HTTP header cannot carry, so it was not sent), ``rejected`` (the
-#: collector refused it), or ``unavailable`` (the collector could not be
-#: reached or gave no usable token; only before delivery starts, as delivery
-#: retries it).
+#: ``missing`` (no Hugging Face login), ``unsendable`` (it contains
+#: characters that cannot be sent as a bearer token, so it was not sent),
+#: ``rejected`` (the collector refused it), or ``unavailable`` (the collector
+#: could not be reached or gave no usable token; only before delivery starts,
+#: as delivery retries it). A saved login that cannot be read raises
+#: ``UnreadableLoginError`` instead.
 LoginFailure = Literal["missing", "unsendable", "rejected", "unavailable"]
 #: The failure for each answer of the session other than ``ok``. Its session
 #: has no scope and ignores given tokens, so it gives no other answer; any
