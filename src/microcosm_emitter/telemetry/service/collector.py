@@ -119,9 +119,8 @@ class CollectorDelivery:
             elif status == HTTPStatus.UNAUTHORIZED:
                 self.session.invalidate()
             elif status == HTTPStatus.FORBIDDEN:
-                self._make_local_only(
-                    registration,
-                    LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION,
+                self._forbidden(
+                    registration, LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION
                 )
             elif _permanent_client_error(status):
                 self._make_local_only(
@@ -182,14 +181,21 @@ class CollectorDelivery:
             return True
         if status == HTTPStatus.UNAUTHORIZED:
             self.session.invalidate()
-        elif status in {
-            HTTPStatus.FORBIDDEN,
-            HTTPStatus.CONFLICT,
-        } or _permanent_client_error(status):
+        elif status == HTTPStatus.FORBIDDEN:
+            self._forbidden(registration, LOCAL_ONLY_REJECTED_REGISTRATION)
+        elif status == HTTPStatus.CONFLICT or _permanent_client_error(status):
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_REGISTRATION)
         else:
             self._defer_retry()
         return False
+
+    def _forbidden(self, registration: Mapping[str, Any], reason: str) -> None:
+        """The collector answered 403 for a run: it refuses this caller, for
+        example because another Hugging Face user registered the run. A build
+        makes its run local-only; `deliver --spool` leaves it pending instead.
+        """
+
+        self._make_local_only(registration, reason)
 
     def _make_local_only(
         self,

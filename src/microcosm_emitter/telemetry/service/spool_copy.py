@@ -17,8 +17,10 @@ made, from any directory: the spool records no paths for telemetry.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, Literal, TypedDict
 
 from alembic.util import CommandError
 from sqlalchemy import func, select
@@ -52,6 +54,62 @@ class RunStatus(TypedDict):
 class UnreadableSpoolError(RuntimeError):
     """The file is not a spool database this emitter can read. The message is
     the underlying error's type, never its details."""
+
+
+#: Why ``deliver_spool`` stopped before opening the file: no Hugging Face
+#: login, a login the collector refused, or a collector it could not reach.
+LoginFailure = Literal["missing", "rejected", "unavailable"]
+
+
+@dataclass(frozen=True)
+class SpoolDelivery:
+    """What ``deliver_spool`` did with a spool database.
+
+    ``outcome`` is ``delivered`` once nothing this login may deliver is
+    pending, ``time_limit_passed`` when the collector stayed unavailable until
+    the time limit, or the login failure that stopped it before it opened the
+    file. ``runs_of_other_users`` lists the runs the collector refused this
+    login with 403, because another Hugging Face user registered them; they
+    stay pending in the file.
+    """
+
+    outcome: Literal["delivered", "time_limit_passed"] | LoginFailure
+    runs_of_other_users: tuple[str, ...] = ()
+
+
+def _run(registration: Mapping[str, Any]) -> tuple[str, str]:
+    return str(registration["run_id"]), str(registration["producer_id"])
+
+
+class _CopiedSpoolDelivery(CollectorDelivery):
+    """Delivery that leaves a run the collector refuses this login pending.
+
+    The collector answers 403 for a run another Hugging Face user registered,
+    normally the operator who launched the build. A build makes its own run
+    local-only then; a copy's run is that operator's to deliver, so it stays
+    pending, and this delivery sends nothing more for it.
+    """
+
+    def __init__(self, *arguments: Any, **options: Any) -> None:
+        super().__init__(*arguments, **options)
+        #: Each refused run, as (run ID, producer ID).
+        self.runs_of_other_users: set[tuple[str, str]] = set()
+
+    def _forbidden(self, registration: Mapping[str, Any], reason: str) -> None:
+        self.runs_of_other_users.add(_run(registration))
+
+    def _collector_token(self, registration: Mapping[str, Any]) -> str | None:
+        if _run(registration) in self.runs_of_other_users:
+            return None
+        return super()._collector_token(registration)
+
+    def has_deliverable(self) -> bool:
+        """Whether a pending run this login may deliver has events left."""
+
+        return any(
+            _run(registration) not in self.runs_of_other_users
+            for registration in self.spool.pending_runs()
+        )
 
 
 def spool_status(path: Path) -> list[RunStatus]:
@@ -92,21 +150,18 @@ def deliver_spool(
     *,
     development_collector_url: str | None = None,
     time_limit_seconds: float,
-) -> str:
+) -> SpoolDelivery:
     """Deliver the pending runs of the spool database at ``path``.
 
     It sends to the collector origin the emitter resolves, or to a loopback
     ``development_collector_url``. It uses this machine's Hugging Face login,
     never a collector token given to builds in the environment, and exchanges
-    it before opening the spool: a missing (``missing``), refused
-    (``rejected``) or unexchangeable (``unavailable``) login returns at once
-    and leaves the file unchanged, so its runs never become local-only for
-    want of a login here. The collector accepts a run registered on another
-    machine again from the same Hugging Face user, and counts events it
-    already has as duplicates.
-
-    Returns ``delivered`` once no pending event remains, or ``pending`` when
-    the collector was unavailable until ``time_limit_seconds`` passed.
+    it before opening the spool: a missing, refused or unexchangeable login
+    returns at once and leaves the file unchanged, so its runs never become
+    local-only for want of a login here. The collector accepts a run
+    registered on another machine again from the same Hugging Face user, and
+    counts events it already has as duplicates. A run another Hugging Face
+    user registered stays pending, for that user to deliver.
     """
 
     origin = resolve_collector_origin(
@@ -114,24 +169,30 @@ def deliver_spool(
     )
     session = CollectorSession(origin, environment={})
     result, _ = session.credential()
-    if result != "ok":
-        return result
+    match result:
+        case "missing" | "rejected" | "unavailable":
+            return SpoolDelivery(result)
     try:
         spool = EventSpool(path, prune_on_open=False)
     except (SQLAlchemyError, CommandError, RuntimeError, OSError) as error:
         raise UnreadableSpoolError(type(error).__name__) from None
     try:
-        delivery = CollectorDelivery(
+        delivery = _CopiedSpoolDelivery(
             spool, session=session, development_collector_url=development_collector_url
         )
         deadline = time.monotonic() + time_limit_seconds
-        while spool.has_deliverable():
+        outcome: Literal["delivered", "time_limit_passed"] = "delivered"
+        while delivery.has_deliverable():
             if time.monotonic() >= deadline:
-                return "pending"
+                outcome = "time_limit_passed"
+                break
             if not delivery.flush_once():
                 time.sleep(
                     min(DRAIN_RETRY_SECONDS, max(0, deadline - time.monotonic()))
                 )
-        return "delivered"
+        return SpoolDelivery(
+            outcome,
+            tuple(sorted({run_id for run_id, _ in delivery.runs_of_other_users})),
+        )
     finally:
         spool.close()

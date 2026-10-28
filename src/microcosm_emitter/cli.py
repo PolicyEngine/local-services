@@ -38,6 +38,9 @@ EXIT_LIFETIME_UNSUPPORTED: Final = 6
 #: `status --spool` and `deliver --spool`: the file is not a spool database
 #: this emitter can read.
 EXIT_UNREADABLE_SPOOL: Final = 7
+#: `deliver --spool`: every other run was delivered, but the collector refused
+#: this login (403) for a run another Hugging Face user registered.
+EXIT_RUN_OF_ANOTHER_USER: Final = 8
 UNREADABLE_SPOOL_MESSAGE: Final = (
     "The spool database cannot be read ({error_type}): the file is not a spool "
     "database, or a newer emitter release wrote it."
@@ -68,6 +71,12 @@ CREDENTIAL_FAILURES: Final = {
 DELIVERY_UNFINISHED_MESSAGE: Final = (
     "Events are still pending after {seconds} seconds: the collector was "
     "unavailable. Run `deliver` again later; delivered events are not sent twice."
+)
+RUN_OF_ANOTHER_USER_MESSAGE: Final = (
+    "Runs not delivered: {run_ids}. The collector refused this login (403): "
+    "another Hugging Face user registered them, normally the operator who "
+    "launched the build. They stay pending in the spool database; that "
+    "operator should run `microcosm-emitter deliver --spool` on it."
 )
 #: How long `deliver` keeps trying by default.
 DEFAULT_DELIVERY_TIME_LIMIT_SECONDS: Final = 120
@@ -138,26 +147,36 @@ def deliver(arguments: argparse.Namespace) -> int:
     )
 
     try:
-        result = deliver_spool(
+        delivery = deliver_spool(
             arguments.spool,
             development_collector_url=arguments.development_collector_url,
             time_limit_seconds=arguments.time_limit_seconds,
         )
-        if result in CREDENTIAL_FAILURES:
-            exit_code, message = CREDENTIAL_FAILURES[result]
-            print(message.format(answer=""), file=sys.stderr)
-            return exit_code
+        match delivery.outcome:
+            case "missing" | "rejected" | "unavailable" as failure:
+                exit_code, message = CREDENTIAL_FAILURES[failure]
+                print(message.format(answer=""), file=sys.stderr)
+                return exit_code
         runs = spool_status(arguments.spool)
     except UnreadableSpoolError as error:
         print(UNREADABLE_SPOOL_MESSAGE.format(error_type=error), file=sys.stderr)
         return EXIT_UNREADABLE_SPOOL
     print(json.dumps({"runs": runs}))
-    if result != "delivered":
+    if delivery.runs_of_other_users:
+        print(
+            RUN_OF_ANOTHER_USER_MESSAGE.format(
+                run_ids=", ".join(delivery.runs_of_other_users)
+            ),
+            file=sys.stderr,
+        )
+    if delivery.outcome == "time_limit_passed":
         print(
             DELIVERY_UNFINISHED_MESSAGE.format(seconds=arguments.time_limit_seconds),
             file=sys.stderr,
         )
         return EXIT_COLLECTOR_UNAVAILABLE
+    if delivery.runs_of_other_users:
+        return EXIT_RUN_OF_ANOTHER_USER
     return 0
 
 
