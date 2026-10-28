@@ -23,13 +23,16 @@ from datetime import UTC, datetime
 from enum import IntEnum, unique
 from importlib.metadata import version
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from microcosm_emitter.compatibility import (
     SUPPORTED_PROTOCOL_VERSIONS,
     EmitterDescription,
     VersionReport,
 )
+
+if TYPE_CHECKING:
+    from microcosm_emitter.core.auth import ExchangeFailureResult, SessionResult
 
 DISTRIBUTION_NAME = "microcosm-emitter"
 
@@ -84,12 +87,22 @@ SPOOL_PERMISSION_MESSAGE: Final = (
 #: Each failure to get a collector token, by the answer of
 #: ``exchange_huggingface_credential`` (`telemetry-token`) or of the
 #: ``CollectorSession`` that calls it (`deliver`): its exit code, and one line
-#: for standard error, where ``{answer}`` is empty or the HTTP status.
-CREDENTIAL_FAILURES: Final = {
+#: for standard error, where ``{answer}`` is empty or the HTTP status. An
+#: unsendable credential exits as a refused one, as the collector answered it
+#: before the emitter checked it.
+CREDENTIAL_FAILURES: Final[
+    dict[ExchangeFailureResult | SessionResult, tuple[ExitCode, str]]
+] = {
     "missing": (
         ExitCode.MISSING_CREDENTIAL,
         "No Hugging Face credential was found: set HF_TOKEN or HUGGINGFACE_TOKEN, "
         "or run `hf auth login`.",
+    ),
+    "unsendable": (
+        ExitCode.REJECTED_CREDENTIAL,
+        "The Hugging Face credential was not sent: it has characters that an HTTP "
+        "header cannot carry, such as a space or a line break. Check HF_TOKEN, "
+        "HUGGINGFACE_TOKEN or the login saved by `hf auth login`.",
     ),
     "rejected": (
         ExitCode.REJECTED_CREDENTIAL,
@@ -118,6 +131,13 @@ RUN_OF_ANOTHER_USER_MESSAGE: Final = (
 )
 #: How long `deliver` keeps trying by default.
 DEFAULT_DELIVERY_TIME_LIMIT_SECONDS: Final = 120
+#: `huggingface_hub` could not read the login `hf auth login` saved, such as a
+#: file this user may not read, and neither variable is set.
+UNREADABLE_LOGIN_MESSAGE: Final = (
+    "The Hugging Face login saved by `hf auth login` could not be read "
+    "({error_type}), and neither HF_TOKEN nor HUGGINGFACE_TOKEN is set; nothing "
+    "was sent."
+)
 #: Only the error's type: its text can quote the credential, as http.client's
 #: error for a header it cannot send does.
 TELEMETRY_TOKEN_UNEXPECTED_FAILURE: Final = (
@@ -261,21 +281,30 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     collector's answer body; ``main`` turns any other error into exit 7.
     """
     from microcosm_emitter.core.auth import (
+        ExchangeFailure,
         exchange_huggingface_credential,
         huggingface_token,
     )
     from microcosm_emitter.core.constants import TELEMETRY_SCOPE
 
     origin = _collector_origin(arguments.development_collector_url)
+    try:
+        credential = huggingface_token()
+    except (OSError, UnicodeDecodeError) as error:
+        print(
+            UNREADABLE_LOGIN_MESSAGE.format(error_type=type(error).__name__),
+            file=sys.stderr,
+        )
+        return ExitCode.MISSING_CREDENTIAL
     # Counted from before the request, so it never overstates the expiry.
     requested_at = time.time()
     exchange = exchange_huggingface_credential(
         origin,
-        huggingface_token(),
+        credential,
         scope=TELEMETRY_SCOPE,
         lifetime_seconds=arguments.lifetime_seconds,
     )
-    if exchange.result != "ok":
+    if isinstance(exchange, ExchangeFailure):
         exit_code, message = CREDENTIAL_FAILURES[exchange.result]
         answer = (
             " (no answer)" if exchange.status is None else f" (HTTP {exchange.status})"

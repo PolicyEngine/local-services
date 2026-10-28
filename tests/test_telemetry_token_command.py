@@ -37,6 +37,14 @@ def operator_login(monkeypatch):
     monkeypatch.setattr(auth_module, "get_token", lambda: None)
 
 
+def unreadable_saved_login() -> str:
+    raise PermissionError("the saved token file is not readable")
+
+
+def unexpected_error(*arguments, **options):
+    raise RuntimeError(f"an error quoting {SYNTHETIC_HUGGING_FACE_TOKEN}")
+
+
 def telemetry_token(collector_url: str, lifetime_seconds: int) -> int:
     try:
         return cli.main(
@@ -84,13 +92,17 @@ def test_prints_a_telemetry_token_for_the_requested_lifetime(
         ("no Hugging Face login", 3),
         ("credential refused with 401", 4),
         ("not an organization member (403)", 4),
+        # As the collector refused one before the emitter checked it.
+        ("credential with a line break", 4),
+        ("unreadable saved login", 3),
         ("collector unreachable", 5),
         ("collector answers 503", 5),
+        ("collector answer that is not HTTP", 5),
         ("collector without lifetime_seconds (422)", 6),
         ("lifetime below 1", 2),
         ("development collector that is not loopback", 2),
-        # http.client's error for this header quotes the whole credential.
-        ("credential with a line break", 7),
+        # Its text could quote the credential, so only its type is printed.
+        ("unexpected error", 7),
     ],
 )
 def test_each_failure_has_its_own_exit_code_and_prints_nothing(
@@ -108,12 +120,21 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
         collector_url = UNREACHABLE_COLLECTOR_URL
     elif failure == "collector answers 503":
         collector.exchange_status = 503
+    elif failure == "collector answer that is not HTTP":
+        collector.malformed_exchange_answer = True
     elif failure == "lifetime below 1":
         lifetime_seconds = 0
     elif failure == "development collector that is not loopback":
         collector_url = "https://collector.example"
     elif failure == "credential with a line break":
         monkeypatch.setenv("HF_TOKEN", f"{SYNTHETIC_HUGGING_FACE_TOKEN}\nsecond-part")
+    elif failure == "unreadable saved login":
+        monkeypatch.delenv("HF_TOKEN")
+        monkeypatch.setattr(auth_module, "get_token", unreadable_saved_login)
+    elif failure == "unexpected error":
+        monkeypatch.setattr(
+            auth_module, "exchange_huggingface_credential", unexpected_error
+        )
     else:
         collector.accepts_lifetime_seconds = False
 
@@ -124,7 +145,11 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
     assert output.out == ""
     assert output.err.strip()
     assert SYNTHETIC_HUGGING_FACE_TOKEN not in output.err
-    if expected_exit_code in {2, 3, 7}:
+    if failure == "credential with a line break":
+        assert "an HTTP header cannot carry" in output.err
+    elif failure == "unreadable saved login":
+        assert "could not be read (PermissionError)" in output.err
+    if expected_exit_code in {2, 3, 7} or failure == "credential with a line break":
         assert collector.exchange_requests == []
 
 

@@ -104,6 +104,8 @@ class FakeCollector:
         self.exchange_status = 200
         #: A whole 200 answer the tests choose for every exchange.
         self.exchange_answer: dict[str, Any] | None = None
+        #: Answer every exchange with bytes that are not an HTTP answer.
+        self.malformed_exchange_answer = False
         self.intake = "on"
         self.create_statuses: list[int] = []
         self.complete_statuses: list[int] = []
@@ -352,6 +354,9 @@ class FakeCollector:
         self.exchange_credentials.append(
             handler.headers.get("Authorization", "").removeprefix("Bearer ")
         )
+        if self.malformed_exchange_answer:
+            handler.wfile.write(b"not an HTTP answer\r\n")
+            return
         if self.exchange_status != 200:
             return handler._json(self.exchange_status, {"detail": "refused"})
         if self.exchange_answer is not None:
