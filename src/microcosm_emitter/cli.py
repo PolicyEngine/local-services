@@ -48,15 +48,16 @@ class ExitCode(IntEnum):
 
     #: Every command: it did what it was asked.
     SUCCESS = 0
-    #: `host`: the host could not start. Python also exits 1 for an uncaught
-    #: exception, so no other command uses it.
+    #: `host`: the host could not start. `telemetry-token`, `status` and
+    #: `deliver` exit 7, not Python's 1, for an error they do not name.
     HOST_START_FAILURE = 1
     #: Every command: a usage error, which argparse reports.
     USAGE_ERROR = 2
-    #: `telemetry-token` and `deliver`: no Hugging Face credential; nothing
-    #: was sent.
+    #: `telemetry-token` and `deliver`: no Hugging Face credential, or a saved
+    #: login this user cannot read; it was not sent.
     MISSING_CREDENTIAL = 3
-    #: `telemetry-token` and `deliver`: the collector refused the credential.
+    #: `telemetry-token` and `deliver`: the collector refused the credential,
+    #: or it has characters that an HTTP header cannot carry and was not sent.
     REJECTED_CREDENTIAL = 4
     #: `telemetry-token` and `deliver`: the collector could not be reached or
     #: gave no usable token. `deliver`: it stayed unavailable until the time
@@ -64,8 +65,8 @@ class ExitCode(IntEnum):
     COLLECTOR_UNAVAILABLE = 5
     #: `telemetry-token`: the collector does not accept `lifetime_seconds`.
     LIFETIME_UNSUPPORTED = 6
-    #: `telemetry-token`: any error the other codes do not name; only the
-    #: error's type is printed.
+    #: `telemetry-token`, `status` and `deliver`: an unexpected error, which
+    #: the other codes do not name; only the error's type is printed.
     UNEXPECTED_FAILURE = 7
     #: `deliver`: every other run was delivered, but the collector refused
     #: this login (403) for a run another Hugging Face user registered.
@@ -149,6 +150,19 @@ TELEMETRY_TOKEN_UNEXPECTED_FAILURE: Final = (
     "No telemetry token was obtained: an unexpected {error_type} occurred. Its "
     "details are not printed, because they can contain the credential."
 )
+#: The same, for each spool command. `status` holds no credential, but each
+#: code keeps one meaning across commands.
+SPOOL_UNEXPECTED_FAILURES: Final = {
+    "status": (
+        "`status` stopped: an unexpected {error_type} occurred. Its details are "
+        "not printed. It changed nothing."
+    ),
+    "deliver": (
+        "`deliver` stopped: an unexpected {error_type} occurred. Its details are "
+        "not printed, because they can contain a credential. Events the "
+        "collector did not acknowledge stay in the spool database."
+    ),
+}
 
 
 def describe() -> EmitterDescription:
@@ -238,7 +252,8 @@ def deliver(arguments: argparse.Namespace) -> int:
 def _spool_command(
     command: Callable[[argparse.Namespace], int], arguments: argparse.Namespace
 ) -> int:
-    """Run `status` or `deliver`, exiting 9 for a file it cannot use."""
+    """Run `status` or `deliver`, exiting 9 for a file it cannot use, and 7,
+    printing only the error's type, for an error it does not name."""
     from microcosm_emitter.telemetry.service.spool_copy import UnreadableSpoolError
 
     try:
@@ -251,6 +266,14 @@ def _spool_command(
         )
         print(message.format(error_type=error), file=sys.stderr)
         return ExitCode.UNREADABLE_SPOOL
+    except Exception as error:
+        print(
+            SPOOL_UNEXPECTED_FAILURES[arguments.command].format(
+                error_type=type(error).__name__
+            ),
+            file=sys.stderr,
+        )
+        return ExitCode.UNEXPECTED_FAILURE
 
 
 def _collector_origin(development_collector_url: str | None) -> str:
