@@ -283,7 +283,8 @@ def main(argv: list[str] | None = None) -> int:
         "deliver",
         help="Deliver a spool database's pending runs, such as a copy from a "
         "build on another machine, with this machine's Hugging Face login, then "
-        "print its status as JSON. Never prunes undelivered events.",
+        "print its status as JSON. Never prunes undelivered events or changes "
+        "permissions; a run another Hugging Face user registered stays pending.",
     )
     _add_spool(deliver_parser)
     deliver_parser.add_argument(
