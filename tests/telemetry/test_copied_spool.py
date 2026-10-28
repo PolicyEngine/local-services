@@ -15,12 +15,17 @@ from pathlib import Path
 
 import pytest
 from fake_collector import FakeCollector
+from given_token import given_token_variables, set_variables
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from microcosm_emitter import cli
 from microcosm_emitter.core import auth as auth_module
-from microcosm_emitter.core.auth import CollectorSession, exchange_telemetry_token
+from microcosm_emitter.core.auth import (
+    CollectorSession,
+    exchange_huggingface_credential,
+)
+from microcosm_emitter.core.constants import TELEMETRY_SCOPE
 from microcosm_emitter.core.database import create_spool_engine
 from microcosm_emitter.core.models import TelemetryEventRecord
 from microcosm_emitter.telemetry.client import TelemetryRun
@@ -74,23 +79,30 @@ def age_events(spool_path: Path, days: int) -> None:
 def build_on_modal(collector: FakeCollector, spool_path: Path) -> None:
     """A build that sends its first event with a given token, which the
     collector then refuses, leaving two events pending in its spool."""
-    obtained = exchange_telemetry_token(
-        collector.origin, 18 * 3600, credential=lambda: OPERATOR_LOGIN
+    obtained = exchange_huggingface_credential(
+        collector.origin,
+        OPERATOR_LOGIN,
+        scope=TELEMETRY_SCOPE,
+        lifetime_seconds=18 * 3600,
     )
-    given_token = {
-        "MICROCOSM_COLLECTOR_TOKEN": obtained.access_token,
-        "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT": obtained.expires_at,
-        "MICROCOSM_COLLECTOR_ORIGIN": collector.origin,
-    }
+    # Only the build's environment holds the given token, as on Modal.
+    with pytest.MonkeyPatch.context() as build_environment:
+        set_variables(
+            build_environment,
+            given_token_variables(
+                collector.origin,
+                expires_in=timedelta(seconds=obtained.expires_in),
+                token=obtained.access_token,
+            ),
+        )
+        session = CollectorSession(collector.origin)
     spool = EventSpool(spool_path)
     try:
         run = registration("modal-run")
         spool.register(run)
         spool.append(run, stage_event("stage_inputs"))
         delivery = CollectorDelivery(
-            spool,
-            session=CollectorSession(collector.origin, environment=given_token),
-            development_collector_url=collector.origin,
+            spool, session=session, development_collector_url=collector.origin
         )
         assert delivery.flush_once()
         spool.append(run, stage_event("calibrate"))
@@ -228,11 +240,12 @@ def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
     age_events(copy, days=8)
     # A token given to builds is not the operator's login, even if it is
     # still in the shell.
-    monkeypatch.setenv("MICROCOSM_COLLECTOR_TOKEN", "a-refused-build-token")
-    monkeypatch.setenv(
-        "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT", datetime.now(UTC).isoformat()
+    set_variables(
+        monkeypatch,
+        given_token_variables(
+            collector.origin, expires_in=timedelta(0), token="a-refused-build-token"
+        ),
     )
-    monkeypatch.setenv("MICROCOSM_COLLECTOR_ORIGIN", collector.origin)
     deliver = ["deliver", "--spool", str(copy), "--development-collector-url"]
     # Another operator's login: the collector refuses it the run (403), which
     # must stay pending in the copy for the operator who launched the build.

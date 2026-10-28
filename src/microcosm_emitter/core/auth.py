@@ -2,21 +2,24 @@
 
 An emitter without a Hugging Face credential, such as one in a Modal
 container, can be given a telemetry-only collector token instead, through
-the variables named in ``core.constants``; ``CollectorSession`` then uses it.
+the variables named in ``core.constants``; ``CollectorSession`` then uses it,
+and sends it only to the collector it was obtained from.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from http import HTTPStatus
-from typing import Any
+from typing import Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from huggingface_hub import get_token
@@ -28,10 +31,11 @@ from microcosm_emitter.core.constants import (
     COLLECTOR_TOKEN_VARIABLE,
     COLLECTOR_URL_HTTPS_ERROR,
     COLLECTOR_URL_ORIGIN_ERROR,
-    DEFAULT_TOKEN_LIFETIME_SECONDS,
     DEVELOPMENT_COLLECTOR_LOOPBACK_ERROR,
     GIVEN_TOKEN_EXPIRY_ERROR,
     GIVEN_TOKEN_ORIGIN_ERROR,
+    GIVEN_TOKEN_START_ERROR_MESSAGE,
+    GIVEN_TOKEN_VALUE_ERROR,
     GIVEN_TOKEN_VARIABLES_ERROR,
     HTTP_TIMEOUT_SECONDS,
     HTTP_USER_AGENT,
@@ -41,7 +45,12 @@ from microcosm_emitter.core.constants import (
     TELEMETRY_SCOPE,
     TOKEN_EXCHANGE_PATH,
     TOKEN_REFRESH_MARGIN_SECONDS,
+    UNSENDABLE_CREDENTIAL_ERROR,
 )
+
+#: Visible ASCII without spaces: every Hugging Face credential and collector
+#: token. http.client's error for any other header value quotes it whole.
+_SENDABLE_CREDENTIAL = re.compile(r"[!-~]+")
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -92,6 +101,8 @@ def _http_post(
     *,
     timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> tuple[int, dict[str, Any]]:
+    if not _SENDABLE_CREDENTIAL.fullmatch(bearer_token):
+        raise ValueError(UNSENDABLE_CREDENTIAL_ERROR)
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, separators=(",", ":")).encode(),
@@ -161,6 +172,8 @@ def given_collector_token(
         return None
     if not (access_token and expires_at and origin):
         raise GivenCollectorTokenError(GIVEN_TOKEN_VARIABLES_ERROR)
+    if not _SENDABLE_CREDENTIAL.fullmatch(access_token):
+        raise GivenCollectorTokenError(GIVEN_TOKEN_VALUE_ERROR)
     try:
         expiry = datetime.fromisoformat(expires_at)
     except ValueError:
@@ -170,53 +183,77 @@ def given_collector_token(
     return GivenCollectorToken(access_token, expiry.timestamp(), origin.rstrip("/"))
 
 
-@dataclass(frozen=True)
-class TelemetryTokenExchange:
-    """What the collector answered a request for a telemetry token.
+#: What one exchange of a Hugging Face credential gave.
+ExchangeResult = Literal[
+    "ok",
+    "missing",
+    "rejected",
+    "unavailable",
+    "intake_unavailable",
+    "lifetime_unsupported",
+]
 
-    ``result`` is ``ok``, ``missing`` (no Hugging Face credential, nothing
-    sent), ``rejected`` (401 or 403), ``lifetime_unsupported`` (422: the
-    collector's strict exchange body has no ``lifetime_seconds``) or
-    ``unavailable`` (no answer, or no usable token). ``expires_at`` is an
-    ISO 8601 UTC time, counted from before the request was sent.
+
+@dataclass(frozen=True)
+class TokenExchange:
+    """The collector's answer to one exchange of a Hugging Face credential.
+
+    ``result`` is ``ok``; ``missing`` (no Hugging Face credential, so nothing
+    was sent); ``rejected`` (401 or 403); ``intake_unavailable`` (the
+    collector has no intake for the requested scope: 404, or a 200 for
+    another scope); ``lifetime_unsupported`` (422 to ``lifetime_seconds``:
+    the collector's strict exchange body predates it); or ``unavailable`` (no
+    answer, or an answer without a usable token). Only ``ok`` carries
+    ``access_token`` and ``expires_in``.
     """
 
-    result: str
+    result: ExchangeResult
     status: int | None = None
     access_token: str | None = field(default=None, repr=False)
-    expires_at: str | None = None
+    expires_in: int | None = None
 
 
-def exchange_telemetry_token(
+def exchange_huggingface_credential(
     origin: str,
-    lifetime_seconds: int,
+    hugging_face_token: str | None,
     *,
+    scope: str | None = None,
+    lifetime_seconds: int | None = None,
     post: Callable[..., tuple[int, dict[str, Any]]] | None = None,
-    credential: Callable[[], str | None] | None = None,
-    clock: Callable[[], float] = time.time,
-) -> TelemetryTokenExchange:
-    """Exchange the Hugging Face credential for a token that only writes
-    telemetry and lasts ``lifetime_seconds``, or as long as the collector
-    allows, for a build on a machine without that credential."""
+) -> TokenExchange:
+    """Exchange a Hugging Face credential at ``origin`` for a collector token.
 
-    hugging_face_token = (credential or huggingface_token)()
+    Without ``scope`` the body is ``{}``, which the collector answers with a
+    ``telemetry:write`` token. ``lifetime_seconds`` asks for a token that
+    lasts that long, for a build on a machine without the credential; the
+    collector may grant less. A usable answer is a 200 with a non-empty
+    ``access_token`` and a positive integer ``expires_in``.
+    """
+
     if not hugging_face_token:
-        return TelemetryTokenExchange("missing")
-    requested_at = clock()
+        return TokenExchange("missing")
+    body: dict[str, Any] = {} if scope is None else {"scope": scope}
+    if lifetime_seconds is not None:
+        body["lifetime_seconds"] = lifetime_seconds
     try:
-        status, response = (post or _http_post)(
-            origin + TOKEN_EXCHANGE_PATH,
-            {"scope": TELEMETRY_SCOPE, "lifetime_seconds": lifetime_seconds},
-            hugging_face_token,
+        status, answer = (post or _http_post)(
+            origin + TOKEN_EXCHANGE_PATH, body, hugging_face_token
         )
     except (OSError, TimeoutError):
-        return TelemetryTokenExchange("unavailable")
+        return TokenExchange("unavailable")
     if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
-        return TelemetryTokenExchange("rejected", status)
-    if status == HTTPStatus.UNPROCESSABLE_ENTITY:
-        return TelemetryTokenExchange("lifetime_unsupported", status)
-    access_token = response.get("access_token")
-    expires_in = response.get("expires_in")
+        return TokenExchange("rejected", status)
+    if lifetime_seconds is not None and status == HTTPStatus.UNPROCESSABLE_ENTITY:
+        return TokenExchange("lifetime_unsupported", status)
+    if scope not in (None, TELEMETRY_SCOPE) and (
+        status == HTTPStatus.NOT_FOUND
+        or (status == HTTPStatus.OK and answer.get("scope") != scope)
+    ):
+        # A collector released before intake answers 200 with a
+        # telemetry:write token, and one with intake switched off 404.
+        return TokenExchange("intake_unavailable", status)
+    access_token = answer.get("access_token")
+    expires_in = answer.get("expires_in")
     if (
         status != HTTPStatus.OK
         or not isinstance(access_token, str)
@@ -224,36 +261,56 @@ def exchange_telemetry_token(
         or type(expires_in) is not int
         or expires_in <= 0
     ):
-        return TelemetryTokenExchange("unavailable", status)
-    expires_at = datetime.fromtimestamp(requested_at + expires_in, UTC)
-    return TelemetryTokenExchange(
-        "ok",
-        status,
-        access_token=access_token,
-        expires_at=expires_at.isoformat(timespec="seconds"),
-    )
+        return TokenExchange("unavailable", status)
+    return TokenExchange("ok", status, access_token, expires_in)
+
+
+#: What ``CollectorSession.credential()`` answers. ``token_expired`` and
+#: ``token_rejected`` come only from a given token, which cannot be renewed.
+SessionResult = Literal[
+    "ok",
+    "missing",
+    "rejected",
+    "unavailable",
+    "intake_unavailable",
+    "token_expired",
+    "token_rejected",
+]
+
+
+class SessionCredential(NamedTuple):
+    """A session's answer; ``token`` is set only when ``result`` is ``ok``.
+
+    It unpacks as ``result, token``. Its repr leaves the token out.
+    """
+
+    result: SessionResult
+    token: str | None = None
+
+    def __repr__(self) -> str:
+        return f"SessionCredential(result={self.result!r})"
 
 
 class CollectorSession:
     """One thread-safe short-lived credential shared by independent publishers.
 
     ``scope`` asks the exchange for a credential with that scope, such as
-    ``artifacts:submit``. Without it the exchange body stays ``{}``, which the
-    collector answers with a ``telemetry:write`` credential. A scoped session
-    accepts a token only when the answer names that scope; any other 200, or
-    a 404 from the exchange, means the collector has no intake for it
-    (``intake_unavailable``): a collector released before intake answers 200
-    with a ``telemetry:write`` token, and one with intake switched off 404.
+    ``artifacts:submit``; ``exchange_huggingface_credential`` says what each
+    answer means. The session reuses a token until shortly before it expires.
 
-    With a token given in ``environment`` (by default the process
-    environment; see ``given_collector_token``), the session uses it and never
+    With a token given in the process environment (see
+    ``given_collector_token``), the session uses it and never
     reads or exchanges a Hugging Face credential. The given token only writes
     telemetry, so a session for any other scope has no credential
-    (``missing``). It cannot be renewed: once it has expired, or after
-    ``invalidate()`` (a 401), the session answers ``token_expired`` or
-    ``token_rejected``. A given token obtained from another origin than
-    ``origin`` raises ``GivenCollectorTokenError``: its origin is only
-    compared, and never chooses the destination.
+    (``missing``). It is sent only to ``origin``, the collector it was
+    obtained from: for a caller that sends its credential to another
+    ``destination``, such as the Orrery module's publication origin, the
+    session has no credential either (``destination`` matters only for a
+    given token). It cannot be renewed: from ``TOKEN_REFRESH_MARGIN_SECONDS``
+    before it expires, or after ``invalidate()`` (a 401), the session answers
+    ``token_expired`` or ``token_rejected``. A given token obtained from
+    another origin than ``origin`` raises ``GivenCollectorTokenError``: its
+    origin is only compared, and never chooses where anything is sent.
     """
 
     def __init__(
@@ -263,20 +320,19 @@ class CollectorSession:
         post=None,
         credential=None,
         scope=None,
-        environment: Mapping[str, str] | None = None,
+        destination: str | None = None,
     ):
         import threading
 
         self.origin = origin
         self.scope = scope
+        self._destination = origin if destination is None else destination.rstrip("/")
         self._post = post or _http_post
         self._credential = credential or huggingface_token
         self._session_token: tuple[str, float] | None = None
         self._lock = threading.Lock()
-        self._given_token = given_collector_token(
-            os.environ if environment is None else environment
-        )
-        if self._given_token is not None and self._given_token.origin != origin:
+        self.given_token = given_collector_token(os.environ)
+        if self.given_token is not None and self.given_token.origin != origin:
             raise GivenCollectorTokenError(GIVEN_TOKEN_ORIGIN_ERROR)
         self._given_token_rejected = False
 
@@ -284,64 +340,71 @@ class CollectorSession:
         with self._lock:
             self._session_token = None
             # A given token is never sent again once the collector refused it.
-            self._given_token_rejected = self._given_token is not None
+            self._given_token_rejected = self.given_token is not None
 
-    def credential(self) -> tuple[str, str | None]:
+    def credential(self) -> SessionCredential:
         with self._lock:
-            if self._given_token is not None:
-                return self._given_credential(self._given_token)
+            if self.given_token is not None:
+                return self._given_credential(self.given_token)
             if (
                 self._session_token is not None
                 and self._session_token[1]
                 > time.monotonic() + TOKEN_REFRESH_MARGIN_SECONDS
             ):
-                return "ok", self._session_token[0]
-            hf_token = self._credential()
-            if not hf_token:
-                return "missing", None
-            try:
-                status, response = self._post(
-                    self.origin + TOKEN_EXCHANGE_PATH,
-                    {} if self.scope is None else {"scope": self.scope},
-                    hf_token,
-                )
-            except (OSError, TimeoutError):
-                return "unavailable", None
-            if self.scope is not None and (
-                status == HTTPStatus.NOT_FOUND
-                or (status == HTTPStatus.OK and response.get("scope") != self.scope)
-            ):
-                return "intake_unavailable", None
-            if status == HTTPStatus.OK and isinstance(
-                response.get("access_token"), str
-            ):
-                try:
-                    expires_in = max(
-                        MINIMUM_TOKEN_LIFETIME_SECONDS,
-                        int(response.get("expires_in", DEFAULT_TOKEN_LIFETIME_SECONDS)),
-                    )
-                except (ValueError, TypeError):
-                    return "unavailable", None
-                token = response["access_token"]
-                self._session_token = (token, time.monotonic() + expires_in)
-                return "ok", token
-            if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
-                return "rejected", None
-            return "unavailable", None
+                return SessionCredential("ok", self._session_token[0])
+            exchange = exchange_huggingface_credential(
+                self.origin, self._credential(), scope=self.scope, post=self._post
+            )
+            if exchange.result != "ok":
+                return SessionCredential(exchange.result)
+            token = exchange.access_token
+            lifetime = max(MINIMUM_TOKEN_LIFETIME_SECONDS, exchange.expires_in)
+            self._session_token = (token, time.monotonic() + lifetime)
+            return SessionCredential("ok", token)
 
-    def _given_credential(self, given: GivenCollectorToken) -> tuple[str, str | None]:
-        if self.scope not in (None, TELEMETRY_SCOPE):
-            return "missing", None
+    def _given_credential(self, given: GivenCollectorToken) -> SessionCredential:
+        if (
+            self.scope not in (None, TELEMETRY_SCOPE)
+            or self._destination != self.origin
+        ):
+            return SessionCredential("missing")
         if self._given_token_rejected:
-            return "token_rejected", None
-        if time.time() >= given.expires_at:
-            return "token_expired", None
-        return "ok", given.access_token
+            return SessionCredential("token_rejected")
+        # The collector allows no clock leeway, so stop as early as an
+        # exchanged token is renewed: a request in the token's last seconds
+        # would get a 401 and count as a refusal.
+        if time.time() + TOKEN_REFRESH_MARGIN_SECONDS >= given.expires_at:
+            return SessionCredential("token_expired")
+        return SessionCredential("ok", given.access_token)
 
 
-def shared_session(services: dict, origin: str) -> CollectorSession:
-    """Share a session among explicit modules without adding auth to the host."""
-    session = services.setdefault("collector_session", CollectorSession(origin))
-    if not isinstance(session, CollectorSession) or session.origin != origin:
+def shared_session(
+    services: dict, origin: str, *, destination: str | None = None
+) -> CollectorSession:
+    """One module's collector session, without adding auth to the host.
+
+    Modules share one session, and so one exchanged token and its renewal.
+    A given token cannot be renewed, so each module gets a session of its
+    own for it: a 401 that one module receives ends the token for that
+    module only. ``destination`` is the origin the module sends the
+    credential to, when that is not the collector.
+
+    Unusable given-token variables raise ``GivenCollectorTokenError``, which
+    stops the whole host at start, so this prints the reason first: the
+    host prints only a fixed startup failure.
+    """
+    try:
+        session = CollectorSession(origin, destination=destination)
+    except GivenCollectorTokenError as error:
+        print(
+            GIVEN_TOKEN_START_ERROR_MESSAGE.format(reason=error),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
+    if session.given_token is not None:
+        return session
+    shared = services.setdefault("collector_session", session)
+    if not isinstance(shared, CollectorSession) or shared.origin != origin:
         raise ValueError("Provider modules must use the same collector origin.")
-    return session
+    return shared

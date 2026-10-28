@@ -1,9 +1,10 @@
 """Every module sends the builder's Hugging Face token to one trusted origin."""
 
 import os
-from datetime import UTC, datetime, timedelta
+import time
 
 import pytest
+from given_token import GIVEN_COLLECTOR_TOKEN, given_token_variables, set_variables
 
 from microcosm_emitter.core.auth import CollectorSession
 from microcosm_emitter.core.collector_origin import (
@@ -288,19 +289,11 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
         configured_collector_origin(settings)
 
 
-GIVEN_COLLECTOR_TOKEN = "synthetic-telemetry-token"
-GIVEN_TOKEN_EXPIRY = (datetime.now(UTC) + timedelta(hours=18)).isoformat()
-
-
 @pytest.mark.parametrize(
     ("variables", "named_variable"),
     [
         (
-            {
-                "MICROCOSM_COLLECTOR_TOKEN": GIVEN_COLLECTOR_TOKEN,
-                "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT": GIVEN_TOKEN_EXPIRY,
-                "MICROCOSM_COLLECTOR_ORIGIN": PRODUCTION_COLLECTOR_URL,
-            },
+            given_token_variables(PRODUCTION_COLLECTOR_URL),
             "MICROCOSM_COLLECTOR_ORIGIN",
         ),
         (
@@ -309,33 +302,104 @@ GIVEN_TOKEN_EXPIRY = (datetime.now(UTC) + timedelta(hours=18)).isoformat()
         ),
         (
             {
-                "MICROCOSM_COLLECTOR_TOKEN": GIVEN_COLLECTOR_TOKEN,
+                **given_token_variables(DEVELOPMENT_COLLECTOR_URL),
                 "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT": "tomorrow",
-                "MICROCOSM_COLLECTOR_ORIGIN": DEVELOPMENT_COLLECTOR_URL,
             },
             "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
         ),
+        (
+            given_token_variables(
+                DEVELOPMENT_COLLECTOR_URL, token=f"{GIVEN_COLLECTOR_TOKEN}\nsecond-part"
+            ),
+            "MICROCOSM_COLLECTOR_TOKEN",
+        ),
     ],
-    ids=["token for another collector", "incomplete variables", "unreadable expiry"],
+    ids=[
+        "token for another collector",
+        "incomplete variables",
+        "unreadable expiry",
+        "token with a line break",
+    ],
 )
-def test_telemetry_refuses_to_start_with_an_unusable_given_token(
+def test_an_unusable_given_token_stops_the_emitter_at_start(
     tmp_path, monkeypatch, capsys, variables, named_variable
 ) -> None:
-    # The origin variable is only compared: the module still resolves its
-    # own origin, and a different one stops it before it opens the spool.
-    for name, value in variables.items():
-        monkeypatch.setenv(name, value)
-    module = telemetry_module(
-        tmp_path,
-        ModuleContext(os.getpid()),
+    # The origin variable is only compared: each module still resolves its
+    # own origin. The host stops at the first module whose start fails, so
+    # whichever of these comes first says why, before opening its database.
+    set_variables(monkeypatch, variables)
+    for module, database in (
+        (
+            telemetry_module(
+                tmp_path,
+                ModuleContext(os.getpid()),
+                development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+            ),
+            "events.sqlite3",
+        ),
+        (
+            orrery_module(
+                tmp_path,
+                ModuleContext(os.getpid()),
+                development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+            ),
+            "graphs.sqlite3",
+        ),
+    ):
+        with pytest.raises(ValueError, match=named_variable) as refusal:
+            module.initialize()
+
+        error = capsys.readouterr().err
+        assert "The Microcosm emitter cannot start" in error
+        assert named_variable in error
+        assert GIVEN_COLLECTOR_TOKEN not in error + str(refusal.value)
+        assert not (tmp_path / database).exists()
+
+
+def test_orrery_sends_a_given_token_only_to_the_collector_and_ends_it_alone(
+    tmp_path, monkeypatch
+) -> None:
+    set_variables(monkeypatch, given_token_variables(DEVELOPMENT_COLLECTOR_URL))
+    context = ModuleContext(os.getpid())
+    telemetry = telemetry_module(
+        tmp_path, context, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    # The Orrery module gets its credential from the collector session, and
+    # sends it to its publication origin: by default another service.
+    (tmp_path / "default").mkdir()
+    (tmp_path / "collector").mkdir()
+    publishing_elsewhere = orrery_module(
+        tmp_path / "default",
+        context,
         development_collector_url=DEVELOPMENT_COLLECTOR_URL,
     )
-
-    with pytest.raises(ValueError, match=named_variable):
+    publishing_to_the_collector = orrery_module(
+        tmp_path / "collector",
+        context,
+        development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+        publication_origin=DEVELOPMENT_COLLECTOR_URL,
+    )
+    modules = (telemetry, publishing_elsewhere, publishing_to_the_collector)
+    for module in modules:
         module.initialize()
+    try:
+        assert publishing_elsewhere.delivery.credential() == ("missing", None)
+        assert publishing_to_the_collector.delivery.credential() == (
+            "ok",
+            GIVEN_COLLECTOR_TOKEN,
+        )
 
-    error = capsys.readouterr().err
-    assert "Microcosm telemetry cannot start" in error
-    assert named_variable in error
-    assert GIVEN_COLLECTOR_TOKEN not in error
-    assert not (tmp_path / "events.sqlite3").exists()
+        # Orrery received a 401: the token ends for Orrery, not for telemetry.
+        publishing_to_the_collector.delivery.invalidate_credential()
+
+        assert publishing_to_the_collector.delivery.credential() == (
+            "token_rejected",
+            None,
+        )
+        assert telemetry.delivery.session.credential() == (
+            "ok",
+            GIVEN_COLLECTOR_TOKEN,
+        )
+    finally:
+        for module in modules:
+            module.close(time.monotonic())

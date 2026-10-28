@@ -102,6 +102,8 @@ class FakeCollector:
         self.objects: dict[str, bytes] = {}
         self.submissions: dict[str, dict[str, Any]] = {}
         self.exchange_status = 200
+        #: A whole 200 answer the tests choose for every exchange.
+        self.exchange_answer: dict[str, Any] | None = None
         self.intake = "on"
         self.create_statuses: list[int] = []
         self.complete_statuses: list[int] = []
@@ -352,6 +354,8 @@ class FakeCollector:
         )
         if self.exchange_status != 200:
             return handler._json(self.exchange_status, {"detail": "refused"})
+        if self.exchange_answer is not None:
+            return handler._json(200, self.exchange_answer)
         scope = request.get("scope", "telemetry:write")
         lifetime_seconds = self.token_lifetime_seconds
         if "lifetime_seconds" in request:

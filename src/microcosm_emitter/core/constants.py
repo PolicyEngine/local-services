@@ -102,20 +102,32 @@ COLLECTOR_SETTING_TYPE_ERROR: Final = (
     "a development collector URL or collector origin must be a string"
 )
 COLLECTOR_RESPONSE_TOO_LARGE_ERROR: Final = "collector response exceeds 1 MiB"
+UNSENDABLE_CREDENTIAL_ERROR: Final = (
+    "the credential has characters that an HTTP header cannot carry"
+)
 GIVEN_TOKEN_VARIABLES_ERROR: Final = (
     "MICROCOSM_COLLECTOR_TOKEN, MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT and "
     "MICROCOSM_COLLECTOR_ORIGIN must be set together"
+)
+GIVEN_TOKEN_VALUE_ERROR: Final = (
+    "MICROCOSM_COLLECTOR_TOKEN must be visible ASCII characters, without spaces "
+    "or line breaks"
 )
 GIVEN_TOKEN_EXPIRY_ERROR: Final = (
     "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT must be an ISO 8601 time with a time zone"
 )
 GIVEN_TOKEN_ORIGIN_ERROR: Final = (
-    "MICROCOSM_COLLECTOR_ORIGIN names another collector than the one this emitter "
-    "sends to, which `microcosm-emitter version` prints"
+    "MICROCOSM_COLLECTOR_ORIGIN is not the collector origin this emitter's module "
+    "settings resolve (without a `collector_origin` or `development_collector_url` "
+    "setting, the origin that `microcosm-emitter version` prints)"
 )
-TELEMETRY_REFUSED_MESSAGE: Final = "Microcosm telemetry cannot start: {reason}."
+# Printed by the telemetry or Orrery module, whichever the host starts first:
+# the host itself prints only a fixed startup failure, and exits.
+GIVEN_TOKEN_START_ERROR_MESSAGE: Final = (
+    "The Microcosm emitter cannot start: {reason}. It exits before accepting any "
+    "request from the build."
+)
 
-DEFAULT_TOKEN_LIFETIME_SECONDS: Final = 3_600
 MINIMUM_TOKEN_LIFETIME_SECONDS: Final = 60
 TOKEN_REFRESH_MARGIN_SECONDS: Final = 30
 INITIAL_RETRY_SECONDS: Final = 1.0

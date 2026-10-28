@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -33,6 +33,9 @@ from microcosm_emitter.orrery.contracts import (
     PublicationInventory,
     PublicationReceipt,
 )
+
+if TYPE_CHECKING:
+    from microcosm_emitter.core.auth import SessionCredential
 
 MAX_GRAPH_FILE_BYTES = 64 * 1024 * 1024
 MAX_GRAPH_TOTAL_BYTES = 512 * 1024 * 1024
@@ -326,7 +329,7 @@ class GraphPublicationDelivery:
         self,
         queue: GraphPublicationQueue,
         *,
-        credential: Callable[[], tuple[str, str | None]],
+        credential: Callable[[], SessionCredential],
         origin: str,
         client: httpx.Client | None = None,
         invalidate_credential: Callable[[], None] | None = None,

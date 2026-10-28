@@ -1,11 +1,10 @@
 """Telemetry lifecycle and delivery, independent of the local socket host."""
 
 import math
-import sys
 import threading
 import time
 
-from microcosm_emitter.core.auth import GivenCollectorTokenError, shared_session
+from microcosm_emitter.core.auth import shared_session
 from microcosm_emitter.core.collector_origin import (
     COLLECTOR_ORIGIN_SETTING,
     DEVELOPMENT_COLLECTOR_URL_SETTING,
@@ -16,7 +15,6 @@ from microcosm_emitter.core.constants import (
     DRAIN_RETRY_SECONDS,
     FAILURE_CLASS_UNEXPECTED_PROCESS_EXIT,
     MINIMUM_HEARTBEAT_SECONDS,
-    TELEMETRY_REFUSED_MESSAGE,
 )
 from microcosm_emitter.host.contracts import JsonObject, ModuleContext
 from microcosm_emitter.telemetry.protocol import UNEXPECTED_PROCESS_EXIT_MESSAGE
@@ -53,19 +51,11 @@ class TelemetryModule:
         self.heartbeat_seconds = max(MINIMUM_HEARTBEAT_SECONDS, heartbeat)
         self._next_heartbeat = time.monotonic() + self.heartbeat_seconds
         self.sampler = ProcessTreeSampler(self.context.parent_pid)
-        # Refuse an untrusted origin, or a given collector token for another
-        # collector, before opening the spool.
-        origin = configured_collector_origin(self.configuration)
-        try:
-            session = shared_session(self.context.services, origin)
-        except GivenCollectorTokenError as error:
-            # The host prints only a fixed startup failure, so say why here.
-            print(
-                TELEMETRY_REFUSED_MESSAGE.format(reason=error),
-                file=sys.stderr,
-                flush=True,
-            )
-            raise
+        # Refuse an untrusted origin, or an unusable given collector token,
+        # before opening the spool.
+        session = shared_session(
+            self.context.services, configured_collector_origin(self.configuration)
+        )
         self.spool = EventSpool(self.configuration["spool_path"])
         try:
             self.delivery = CollectorDelivery(

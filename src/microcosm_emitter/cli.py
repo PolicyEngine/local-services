@@ -17,7 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 from typing import Final
@@ -31,11 +33,13 @@ from microcosm_emitter.compatibility import (
 DISTRIBUTION_NAME = "microcosm-emitter"
 
 #: Exit codes of `telemetry-token` and `deliver`, one per kind of failure; 2
-#: is a usage error, as for every command.
+#: is a usage error, as for every command, and 7 any error of
+#: `telemetry-token` the others do not name.
 EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
 EXIT_LIFETIME_UNSUPPORTED: Final = 6
+EXIT_UNEXPECTED_FAILURE: Final = 7
 #: `status --spool` and `deliver --spool`: the file cannot be used as a spool
 #: database, because this user lacks permission or it is not one this
 #: emitter knows.
@@ -87,6 +91,12 @@ RUN_OF_ANOTHER_USER_MESSAGE: Final = (
 )
 #: How long `deliver` keeps trying by default.
 DEFAULT_DELIVERY_TIME_LIMIT_SECONDS: Final = 120
+#: Only the error's type: its text can quote the credential, as http.client's
+#: error for a header it cannot send does.
+TELEMETRY_TOKEN_UNEXPECTED_FAILURE: Final = (
+    "No telemetry token was obtained: an unexpected {error_type} occurred. Its "
+    "details are not printed, because they can contain the credential."
+)
 
 
 def describe() -> EmitterDescription:
@@ -220,13 +230,25 @@ def _add_development_collector_url(parser: argparse.ArgumentParser) -> None:
 def telemetry_token(arguments: argparse.Namespace) -> int:
     """Print a telemetry token, its expiry and the collector origin as JSON.
 
-    The token goes to standard output only; a failure prints one line on
-    standard error, without the token or the collector's answer body.
+    The token goes to standard output only. A failure prints one line on
+    standard error, without the token, the Hugging Face credential or the
+    collector's answer body; ``main`` turns any other error into exit 7.
     """
-    from microcosm_emitter.core.auth import exchange_telemetry_token
+    from microcosm_emitter.core.auth import (
+        exchange_huggingface_credential,
+        huggingface_token,
+    )
+    from microcosm_emitter.core.constants import TELEMETRY_SCOPE
 
     origin = _collector_origin(arguments.development_collector_url)
-    exchange = exchange_telemetry_token(origin, arguments.lifetime_seconds)
+    # Counted from before the request, so it never overstates the expiry.
+    requested_at = time.time()
+    exchange = exchange_huggingface_credential(
+        origin,
+        huggingface_token(),
+        scope=TELEMETRY_SCOPE,
+        lifetime_seconds=arguments.lifetime_seconds,
+    )
     if exchange.result != "ok":
         exit_code, message = CREDENTIAL_FAILURES[exchange.result]
         answer = (
@@ -234,11 +256,12 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
         )
         print(message.format(answer=answer), file=sys.stderr)
         return exit_code
+    expires_at = datetime.fromtimestamp(requested_at + exchange.expires_in, UTC)
     print(
         json.dumps(
             {
                 "access_token": exchange.access_token,
-                "expires_at": exchange.expires_at,
+                "expires_at": expires_at.isoformat(timespec="seconds"),
                 "collector_origin": origin,
             }
         )
@@ -301,7 +324,16 @@ def main(argv: list[str] | None = None) -> int:
         return host_main(arguments[1:], description=describe())
     parsed = parser.parse_args(arguments)
     if parsed.command == "telemetry-token":
-        return telemetry_token(parsed)
+        try:
+            return telemetry_token(parsed)
+        except Exception as error:
+            print(
+                TELEMETRY_TOKEN_UNEXPECTED_FAILURE.format(
+                    error_type=type(error).__name__
+                ),
+                file=sys.stderr,
+            )
+            return EXIT_UNEXPECTED_FAILURE
     if parsed.command == "status":
         return _spool_command(status, parsed)
     if parsed.command == "deliver":
