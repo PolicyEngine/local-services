@@ -57,6 +57,10 @@ def operator_login(monkeypatch):
     monkeypatch.setattr(auth_module, "get_token", lambda: None)
 
 
+def unreadable_saved_login() -> str:
+    raise PermissionError("the saved token file is not readable")
+
+
 def registration(run_id: str) -> dict[str, object]:
     return TelemetryRun(
         run_id=run_id, country_code="US", pipeline="us_acs", producer_id="modal"
@@ -318,6 +322,7 @@ def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
     ("failure", "expected_exit_code"),
     [
         ("no login", 3),
+        ("unreadable saved login", 3),
         ("login refused", 4),
         ("unsendable login", 4),
         ("collector unreachable", 5),
@@ -340,6 +345,9 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     collector_url = collector.origin
     if failure == "no login":
         monkeypatch.delenv("HF_TOKEN")
+    elif failure == "unreadable saved login":
+        monkeypatch.delenv("HF_TOKEN")
+        monkeypatch.setattr(auth_module, "get_token", unreadable_saved_login)
     elif failure == "login refused":
         collector.exchange_status = 403
     elif failure == "unsendable login":
@@ -360,6 +368,8 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
         # Never sent, so not refused by the collector.
         assert "cannot be sent as a bearer token" in output.err
         assert OPERATOR_LOGIN not in output.err
+    elif failure == "unreadable saved login":
+        assert "could not be read (PermissionError)" in output.err
     # A missing or refused login must not make the copy's runs local-only.
     assert hashlib.sha256(copy.read_bytes()).hexdigest() == digest
     # Nor is the copy opened for writing, which would leave a lock file beside
