@@ -308,6 +308,13 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
             "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
         ),
         (
+            {
+                **given_token_variables(DEVELOPMENT_COLLECTOR_URL),
+                "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT": "2026-10-29T06:00:00",
+            },
+            "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
+        ),
+        (
             given_token_variables(
                 DEVELOPMENT_COLLECTOR_URL, token=f"{GIVEN_COLLECTOR_TOKEN}\nsecond-part"
             ),
@@ -318,6 +325,7 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
         "token for another collector",
         "incomplete variables",
         "unreadable expiry",
+        "expiry without a time zone",
         "token with a line break",
     ],
 )
@@ -389,10 +397,11 @@ def test_orrery_sends_a_given_token_only_to_the_collector_and_ends_it_alone(
             "withheld_from_destination",
             None,
         )
-        assert publishing_to_the_collector.delivery.credential() == (
-            "ok",
-            GIVEN_COLLECTOR_TOKEN,
-        )
+        credential = publishing_to_the_collector.delivery.credential()
+        assert credential == ("ok", GIVEN_COLLECTOR_TOKEN)
+        # Printed, the session's answer and its given token leave the token out.
+        printed = repr(credential) + repr(telemetry.delivery.session.given_token)
+        assert GIVEN_COLLECTOR_TOKEN not in printed
 
         # Orrery received a 401: the token ends for Orrery, not for telemetry.
         publishing_to_the_collector.delivery.invalidate_credential()
