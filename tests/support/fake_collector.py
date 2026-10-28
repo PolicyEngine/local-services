@@ -19,6 +19,12 @@ exchange and every submission path answer 404 ``intake_not_enabled``) or
 with a ``telemetry:write`` token and no ``scope``, and submission paths 404
 without a ``code``).
 
+The exchange takes ``lifetime_seconds`` with ``telemetry:write`` only, as
+microcosm-collector's exchange for builds on other machines does, and grants
+at most ``MAX_EXCHANGE_LIFETIME_SECONDS``. With ``accepts_lifetime_seconds``
+false it answers a body with that field 422, as a collector before that
+change does: its exchange body forbids unknown fields.
+
 For slow links: ``receive_buffer_bytes`` gives each connection a small
 receive buffer, so the client's sends wait for the fake to read, and
 ``upload_read_pace`` makes it read an upload's body a few bytes at a time.
@@ -52,6 +58,8 @@ from typing import Any
 
 #: Anonymous key exchange only: no certificate on either side.
 ANONYMOUS_CIPHERS = "aNULL:@SECLEVEL=0"
+#: The longest token lifetime the exchange grants on request.
+MAX_EXCHANGE_LIFETIME_SECONDS = 86_400
 
 
 def anonymous_tls_context(purpose: int) -> ssl.SSLContext:
@@ -71,6 +79,9 @@ class FakeCollector:
         self, *, receive_buffer_bytes: int | None = None, tls_uploads: bool = False
     ) -> None:
         self.exchange_requests: list[dict[str, Any]] = []
+        #: The bearer credential of each exchange request.
+        self.exchange_credentials: list[str] = []
+        self.accepts_lifetime_seconds = True
         self.created: list[dict[str, Any]] = []
         self.completed: list[str] = []
         self.uploads: list[str] = []
@@ -315,9 +326,19 @@ class FakeCollector:
     def _exchange(self, handler: Any, body: bytes) -> None:
         request = json.loads(body) if body else {}
         self.exchange_requests.append(request)
+        self.exchange_credentials.append(
+            handler.headers.get("Authorization", "").removeprefix("Bearer ")
+        )
         if self.exchange_status != 200:
             return handler._json(self.exchange_status, {"detail": "refused"})
         scope = request.get("scope", "telemetry:write")
+        lifetime_seconds = self.token_lifetime_seconds
+        if "lifetime_seconds" in request:
+            if not self.accepts_lifetime_seconds or scope != "telemetry:write":
+                return handler._json(422, {"detail": "invalid exchange body"})
+            lifetime_seconds = min(
+                request["lifetime_seconds"], MAX_EXCHANGE_LIFETIME_SECONDS
+            )
         if scope == "artifacts:submit" and self.intake == "off":
             return self._intake_not_available(handler)
         if self.intake == "absent":
@@ -327,13 +348,13 @@ class FakeCollector:
             return handler._json(200, {"access_token": token, "expires_in": 900})
         token = f"session-token-{len(self._tokens) + 1}"
         self._tokens[token] = scope
-        self._token_expiry[token] = time.monotonic() + self.token_lifetime_seconds
+        self._token_expiry[token] = time.monotonic() + lifetime_seconds
         handler._json(
             200,
             {
                 "access_token": token,
                 "token_type": "bearer",
-                "expires_in": self.token_lifetime_seconds,
+                "expires_in": lifetime_seconds,
                 "scope": scope,
             },
         )
