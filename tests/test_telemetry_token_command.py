@@ -153,6 +153,15 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
         assert collector.exchange_requests == []
 
 
+def test_an_exchanged_token_leaves_the_token_out_of_its_repr(collector) -> None:
+    exchanged = auth_module.exchange_huggingface_credential(
+        collector.origin, SYNTHETIC_HUGGING_FACE_TOKEN
+    )
+
+    assert isinstance(exchanged, auth_module.ExchangedToken)
+    assert exchanged.access_token not in repr(exchanged)
+
+
 @pytest.mark.parametrize(
     "answer",
     [
