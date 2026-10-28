@@ -111,23 +111,41 @@ def _read_only_spool(path: Path) -> Iterator[Connection]:
             engine.dispose()
 
 
+#: Why this machine's login gave ``deliver_spool`` no collector token:
+#: ``missing`` (no Hugging Face login), ``rejected`` (the collector refused
+#: it), or ``unavailable`` (the collector could not be reached or gave no
+#: usable token; only before delivery starts, as delivery retries it).
+LoginFailure = Literal["missing", "rejected", "unavailable"]
+#: The failure for each answer of the session other than ``ok``. Its session
+#: has no scope and ignores given tokens, so it gives no other answer; any
+#: other would count as ``unavailable``.
+_LOGIN_FAILURES: dict[SessionResult, LoginFailure] = {
+    "missing": "missing",
+    "rejected": "rejected",
+    "unavailable": "unavailable",
+}
+
+
+def _login_failure(result: SessionResult) -> LoginFailure:
+    return _LOGIN_FAILURES.get(result, "unavailable")
+
+
 @dataclass(frozen=True)
 class SpoolDelivery:
     """What ``deliver_spool`` did with a spool database.
 
     ``outcome`` is ``delivered`` once nothing this login may deliver is
-    pending, ``time_limit_passed`` when the collector stayed unavailable until
-    the time limit, or ``login_failed`` when it stopped before it opened the
-    file. ``login`` is the collector session's answer for this machine's
-    login: ``ok``, or with ``login_failed`` ``missing`` (no Hugging Face
-    login), ``rejected`` or ``unavailable`` (the collector could not be
-    reached or gave no usable token). ``runs_of_other_users`` lists the runs
-    the collector refused this login with 403, because another Hugging Face
-    user registered them; they stay pending in the file.
+    pending, ``time_limit_passed`` when the time limit passed first, or
+    ``login_failed`` when this machine's login gave no collector token
+    (``login_failure`` says why), before it opened the file or partway
+    through delivery; every run not yet delivered then stays pending.
+    ``runs_of_other_users`` lists the runs the collector refused this login
+    with 403, because another Hugging Face user registered them; they stay
+    pending in the file.
     """
 
     outcome: Literal["delivered", "time_limit_passed", "login_failed"]
-    login: SessionResult = "ok"
+    login_failure: LoginFailure | None = None
     runs_of_other_users: tuple[str, ...] = ()
 
 
@@ -136,31 +154,47 @@ def _run(registration: Mapping[str, Any]) -> tuple[str, str]:
 
 
 class _CopiedSpoolDelivery(CollectorDelivery):
-    """Delivery that leaves a run the collector refuses this login pending.
+    """Delivery that leaves a copy's runs pending whenever the collector
+    refuses this login.
 
     The collector answers 403 for a run another Hugging Face user registered,
     normally the operator who launched the build. A build makes its own run
     local-only then; a copy's run is that operator's to deliver, so it stays
     pending, and this delivery sends nothing more for it.
+
+    A build also makes its runs local-only when its login is missing or
+    refused. Here, the login can fail partway through delivery: after a 401,
+    the session exchanges it again, and the operator may have logged out or
+    lost access since. That says nothing about the copy's runs, so delivery
+    stops at once, writing nothing more, and ``login_failure`` says why.
     """
 
     def __init__(self, *arguments: Any, **options: Any) -> None:
         super().__init__(*arguments, **options)
         #: Each refused run, as (run ID, producer ID).
         self.runs_of_other_users: set[tuple[str, str]] = set()
+        self.login_failure: LoginFailure | None = None
 
     def _forbidden(self, registration: Mapping[str, Any], reason: str) -> None:
         self.runs_of_other_users.add(_run(registration))
 
     def _collector_token(self, registration: Mapping[str, Any]) -> str | None:
-        if _run(registration) in self.runs_of_other_users:
+        if (
+            self.login_failure is not None
+            or _run(registration) in self.runs_of_other_users
+        ):
             return None
-        return super()._collector_token(registration)
+        result, token = self.session.credential()
+        if result == "unavailable":
+            self._defer_retry()
+        elif result != "ok":
+            self.login_failure = _login_failure(result)
+        return token
 
     def has_deliverable(self) -> bool:
         """Whether a pending run this login may deliver has events left."""
 
-        return any(
+        return self.login_failure is None and any(
             _run(registration) not in self.runs_of_other_users
             for registration in self.spool.pending_runs()
         )
@@ -208,7 +242,9 @@ def deliver_spool(
        its runs never become local-only for want of a login here.
     3. It opens the file as a copy, which changes no permissions and prunes
        nothing, and delivers until nothing it may deliver is pending, or
-       ``time_limit_seconds`` passes.
+       ``time_limit_seconds`` passes. If the login is missing or refused
+       when the session exchanges it again, it stops, and the runs not yet
+       delivered stay pending.
 
     The collector accepts a run registered on another machine again from the
     same Hugging Face user, and counts events it already has as duplicates. A
@@ -227,7 +263,7 @@ def deliver_spool(
     session = CollectorSession(origin, use_given_token=False)
     login = session.credential()
     if login.result != "ok":
-        return SpoolDelivery("login_failed", login.result)
+        return SpoolDelivery("login_failed", _login_failure(login.result))
     with _unreadable_spool_errors():
         spool = EventSpool(path, as_copy=True)
     try:
@@ -244,11 +280,13 @@ def deliver_spool(
                 time.sleep(
                     min(DRAIN_RETRY_SECONDS, max(0, deadline - time.monotonic()))
                 )
-        return SpoolDelivery(
-            outcome,
-            runs_of_other_users=tuple(
-                sorted({run_id for run_id, _ in delivery.runs_of_other_users})
-            ),
+        runs_of_other_users = tuple(
+            sorted({run_id for run_id, _ in delivery.runs_of_other_users})
         )
+        if delivery.login_failure is not None:
+            return SpoolDelivery(
+                "login_failed", delivery.login_failure, runs_of_other_users
+            )
+        return SpoolDelivery(outcome, runs_of_other_users=runs_of_other_users)
     finally:
         spool.close()

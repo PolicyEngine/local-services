@@ -129,6 +129,11 @@ RUN_OF_ANOTHER_USER_MESSAGE: Final = (
     "launched the build. They stay pending in the spool database; that "
     "operator should run `microcosm-emitter deliver --spool` on it."
 )
+#: After a login failure, before `deliver` opened the copy or partway.
+DELIVERY_STOPPED_MESSAGE: Final = (
+    "Runs not yet delivered stay pending in the spool database; run `deliver` "
+    "again once that is resolved."
+)
 #: How long `deliver` keeps trying by default.
 DEFAULT_DELIVERY_TIME_LIMIT_SECONDS: Final = 120
 #: `huggingface_hub` could not read the login `hf auth login` saved, such as a
@@ -206,9 +211,10 @@ def deliver(arguments: argparse.Namespace) -> int:
         development_collector_url=arguments.development_collector_url,
         time_limit_seconds=arguments.time_limit_seconds,
     )
-    if delivery.outcome == "login_failed":
-        exit_code, message = CREDENTIAL_FAILURES[delivery.login]
+    if delivery.login_failure is not None:
+        exit_code, message = CREDENTIAL_FAILURES[delivery.login_failure]
         print(message.format(answer=""), file=sys.stderr)
+        print(DELIVERY_STOPPED_MESSAGE, file=sys.stderr)
         return exit_code
     print(json.dumps({"runs": spool_status(arguments.spool)}))
     if delivery.runs_of_other_users:
