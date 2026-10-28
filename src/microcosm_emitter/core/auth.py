@@ -49,8 +49,12 @@ from microcosm_emitter.core.constants import (
     UNSENDABLE_CREDENTIAL_ERROR,
 )
 
-#: Visible ASCII without spaces: every Hugging Face credential and collector
-#: token. http.client's error for any other header value quotes it whole.
+#: Visible ASCII (letters, digits and punctuation), the only characters of a
+#: Hugging Face credential or a collector token. Any other value is refused
+#: before it is sent: a bearer token (RFC 6750) has no spaces, tabs, line
+#: breaks or non-ASCII characters, so the collector would refuse it, and
+#: http.client raises for a line break with an error that quotes the whole
+#: header value, and for a character outside Latin-1 with one that holds it.
 _SENDABLE_CREDENTIAL = re.compile(r"[!-~]+")
 
 
@@ -210,8 +214,9 @@ class ExchangeFailure:
     """An exchange of a Hugging Face credential that gave no token.
 
     ``result`` is ``missing`` (no Hugging Face credential, so nothing was
-    sent); ``unsendable`` (the credential has characters that an HTTP header
-    cannot carry, such as a pasted space, so nothing was sent); ``rejected``
+    sent); ``unsendable`` (the credential contains characters other than
+    visible ASCII, such as a pasted space, which cannot be sent as a bearer
+    token, so nothing was sent); ``rejected``
     (401 or 403); ``intake_unavailable`` (the collector has no intake for the
     requested scope: 404, or a 200 for another scope); ``lifetime_unsupported``
     (422 to ``lifetime_seconds``: the collector's strict exchange body

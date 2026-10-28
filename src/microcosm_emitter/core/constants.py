@@ -109,7 +109,7 @@ COLLECTOR_SETTING_TYPE_ERROR: Final = (
 )
 COLLECTOR_RESPONSE_TOO_LARGE_ERROR: Final = "collector response exceeds 1 MiB"
 UNSENDABLE_CREDENTIAL_ERROR: Final = (
-    "the credential has characters that an HTTP header cannot carry"
+    "the credential contains characters that cannot be sent as a bearer token"
 )
 GIVEN_TOKEN_VARIABLES_ERROR: Final = (
     "MICROCOSM_COLLECTOR_TOKEN, MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT and "

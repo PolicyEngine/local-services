@@ -41,8 +41,8 @@ EXIT_LIFETIME_UNSUPPORTED: Final = 6
 EXIT_UNEXPECTED_FAILURE: Final = 7
 #: Each exchange that gave no token: its exit code, and one line for standard
 #: error. The scope is `telemetry:write`, so ``intake_unavailable`` does not
-#: occur. An unsendable credential exits as a refused one, as the collector
-#: answered it before the emitter checked it.
+#: occur. An unsendable credential exits as a refused one: it is not a bearer
+#: token the collector would accept.
 TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = {
     "missing": (
         EXIT_MISSING_CREDENTIAL,
@@ -51,9 +51,9 @@ TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = 
     ),
     "unsendable": (
         EXIT_REJECTED_CREDENTIAL,
-        "The Hugging Face credential was not sent: it has characters that an HTTP "
-        "header cannot carry, such as a space or a line break. Check HF_TOKEN, "
-        "HUGGINGFACE_TOKEN or the login saved by `hf auth login`.",
+        "The Hugging Face credential was not sent: it contains characters that "
+        "cannot be sent as a bearer token, such as a space or a line break. Check "
+        "HF_TOKEN, HUGGINGFACE_TOKEN or the login saved by `hf auth login`.",
     ),
     "rejected": (
         EXIT_REJECTED_CREDENTIAL,
