@@ -78,6 +78,13 @@ REJECTED_CREDENTIAL_MESSAGE: Final = (
     "credential was not accepted as a PolicyEngine organization member. The "
     "dataset build will continue."
 )
+UNSENDABLE_CREDENTIAL_MESSAGE: Final = (
+    "Microcosm telemetry is local-only for this run: the ambient Hugging Face "
+    "credential contains characters that cannot be sent as a bearer token, such "
+    "as a space or a line break, so it was not sent. Check HF_TOKEN, "
+    "HUGGINGFACE_TOKEN or the login saved by `hf auth login`. The dataset build "
+    "will continue."
+)
 GIVEN_TOKEN_UNUSABLE_MESSAGE: Final = (
     "Microcosm telemetry is waiting: the collector token this emitter was given "
     "has expired or was refused, and it cannot be renewed here. Queued events "
@@ -103,7 +110,7 @@ COLLECTOR_SETTING_TYPE_ERROR: Final = (
 )
 COLLECTOR_RESPONSE_TOO_LARGE_ERROR: Final = "collector response exceeds 1 MiB"
 UNSENDABLE_CREDENTIAL_ERROR: Final = (
-    "the credential has characters that an HTTP header cannot carry"
+    "the credential contains characters that cannot be sent as a bearer token"
 )
 GIVEN_TOKEN_VARIABLES_ERROR: Final = (
     "MICROCOSM_COLLECTOR_TOKEN, MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT and "

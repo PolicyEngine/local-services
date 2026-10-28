@@ -97,8 +97,8 @@ SPOOL_PERMISSION_MESSAGE: Final = (
 #: ``exchange_huggingface_credential`` (`telemetry-token`) or of the
 #: ``CollectorSession`` that calls it (`deliver`): its exit code, and one line
 #: for standard error, where ``{answer}`` is empty or the HTTP status. An
-#: unsendable credential exits as a refused one, as the collector answered it
-#: before the emitter checked it.
+#: unsendable credential exits as a refused one: it is not a bearer token the
+#: collector would accept.
 CREDENTIAL_FAILURES: Final[
     dict[ExchangeFailureResult | SessionResult, tuple[ExitCode, str]]
 ] = {
@@ -109,9 +109,9 @@ CREDENTIAL_FAILURES: Final[
     ),
     "unsendable": (
         ExitCode.REJECTED_CREDENTIAL,
-        "The Hugging Face credential was not sent: it has characters that an HTTP "
-        "header cannot carry, such as a space or a line break. Check HF_TOKEN, "
-        "HUGGINGFACE_TOKEN or the login saved by `hf auth login`.",
+        "The Hugging Face credential was not sent: it contains characters that "
+        "cannot be sent as a bearer token, such as a space or a line break. Check "
+        "HF_TOKEN, HUGGINGFACE_TOKEN or the login saved by `hf auth login`.",
     ),
     "rejected": (
         ExitCode.REJECTED_CREDENTIAL,

@@ -405,12 +405,15 @@ def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
 
 
 @pytest.mark.parametrize(
-    "credential",
-    ["hf-outsider", "hf-member with a pasted space"],
-    ids=["outside the organization", "not sendable in a header"],
+    ("credential", "warning"),
+    [
+        ("hf-outsider", "not accepted as a PolicyEngine organization member"),
+        ("hf-member with a pasted space", "contains characters that cannot be sent"),
+    ],
+    ids=["outside the organization", "not sendable as a bearer token"],
 )
 def test_a_refused_or_unsendable_credential_keeps_events_local(
-    tmp_path, monkeypatch, capsys, credential
+    tmp_path, monkeypatch, capsys, credential, warning
 ) -> None:
     spool = EventSpool(tmp_path / "events.sqlite3")
     registration = _registration()
@@ -423,7 +426,7 @@ def test_a_refused_or_unsendable_credential_keeps_events_local(
         requests.append(payload)
         if token == "hf-outsider":
             return 403, {"detail": "not a member"}
-        # The real request, which refuses a value no HTTP header can carry.
+        # The real request, which refuses a credential it cannot send.
         return auth_module._http_post(url, payload, token, timeout=timeout)
 
     monkeypatch.setattr(collector_module, "_http_post", collector_refusing_outsiders)
@@ -446,7 +449,10 @@ def test_a_refused_or_unsendable_credential_keeps_events_local(
         )
     # An unsendable credential is never sent.
     assert requests == ([{}] if credential == "hf-outsider" else [])
-    assert capsys.readouterr().err.count("local-only for this run") == 1
+    # One warning, giving the cause.
+    standard_error = capsys.readouterr().err
+    assert standard_error.count("local-only for this run") == 1
+    assert warning in standard_error
 
 
 def test_identity_provider_outage_keeps_events_eligible_for_retry(

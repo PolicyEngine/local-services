@@ -92,7 +92,7 @@ def test_prints_a_telemetry_token_for_the_requested_lifetime(
         ("no Hugging Face login", 3),
         ("credential refused with 401", 4),
         ("not an organization member (403)", 4),
-        # As the collector refused one before the emitter checked it.
+        # Not a bearer token the collector would accept, so it counts as refused.
         ("credential with a line break", 4),
         ("unreadable saved login", 3),
         ("collector unreachable", 5),
@@ -146,11 +146,20 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
     assert output.err.strip()
     assert SYNTHETIC_HUGGING_FACE_TOKEN not in output.err
     if failure == "credential with a line break":
-        assert "an HTTP header cannot carry" in output.err
+        assert "cannot be sent as a bearer token" in output.err
     elif failure == "unreadable saved login":
         assert "could not be read (PermissionError)" in output.err
     if expected_exit_code in {2, 3, 7} or failure == "credential with a line break":
         assert collector.exchange_requests == []
+
+
+def test_an_exchanged_token_leaves_the_token_out_of_its_repr(collector) -> None:
+    exchanged = auth_module.exchange_huggingface_credential(
+        collector.origin, SYNTHETIC_HUGGING_FACE_TOKEN
+    )
+
+    assert isinstance(exchanged, auth_module.ExchangedToken)
+    assert exchanged.access_token not in repr(exchanged)
 
 
 @pytest.mark.parametrize(

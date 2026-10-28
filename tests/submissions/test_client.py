@@ -78,10 +78,12 @@ class ManualClock:
 
 
 def submission_client(
-    collector, invalidations=None, clock=None
+    collector, invalidations=None, clock=None, hugging_face_credential="hf_synthetic"
 ) -> CollectorSubmissionClient:
     session = CollectorSession(
-        collector.origin, credential=lambda: "hf_synthetic", scope=SUBMIT_SCOPE
+        collector.origin,
+        credential=lambda: hugging_face_credential,
+        scope=SUBMIT_SCOPE,
     )
     return CollectorSubmissionClient(
         collector.origin,
@@ -189,13 +191,25 @@ def test_a_token_without_the_submit_scope_is_never_used_for_submissions():
     assert session.credential() == ("intake_unavailable", None)
 
 
-def test_a_rejected_credential_fails_the_submission(collector, tmp_path) -> None:
+@pytest.mark.parametrize(
+    "hugging_face_credential",
+    ["hf_synthetic", "hf_synthetic with a pasted space"],
+    ids=["refused by the collector", "not sendable as a bearer token"],
+)
+def test_a_rejected_credential_fails_the_submission(
+    collector, tmp_path, hugging_face_credential
+) -> None:
     collector.exchange_status = 403
 
-    outcome = submission_client(collector).submit(planned_submission(tmp_path))
+    outcome = submission_client(
+        collector, hugging_face_credential=hugging_face_credential
+    ).submit(planned_submission(tmp_path))
 
     assert outcome.status == "failed"
     assert outcome.error_code == "CREDENTIAL_REJECTED"
+    # An unsendable credential is never sent.
+    sendable = hugging_face_credential == "hf_synthetic"
+    assert collector.exchange_credentials == (["hf_synthetic"] if sendable else [])
 
 
 @pytest.mark.parametrize(

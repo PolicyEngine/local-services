@@ -29,6 +29,7 @@ from microcosm_emitter.core.constants import (
     REJECTED_CREDENTIAL_MESSAGE,
     RUN_EVENTS_PATH_TEMPLATE,
     RUN_REGISTRATION_PATH,
+    UNSENDABLE_CREDENTIAL_MESSAGE,
 )
 from microcosm_emitter.telemetry.constants import (
     LOCAL_ONLY_REJECTED_EVENTS,
@@ -140,8 +141,14 @@ class CollectorDelivery:
                 print(NO_CREDENTIAL_MESSAGE, file=sys.stderr, flush=True)
                 self._warned_no_token = True
             self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
-        elif result in ("rejected", "unsendable"):
+        elif result == "rejected":
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_CREDENTIAL)
+        elif result == "unsendable":
+            self._make_local_only(
+                registration,
+                LOCAL_ONLY_REJECTED_CREDENTIAL,
+                message=UNSENDABLE_CREDENTIAL_MESSAGE,
+            )
         elif result in _UNUSABLE_GIVEN_TOKEN_REASONS:
             self._keep_pending(registration, _UNUSABLE_GIVEN_TOKEN_REASONS[result])
         elif result != "ok":

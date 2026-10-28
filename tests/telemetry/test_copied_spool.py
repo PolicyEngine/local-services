@@ -358,7 +358,7 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     assert output.err.strip()
     if failure == "unsendable login":
         # Never sent, so not refused by the collector.
-        assert "an HTTP header cannot carry" in output.err
+        assert "cannot be sent as a bearer token" in output.err
         assert OPERATOR_LOGIN not in output.err
     # A missing or refused login must not make the copy's runs local-only.
     assert hashlib.sha256(copy.read_bytes()).hexdigest() == digest
