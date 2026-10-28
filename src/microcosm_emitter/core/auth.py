@@ -273,12 +273,15 @@ class CollectorSession:
     environment; see ``given_collector_token``), the session uses it and never
     reads or exchanges a Hugging Face credential. The given token only writes
     telemetry, so a session for any other scope has no credential
-    (``missing``). It cannot be renewed: from ``TOKEN_REFRESH_MARGIN_SECONDS``
-    before it expires, or after
-    ``invalidate()`` (a 401), the session answers ``token_expired`` or
-    ``token_rejected``. A given token obtained from another origin than
-    ``origin`` raises ``GivenCollectorTokenError``: its origin is only
-    compared, and never chooses the destination.
+    (``missing``). It is sent only to ``origin``, the collector it was
+    obtained from: for a caller that sends its credential to another
+    ``destination``, such as the Orrery module's publication origin, the
+    session has no credential either (``destination`` matters only for a
+    given token). It cannot be renewed: from ``TOKEN_REFRESH_MARGIN_SECONDS``
+    before it expires, or after ``invalidate()`` (a 401), the session answers
+    ``token_expired`` or ``token_rejected``. A given token obtained from
+    another origin than ``origin`` raises ``GivenCollectorTokenError``: its
+    origin is only compared, and never chooses where anything is sent.
     """
 
     def __init__(
@@ -288,20 +291,22 @@ class CollectorSession:
         post=None,
         credential=None,
         scope=None,
+        destination: str | None = None,
         environment: Mapping[str, str] | None = None,
     ):
         import threading
 
         self.origin = origin
         self.scope = scope
+        self._destination = origin if destination is None else destination.rstrip("/")
         self._post = post or _http_post
         self._credential = credential or huggingface_token
         self._session_token: tuple[str, float] | None = None
         self._lock = threading.Lock()
-        self._given_token = given_collector_token(
+        self.given_token = given_collector_token(
             os.environ if environment is None else environment
         )
-        if self._given_token is not None and self._given_token.origin != origin:
+        if self.given_token is not None and self.given_token.origin != origin:
             raise GivenCollectorTokenError(GIVEN_TOKEN_ORIGIN_ERROR)
         self._given_token_rejected = False
 
@@ -309,12 +314,12 @@ class CollectorSession:
         with self._lock:
             self._session_token = None
             # A given token is never sent again once the collector refused it.
-            self._given_token_rejected = self._given_token is not None
+            self._given_token_rejected = self.given_token is not None
 
     def credential(self) -> tuple[str, str | None]:
         with self._lock:
-            if self._given_token is not None:
-                return self._given_credential(self._given_token)
+            if self.given_token is not None:
+                return self._given_credential(self.given_token)
             if (
                 self._session_token is not None
                 and self._session_token[1]
@@ -332,7 +337,10 @@ class CollectorSession:
             return "ok", token
 
     def _given_credential(self, given: GivenCollectorToken) -> tuple[str, str | None]:
-        if self.scope not in (None, TELEMETRY_SCOPE):
+        if (
+            self.scope not in (None, TELEMETRY_SCOPE)
+            or self._destination != self.origin
+        ):
             return "missing", None
         if self._given_token_rejected:
             return "token_rejected", None
@@ -344,9 +352,21 @@ class CollectorSession:
         return "ok", given.access_token
 
 
-def shared_session(services: dict, origin: str) -> CollectorSession:
-    """Share a session among explicit modules without adding auth to the host."""
-    session = services.setdefault("collector_session", CollectorSession(origin))
-    if not isinstance(session, CollectorSession) or session.origin != origin:
+def shared_session(
+    services: dict, origin: str, *, destination: str | None = None
+) -> CollectorSession:
+    """One module's collector session, without adding auth to the host.
+
+    Modules share one session, and so one exchanged token and its renewal.
+    A given token cannot be renewed, so each module gets a session of its
+    own for it: a 401 that one module receives ends the token for that
+    module only. ``destination`` is the origin the module sends the
+    credential to, when that is not the collector.
+    """
+    session = CollectorSession(origin, destination=destination)
+    if session.given_token is not None:
+        return session
+    shared = services.setdefault("collector_session", session)
+    if not isinstance(shared, CollectorSession) or shared.origin != origin:
         raise ValueError("Provider modules must use the same collector origin.")
-    return session
+    return shared
