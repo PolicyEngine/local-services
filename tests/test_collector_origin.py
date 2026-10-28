@@ -321,27 +321,39 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
         "token with a line break",
     ],
 )
-def test_telemetry_refuses_to_start_with_an_unusable_given_token(
+def test_an_unusable_given_token_stops_the_emitter_at_start(
     tmp_path, monkeypatch, capsys, variables, named_variable
 ) -> None:
-    # The origin variable is only compared: the module still resolves its
-    # own origin, and a different one stops it before it opens the spool.
+    # The origin variable is only compared: each module still resolves its
+    # own origin. The host stops at the first module whose start fails, so
+    # whichever of these comes first says why, before opening its database.
     set_variables(monkeypatch, variables)
-    module = telemetry_module(
-        tmp_path,
-        ModuleContext(os.getpid()),
-        development_collector_url=DEVELOPMENT_COLLECTOR_URL,
-    )
+    for module, database in (
+        (
+            telemetry_module(
+                tmp_path,
+                ModuleContext(os.getpid()),
+                development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+            ),
+            "events.sqlite3",
+        ),
+        (
+            orrery_module(
+                tmp_path,
+                ModuleContext(os.getpid()),
+                development_collector_url=DEVELOPMENT_COLLECTOR_URL,
+            ),
+            "graphs.sqlite3",
+        ),
+    ):
+        with pytest.raises(ValueError, match=named_variable) as refusal:
+            module.initialize()
 
-    with pytest.raises(ValueError, match=named_variable) as refusal:
-        module.initialize()
-
-    error = capsys.readouterr().err
-    assert "Microcosm telemetry cannot start" in error
-    assert named_variable in error
-    assert GIVEN_COLLECTOR_TOKEN not in error
-    assert GIVEN_COLLECTOR_TOKEN not in str(refusal.value)
-    assert not (tmp_path / "events.sqlite3").exists()
+        error = capsys.readouterr().err
+        assert "The Microcosm emitter cannot start" in error
+        assert named_variable in error
+        assert GIVEN_COLLECTOR_TOKEN not in error + str(refusal.value)
+        assert not (tmp_path / database).exists()
 
 
 def test_orrery_sends_a_given_token_only_to_the_collector_and_ends_it_alone(
