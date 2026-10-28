@@ -3,6 +3,11 @@
 `microcosm-emitter host` runs the local service host. A build starts it as its
 own child process, so the host inherits the build's environment variables and
 user, including any Hugging Face credential. It is never a system service.
+
+`microcosm-emitter telemetry-token` runs on the operator's workstation when it
+launches a build on a machine without a Hugging Face credential, such as
+Modal: it obtains a collector token that can only write telemetry, for the
+emitter on that machine.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import argparse
 import json
 import sys
 from importlib.metadata import version
+from typing import Final
 
 from microcosm_emitter.compatibility import (
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -19,6 +25,34 @@ from microcosm_emitter.compatibility import (
 )
 
 DISTRIBUTION_NAME = "microcosm-emitter"
+
+#: Exit codes of `telemetry-token`, one per kind of failure; 2 is a usage
+#: error, as for every command.
+EXIT_MISSING_CREDENTIAL: Final = 3
+EXIT_REJECTED_CREDENTIAL: Final = 4
+EXIT_COLLECTOR_UNAVAILABLE: Final = 5
+EXIT_LIFETIME_UNSUPPORTED: Final = 6
+TELEMETRY_TOKEN_FAILURES: Final = {
+    "missing": (
+        EXIT_MISSING_CREDENTIAL,
+        "No Hugging Face credential was found: set HF_TOKEN or HUGGINGFACE_TOKEN, "
+        "or run `hf auth login`.",
+    ),
+    "rejected": (
+        EXIT_REJECTED_CREDENTIAL,
+        "The collector refused the Hugging Face credential ({answer}): it issues "
+        "tokens only to members of the PolicyEngine organization.",
+    ),
+    "unavailable": (
+        EXIT_COLLECTOR_UNAVAILABLE,
+        "The collector could not be reached or gave no usable token ({answer}).",
+    ),
+    "lifetime_unsupported": (
+        EXIT_LIFETIME_UNSUPPORTED,
+        "The collector refused the request ({answer}): it does not accept "
+        "`lifetime_seconds`, so it cannot issue a token for another machine yet.",
+    ),
+}
 
 
 def describe() -> EmitterDescription:
@@ -36,6 +70,63 @@ def version_report() -> VersionReport:
     return {**describe(), "collector_origin": resolve_collector_origin()}
 
 
+def _positive_integer(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive whole number")
+    return number
+
+
+def _collector_origin(development_collector_url: str | None) -> str:
+    from microcosm_emitter.core.collector_origin import resolve_collector_origin
+
+    try:
+        return resolve_collector_origin(
+            development_collector_url=development_collector_url
+        )
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
+def _add_development_collector_url(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--development-collector-url",
+        dest="collector_origin",
+        metavar="URL",
+        type=_collector_origin,
+        default=None,
+        help="A loopback collector, for tests and local development. Without "
+        "it, the collector origin that `version` prints.",
+    )
+
+
+def telemetry_token(arguments: argparse.Namespace) -> int:
+    """Print a telemetry token, its expiry and the collector origin as JSON.
+
+    The token goes to standard output only; a failure prints one line on
+    standard error, without the token or the collector's answer body.
+    """
+    from microcosm_emitter.core.auth import exchange_telemetry_token
+
+    origin = arguments.collector_origin or _collector_origin(None)
+    exchange = exchange_telemetry_token(origin, arguments.lifetime_seconds)
+    if exchange.result != "ok":
+        exit_code, message = TELEMETRY_TOKEN_FAILURES[exchange.result]
+        answer = "no answer" if exchange.status is None else f"HTTP {exchange.status}"
+        print(message.format(answer=answer), file=sys.stderr)
+        return exit_code
+    print(
+        json.dumps(
+            {
+                "access_token": exchange.access_token,
+                "expires_at": exchange.expires_at,
+                "collector_origin": origin,
+            }
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else list(argv)
     parser = argparse.ArgumentParser(prog="microcosm-emitter", description=__doc__)
@@ -50,12 +141,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the emitter and socket protocol versions and the collector "
         "origin as JSON.",
     )
-    selected, _ = parser.parse_known_args(arguments[:1])
-    if selected.command == "host":
+    token_parser = commands.add_parser(
+        "telemetry-token",
+        help="Exchange this machine's Hugging Face login for a collector token "
+        "that only writes telemetry, for a build on a machine without one. "
+        "Prints the token, its expiry and the collector origin as JSON.",
+    )
+    token_parser.add_argument(
+        "--lifetime-seconds",
+        type=_positive_integer,
+        required=True,
+        help="How long the token should last; the collector may grant less.",
+    )
+    _add_development_collector_url(token_parser)
+    if arguments[:1] == ["host"]:
+        # The host parses its own options.
         from microcosm_emitter.host.__main__ import main as host_main
 
         return host_main(arguments[1:], description=describe())
-    parser.parse_args(arguments)
+    parsed = parser.parse_args(arguments)
+    if parsed.command == "telemetry-token":
+        return telemetry_token(parsed)
     print(json.dumps(version_report()))
     return 0
 

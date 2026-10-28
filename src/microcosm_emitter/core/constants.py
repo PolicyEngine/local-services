@@ -38,6 +38,7 @@ TRUSTED_COLLECTOR_ORIGINS: Final = PRODUCTION_COLLECTOR_ORIGIN_PAIR
 
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 TOKEN_EXCHANGE_PATH: Final = "/v1/auth/huggingface/exchange"
+TELEMETRY_SCOPE: Final = "telemetry:write"
 RUN_REGISTRATION_PATH: Final = "/v1/runs"
 RUN_EVENTS_PATH_TEMPLATE: Final = "/v1/runs/{run_id}/events"
 HTTP_USER_AGENT: Final = "microcosm-telemetry-emitter/1"

@@ -7,7 +7,9 @@ import os
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
 from urllib.parse import urlsplit
@@ -25,6 +27,7 @@ from microcosm_emitter.core.constants import (
     LOOPBACK_HOSTS,
     MAX_HTTP_RESPONSE_BYTES,
     MINIMUM_TOKEN_LIFETIME_SECONDS,
+    TELEMETRY_SCOPE,
     TOKEN_EXCHANGE_PATH,
     TOKEN_REFRESH_MARGIN_SECONDS,
 )
@@ -109,6 +112,70 @@ def huggingface_token() -> str | None:
         os.environ.get("HF_TOKEN", "").strip()
         or os.environ.get("HUGGINGFACE_TOKEN", "").strip()
         or get_token()
+    )
+
+
+@dataclass(frozen=True)
+class TelemetryTokenExchange:
+    """What the collector answered a request for a telemetry token.
+
+    ``result`` is ``ok``, ``missing`` (no Hugging Face credential, nothing
+    sent), ``rejected`` (401 or 403), ``lifetime_unsupported`` (422: the
+    collector's strict exchange body has no ``lifetime_seconds``) or
+    ``unavailable`` (no answer, or no usable token). ``expires_at`` is an
+    ISO 8601 UTC time, counted from before the request was sent.
+    """
+
+    result: str
+    status: int | None = None
+    access_token: str | None = field(default=None, repr=False)
+    expires_at: str | None = None
+
+
+def exchange_telemetry_token(
+    origin: str,
+    lifetime_seconds: int,
+    *,
+    post: Callable[..., tuple[int, dict[str, Any]]] | None = None,
+    credential: Callable[[], str | None] | None = None,
+    clock: Callable[[], float] = time.time,
+) -> TelemetryTokenExchange:
+    """Exchange the Hugging Face credential for a token that only writes
+    telemetry and lasts ``lifetime_seconds``, or as long as the collector
+    allows, for a build on a machine without that credential."""
+
+    hugging_face_token = (credential or huggingface_token)()
+    if not hugging_face_token:
+        return TelemetryTokenExchange("missing")
+    requested_at = clock()
+    try:
+        status, response = (post or _http_post)(
+            origin + TOKEN_EXCHANGE_PATH,
+            {"scope": TELEMETRY_SCOPE, "lifetime_seconds": lifetime_seconds},
+            hugging_face_token,
+        )
+    except (OSError, TimeoutError):
+        return TelemetryTokenExchange("unavailable")
+    if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
+        return TelemetryTokenExchange("rejected", status)
+    if status == HTTPStatus.UNPROCESSABLE_ENTITY:
+        return TelemetryTokenExchange("lifetime_unsupported", status)
+    access_token = response.get("access_token")
+    expires_in = response.get("expires_in")
+    if (
+        status != HTTPStatus.OK
+        or not isinstance(access_token, str)
+        or not access_token
+        or type(expires_in) is not int
+        or expires_in <= 0
+    ):
+        return TelemetryTokenExchange("unavailable", status)
+    expires_at = datetime.fromtimestamp(requested_at + expires_in, UTC)
+    return TelemetryTokenExchange(
+        "ok",
+        status,
+        access_token=access_token,
+        expires_at=expires_at.isoformat(timespec="seconds"),
     )
 
 
