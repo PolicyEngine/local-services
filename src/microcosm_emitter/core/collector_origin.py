@@ -14,6 +14,7 @@ from microcosm_emitter.core.auth import _collector_origin, _development_collecto
 from microcosm_emitter.core.constants import (
     COLLECTOR_SETTING_TYPE_ERROR,
     CONFLICTING_COLLECTOR_ORIGIN_ERROR,
+    PRODUCTION_COLLECTOR_ORIGIN_PAIR,
     PRODUCTION_COLLECTOR_URL,
     TRUSTED_COLLECTOR_ORIGINS,
     UNTRUSTED_COLLECTOR_ORIGIN_ERROR,
@@ -51,6 +52,21 @@ def resolve_collector_origin(
     if origin not in TRUSTED_COLLECTOR_ORIGINS:
         raise ValueError(UNTRUSTED_COLLECTOR_ORIGIN_ERROR)
     return origin
+
+
+def same_collector_origins(origin: str) -> frozenset[str]:
+    """The origins of the collector that ``origin`` reaches, ``origin`` included.
+
+    Only the two origins of ``PRODUCTION_COLLECTOR_ORIGIN_PAIR`` are one
+    collector, so collector rows queued under either (such as rows that earlier
+    releases queued under the Cloud Run address) are delivered through the one
+    this emitter resolved. Any other origin, trusted or a development one, has
+    only itself.
+    """
+
+    if origin in PRODUCTION_COLLECTOR_ORIGIN_PAIR:
+        return PRODUCTION_COLLECTOR_ORIGIN_PAIR
+    return frozenset({origin})
 
 
 def configured_collector_origin(configuration: Mapping[str, Any]) -> str:

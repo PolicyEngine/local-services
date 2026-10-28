@@ -16,7 +16,8 @@ still not final ``FINAL_STATUS_TIME_LIMIT_SECONDS`` after acceptance is
 ``timed_out``. Each submission that ends ``rejected``, ``failed`` or
 ``timed_out`` is reported on standard error. The row lives in the hand-over
 database, so an emitter that exits first leaves the checks to the next
-emitter started with that database.
+emitter started with that database whose origin reaches the same collector
+(``same_collector_origins``).
 
 Collector submissions are off unless the module configuration switches them
 on, so an emitter release with this code changes nothing by default.
@@ -30,6 +31,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
+from microcosm_emitter.core.collector_origin import same_collector_origins
 from microcosm_emitter.huggingface.service.delivery import HeldLeases, never_stop
 from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 from microcosm_emitter.submissions.client import (
@@ -136,6 +138,15 @@ class CollectorSubmissionDelivery:
     def target(self) -> str:
         return self.client.origin
 
+    @property
+    def equivalent_targets(self) -> frozenset[str]:
+        """The other origins of the same collector.
+
+        Rows queued under one of them, such as rows that earlier releases
+        queued under the Cloud Run address, are delivered through ``target``.
+        """
+        return same_collector_origins(self.target) - {self.target}
+
     def enqueue_for_bundle(
         self,
         handover_id: str,
@@ -156,6 +167,7 @@ class CollectorSubmissionDelivery:
             now=self.clock(),
             destination=DESTINATION_COLLECTOR,
             files=files,
+            equivalent_targets=self.equivalent_targets,
         )
 
     def receipt(self, handover_id: str) -> dict[str, Any] | None:
@@ -199,6 +211,7 @@ class CollectorSubmissionDelivery:
                 lease_seconds=SUBMISSION_LEASE_SECONDS,
                 destination=DESTINATION_COLLECTOR,
                 kinds=[COLLECTOR_SUBMISSION],
+                equivalent_targets=self.equivalent_targets,
             )
             if job is None:
                 break
