@@ -186,6 +186,7 @@ def given_collector_token(
 #: Why an exchange of a Hugging Face credential gave no token.
 ExchangeFailureResult = Literal[
     "missing",
+    "unsendable",
     "rejected",
     "unavailable",
     "intake_unavailable",
@@ -208,7 +209,9 @@ class ExchangeFailure:
     """An exchange of a Hugging Face credential that gave no token.
 
     ``result`` is ``missing`` (no Hugging Face credential, so nothing was
-    sent); ``rejected`` (401 or 403); ``intake_unavailable`` (the collector
+    sent); ``unsendable`` (the credential has characters that an HTTP header
+    cannot carry, such as a pasted space, so nothing was sent); ``rejected``
+    (401 or 403); ``intake_unavailable`` (the collector
     has no intake for the requested scope: 404, or a 200 for another scope);
     ``lifetime_unsupported`` (422 to ``lifetime_seconds``: the collector's
     strict exchange body predates it); or ``unavailable`` (no answer, or an
@@ -243,6 +246,8 @@ def exchange_huggingface_credential(
 
     if not hugging_face_token:
         return ExchangeFailure("missing")
+    if not _SENDABLE_CREDENTIAL.fullmatch(hugging_face_token):
+        return ExchangeFailure("unsendable")
     body: dict[str, Any] = {} if scope is None else {"scope": scope}
     if lifetime_seconds is not None:
         body["lifetime_seconds"] = lifetime_seconds
@@ -287,11 +292,15 @@ SessionResult = Literal[
     "token_expired",
     "token_rejected",
 ]
-#: The session's answer to each exchange that gave no token. The session
-#: never asks for a lifetime, so ``lifetime_unsupported`` does not occur; it
-#: would count as an answer without a usable token.
+#: The session's answer to each exchange that gave no token. An unsendable
+#: credential, such as one with a pasted space, counts as refused: before the
+#: emitter checked credentials, it sent such a one, and the collector refused
+#: it with 401. The session never asks for a lifetime, so
+#: ``lifetime_unsupported`` does not occur; it would count as an answer
+#: without a usable token.
 _FAILED_EXCHANGE_ANSWERS: dict[ExchangeFailureResult, SessionResult] = {
     "missing": "missing",
+    "unsendable": "rejected",
     "rejected": "rejected",
     "unavailable": "unavailable",
     "intake_unavailable": "intake_unavailable",
