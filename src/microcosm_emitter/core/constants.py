@@ -12,8 +12,10 @@ BATCH_SIZE: Final = 100
 # moves to another Google Cloud project and its Cloud Run address changes.
 PRODUCTION_COLLECTOR_URL: Final = "https://microcosm-collector.policyengine.org"
 # The production Cloud Run service's own address, the default before the
-# hostname. It reaches the same service, and stays trusted so that a build can
-# still select it with `collector_origin` if the hostname has to be rolled back.
+# hostname. It reaches the same service and stays trusted, so a module
+# configuration's `collector_origin` can still select it. No interface release
+# passes that setting today, so rolling back the hostname needs a new emitter
+# release.
 CLOUD_RUN_COLLECTOR_URL: Final = (
     "https://microcosm-telemetry-389282473430.us-central1.run.app"
 )
