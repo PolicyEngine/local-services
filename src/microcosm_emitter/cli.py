@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from importlib.metadata import version
 from pathlib import Path
 from typing import Final
@@ -35,8 +36,9 @@ EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
 EXIT_LIFETIME_UNSUPPORTED: Final = 6
-#: `status --spool` and `deliver --spool`: the file is not a spool database
-#: this emitter can read.
+#: `status --spool` and `deliver --spool`: the file cannot be used as a spool
+#: database, because this user lacks permission or it is not one this
+#: emitter knows.
 EXIT_UNREADABLE_SPOOL: Final = 7
 #: `deliver --spool`: every other run was delivered, but the collector refused
 #: this login (403) for a run another Hugging Face user registered.
@@ -44,6 +46,11 @@ EXIT_RUN_OF_ANOTHER_USER: Final = 8
 UNREADABLE_SPOOL_MESSAGE: Final = (
     "The spool database cannot be read ({error_type}): the file is not a spool "
     "database, or a newer emitter release wrote it."
+)
+SPOOL_PERMISSION_MESSAGE: Final = (
+    "The spool database cannot be opened ({error_type}): permission denied. "
+    "`status` needs to read the file; `deliver` also needs to write it and to "
+    "create files in its directory."
 )
 #: Each failure to get a collector token: its exit code, and one line for
 #: standard error, where ``{answer}`` is empty or the HTTP status.
@@ -123,17 +130,9 @@ def _add_spool(parser: argparse.ArgumentParser) -> None:
 
 def status(arguments: argparse.Namespace) -> int:
     """Print each run in a spool database as JSON, changing nothing."""
-    from microcosm_emitter.telemetry.service.spool_copy import (
-        UnreadableSpoolError,
-        spool_status,
-    )
+    from microcosm_emitter.telemetry.service.spool_copy import spool_status
 
-    try:
-        runs = spool_status(arguments.spool)
-    except UnreadableSpoolError as error:
-        print(UNREADABLE_SPOOL_MESSAGE.format(error_type=error), file=sys.stderr)
-        return EXIT_UNREADABLE_SPOOL
-    print(json.dumps({"runs": runs}))
+    print(json.dumps({"runs": spool_status(arguments.spool)}))
     return 0
 
 
@@ -141,27 +140,21 @@ def deliver(arguments: argparse.Namespace) -> int:
     """Deliver a spool database's pending runs with this machine's login, then
     print its status as `status` does."""
     from microcosm_emitter.telemetry.service.spool_copy import (
-        UnreadableSpoolError,
         deliver_spool,
         spool_status,
     )
 
-    try:
-        delivery = deliver_spool(
-            arguments.spool,
-            development_collector_url=arguments.development_collector_url,
-            time_limit_seconds=arguments.time_limit_seconds,
-        )
-        match delivery.outcome:
-            case "missing" | "rejected" | "unavailable" as failure:
-                exit_code, message = CREDENTIAL_FAILURES[failure]
-                print(message.format(answer=""), file=sys.stderr)
-                return exit_code
-        runs = spool_status(arguments.spool)
-    except UnreadableSpoolError as error:
-        print(UNREADABLE_SPOOL_MESSAGE.format(error_type=error), file=sys.stderr)
-        return EXIT_UNREADABLE_SPOOL
-    print(json.dumps({"runs": runs}))
+    delivery = deliver_spool(
+        arguments.spool,
+        development_collector_url=arguments.development_collector_url,
+        time_limit_seconds=arguments.time_limit_seconds,
+    )
+    match delivery.outcome:
+        case "missing" | "rejected" | "unavailable" as failure:
+            exit_code, message = CREDENTIAL_FAILURES[failure]
+            print(message.format(answer=""), file=sys.stderr)
+            return exit_code
+    print(json.dumps({"runs": spool_status(arguments.spool)}))
     if delivery.runs_of_other_users:
         print(
             RUN_OF_ANOTHER_USER_MESSAGE.format(
@@ -178,6 +171,24 @@ def deliver(arguments: argparse.Namespace) -> int:
     if delivery.runs_of_other_users:
         return EXIT_RUN_OF_ANOTHER_USER
     return 0
+
+
+def _spool_command(
+    command: Callable[[argparse.Namespace], int], arguments: argparse.Namespace
+) -> int:
+    """Run `status` or `deliver`, exiting 7 for a file it cannot use."""
+    from microcosm_emitter.telemetry.service.spool_copy import UnreadableSpoolError
+
+    try:
+        return command(arguments)
+    except UnreadableSpoolError as error:
+        message = (
+            SPOOL_PERMISSION_MESSAGE
+            if error.permission_denied
+            else UNREADABLE_SPOOL_MESSAGE
+        )
+        print(message.format(error_type=error), file=sys.stderr)
+        return EXIT_UNREADABLE_SPOOL
 
 
 def _collector_origin(development_collector_url: str | None) -> str:
@@ -291,9 +302,9 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.command == "telemetry-token":
         return telemetry_token(parsed)
     if parsed.command == "status":
-        return status(parsed)
+        return _spool_command(status, parsed)
     if parsed.command == "deliver":
-        return deliver(parsed)
+        return _spool_command(deliver, parsed)
     print(json.dumps(version_report()))
     return 0
 

@@ -8,14 +8,18 @@ copy on the operator's workstation.
 
 Opening a spool with ``EventSpool`` migrates it and prunes it: events older
 than the retention period, and the oldest beyond the size limit, are deleted.
-So ``spool_status`` reads a copy in SQLite's read-only mode, changing nothing,
-and ``deliver_spool`` opens it without pruning: an event leaves the copy only
-when the collector acknowledges it. A copy may be delivered long after it was
-made, from any directory: the spool records no paths for telemetry.
+It also makes the file and its directory private to this user. So
+``spool_status`` reads a copy in SQLite's read-only mode, changing nothing,
+and ``deliver_spool`` opens it as a copy, which changes no permissions and
+prunes nothing: an event leaves the copy only when the collector acknowledges
+it. A copy may be delivered long after it was made, from any directory: the
+spool records no paths for telemetry.
 """
 
 from __future__ import annotations
 
+import errno
+import os
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -54,8 +58,14 @@ class RunStatus(TypedDict):
 
 
 class UnreadableSpoolError(RuntimeError):
-    """The file is not a spool database this emitter can read. The message is
-    the underlying error's type, never its details."""
+    """The file cannot be used as a spool database: this user lacks
+    permission (``permission_denied``), or it is not a spool database this
+    emitter knows. The message is the underlying error's type, never its
+    details."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(type(error).__name__)
+        self.permission_denied = isinstance(error, PermissionError)
 
 
 @contextmanager
@@ -66,7 +76,23 @@ def _unreadable_spool_errors() -> Iterator[None]:
     try:
         yield
     except (SQLAlchemyError, CommandError, RuntimeError, OSError) as error:
-        raise UnreadableSpoolError(type(error).__name__) from None
+        raise UnreadableSpoolError(error) from None
+
+
+def _require_permissions(path: Path, *, write: bool) -> None:
+    """Raise ``PermissionError`` unless this user may read the file, and for
+    ``write`` also write it and create files in its directory, as SQLite's
+    rollback journal needs. SQLite itself reports neither as a permission
+    error, only as a file it cannot open."""
+
+    if write:
+        permitted = os.access(path, os.R_OK | os.W_OK) and os.access(
+            path.parent, os.W_OK | os.X_OK
+        )
+    else:
+        permitted = os.access(path, os.R_OK)
+    if not permitted:
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
 
 
 @contextmanager
@@ -74,13 +100,15 @@ def _read_only_spool(path: Path) -> Iterator[Connection]:
     """A connection that cannot write to the spool database at ``path``,
     once its revision is one this emitter knows."""
 
-    engine = create_read_only_spool_engine(path)
-    try:
-        with _unreadable_spool_errors(), engine.connect() as connection:
-            require_known_revision(connection)
-            yield connection
-    finally:
-        engine.dispose()
+    with _unreadable_spool_errors():
+        _require_permissions(path, write=False)
+        engine = create_read_only_spool_engine(path)
+        try:
+            with engine.connect() as connection:
+                require_known_revision(connection)
+                yield connection
+        finally:
+            engine.dispose()
 
 
 #: Why ``deliver_spool`` stopped before opening the file: no Hugging Face
@@ -170,19 +198,28 @@ def deliver_spool(
     """Deliver the pending runs of the spool database at ``path``.
 
     It sends to the collector origin the emitter resolves, or to a loopback
-    ``development_collector_url``. It uses this machine's Hugging Face login,
-    never a collector token given to builds in the environment, and exchanges
-    it before opening the spool for writing: a missing, refused or
-    unexchangeable login returns at once and leaves the file unchanged, so its
-    runs never become local-only for want of a login here. Before either, it
-    reads the file as ``spool_status`` does, so a file that is not a spool
-    database raises ``UnreadableSpoolError`` without being changed. The collector accepts a run
-    registered on another machine again from the same Hugging Face user, and
-    counts events it already has as duplicates. A run another Hugging Face
-    user registered stays pending, for that user to deliver.
+    ``development_collector_url``. In order:
+
+    1. It refuses, unchanged, a file this user may not read and write (or
+       whose directory it may not write), or that is not a spool database of
+       a revision this emitter knows, by raising ``UnreadableSpoolError``.
+    2. It exchanges this machine's Hugging Face login, never a collector token
+       given to builds in the environment. A missing, refused or
+       unexchangeable login returns at once and leaves the file unchanged, so
+       its runs never become local-only for want of a login here.
+    3. It opens the file as a copy, which changes no permissions and prunes
+       nothing, and delivers until nothing it may deliver is pending, or
+       ``time_limit_seconds`` passes.
+
+    The collector accepts a run registered on another machine again from the
+    same Hugging Face user, and counts events it already has as duplicates. A
+    run another Hugging Face user registered stays pending, for that user.
     """
 
-    # Refuse a file that is not a spool database before anything else.
+    # Refuse a file this user may not write, or that is not a spool database,
+    # before anything else.
+    with _unreadable_spool_errors():
+        _require_permissions(path, write=True)
     with _read_only_spool(path):
         pass
     origin = resolve_collector_origin(
@@ -194,7 +231,7 @@ def deliver_spool(
         case "missing" | "rejected" | "unavailable":
             return SpoolDelivery(result)
     with _unreadable_spool_errors():
-        spool = EventSpool(path, prune_on_open=False)
+        spool = EventSpool(path, as_copy=True)
     try:
         delivery = _CopiedSpoolDelivery(
             spool, session=session, development_collector_url=development_collector_url

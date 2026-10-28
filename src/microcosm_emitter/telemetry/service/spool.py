@@ -40,21 +40,24 @@ from microcosm_emitter.telemetry.service.timestamps import utc_now
 class EventSpool:
     """Small SQLite queue shared by successive emitter service processes.
 
-    Opening it prunes events past the retention limits, unless
-    ``prune_on_open`` is false, as for a copy delivered with `deliver`.
+    Opening it creates the file if needed, makes it and its directory private
+    to this user (modes 0600 and 0700), and prunes events past the retention
+    limits. A copy (``as_copy``), such as one `deliver --spool` opens, must
+    already exist; opening it changes neither mode, and prunes nothing.
     """
 
-    def __init__(self, path: Path | str, *, prune_on_open: bool = True) -> None:
+    def __init__(self, path: Path | str, *, as_copy: bool = False) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.parent.chmod(0o700)
-        if not self.path.exists():
-            try:
-                self.path.touch(mode=0o600, exist_ok=False)
-            except FileExistsError:
-                # A concurrent build created the shared database first.
-                pass
-        self.path.chmod(0o600)
+        if not as_copy:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.parent.chmod(0o700)
+            if not self.path.exists():
+                try:
+                    self.path.touch(mode=0o600, exist_ok=False)
+                except FileExistsError:
+                    # A concurrent build created the shared database first.
+                    pass
+            self.path.chmod(0o600)
         self._engine = create_spool_engine(self.path)
         try:
             upgrade_spool_database(self._engine)
@@ -64,7 +67,7 @@ class EventSpool:
         self._session_factory = create_spool_session_factory(self._engine)
         self._lock = threading.RLock()
         self._last_prune_at = 0.0
-        if prune_on_open:
+        if not as_copy:
             self.prune()
 
     def close(self) -> None:
