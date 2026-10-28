@@ -283,8 +283,9 @@ def exchange_huggingface_credential(
     return ExchangedToken(access_token, expires_in)
 
 
-#: What ``CollectorSession.credential()`` answers. ``token_expired`` and
-#: ``token_rejected`` come only from a given token, which cannot be renewed.
+#: What ``CollectorSession.credential()`` answers. ``token_expired``,
+#: ``token_rejected`` and ``withheld_from_destination`` come only from a given
+#: token, which cannot be renewed and is sent only to the collector.
 SessionResult = Literal[
     "ok",
     "missing",
@@ -293,6 +294,7 @@ SessionResult = Literal[
     "intake_unavailable",
     "token_expired",
     "token_rejected",
+    "withheld_from_destination",
 ]
 #: The session's answer to each exchange that gave no token. An unsendable
 #: credential, such as one with a pasted space, counts as refused: before the
@@ -337,8 +339,9 @@ class CollectorSession:
     (``missing``). It is sent only to ``origin``, the collector it was
     obtained from: for a caller that sends its credential to another
     ``destination``, such as the Orrery module's publication origin, the
-    session has no credential either (``destination`` matters only for a
-    given token). It cannot be renewed: from ``TOKEN_REFRESH_MARGIN_SECONDS``
+    session withholds it on purpose (``withheld_from_destination``, which
+    Orrery's jobs record as ``credential_withheld_from_destination``);
+    ``destination`` matters only for a given token. It cannot be renewed: from ``TOKEN_REFRESH_MARGIN_SECONDS``
     before it expires, or after ``invalidate()`` (a 401), the session answers
     ``token_expired`` or ``token_rejected``. A given token obtained from
     another origin than ``origin`` raises ``GivenCollectorTokenError``: its
@@ -394,11 +397,10 @@ class CollectorSession:
             return SessionCredential("ok", exchange.access_token)
 
     def _given_credential(self, given: GivenCollectorToken) -> SessionCredential:
-        if (
-            self.scope not in (None, TELEMETRY_SCOPE)
-            or self._destination != self.origin
-        ):
+        if self.scope not in (None, TELEMETRY_SCOPE):
             return SessionCredential("missing")
+        if self._destination != self.origin:
+            return SessionCredential("withheld_from_destination")
         if self._given_token_rejected:
             return SessionCredential("token_rejected")
         # The collector allows no clock leeway, so stop as early as an
