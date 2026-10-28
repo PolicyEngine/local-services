@@ -27,6 +27,7 @@ from microcosm_emitter.telemetry.service.spool import EventSpool
 from microcosm_emitter.telemetry.service.spool_copy import spool_status
 
 OPERATOR_LOGIN = "hf_synthetic_operator"
+OTHER_OPERATOR_LOGIN = "hf_synthetic_other_operator"
 UNREACHABLE_COLLECTOR_URL = "http://127.0.0.1:1"
 
 
@@ -159,7 +160,7 @@ def test_status_reads_a_copy_without_changing_it_or_the_network(
     assert not_a_spool.read_bytes() == b"not a database"
 
 
-def test_deliver_sends_a_copy_from_another_machine_with_the_operators_login(
+def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
     collector, operator_login, tmp_path, monkeypatch, capsys
 ) -> None:
     container_spool = tmp_path / "container" / "root" / "events.sqlite3"
@@ -176,17 +177,23 @@ def test_deliver_sends_a_copy_from_another_machine_with_the_operators_login(
         "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT", datetime.now(UTC).isoformat()
     )
     monkeypatch.setenv("MICROCOSM_COLLECTOR_ORIGIN", collector.origin)
+    deliver = ["deliver", "--spool", str(copy), "--development-collector-url"]
+    # Another operator's login: the collector refuses it the run (403), which
+    # must stay pending in the copy for the operator who launched the build.
+    monkeypatch.setenv("HF_TOKEN", OTHER_OPERATOR_LOGIN)
+    digest = hashlib.sha256(copy.read_bytes()).hexdigest()
     capsys.readouterr()
 
-    exit_code = cli.main(
-        [
-            "deliver",
-            "--spool",
-            str(copy),
-            "--development-collector-url",
-            collector.origin,
-        ]
-    )
+    assert cli.main([*deliver, collector.origin]) == 8
+
+    output = capsys.readouterr()
+    assert json.loads(output.out)["runs"][0]["undelivered_events"] == 2
+    assert "modal-run" in output.err
+    assert "another Hugging Face user" in output.err
+    assert hashlib.sha256(copy.read_bytes()).hexdigest() == digest
+    monkeypatch.setenv("HF_TOKEN", OPERATOR_LOGIN)
+
+    exit_code = cli.main([*deliver, collector.origin])
 
     output = capsys.readouterr()
     assert exit_code == 0
