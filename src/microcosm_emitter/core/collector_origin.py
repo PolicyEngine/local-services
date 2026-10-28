@@ -53,6 +53,21 @@ def resolve_collector_origin(
     return origin
 
 
+def same_collector_origins(origin: str) -> frozenset[str]:
+    """The origins of the collector that ``origin`` reaches, ``origin`` included.
+
+    Every trusted origin reaches the one production collector, so collector
+    rows queued under any of them (such as rows that earlier releases queued
+    under the Cloud Run address) are delivered through the origin this emitter
+    resolved. The answer never goes beyond the trusted set, and a development
+    origin has only itself.
+    """
+
+    if origin in TRUSTED_COLLECTOR_ORIGINS:
+        return TRUSTED_COLLECTOR_ORIGINS
+    return frozenset({origin})
+
+
 def configured_collector_origin(configuration: Mapping[str, Any]) -> str:
     """Return the origin a module's configuration selects.
 

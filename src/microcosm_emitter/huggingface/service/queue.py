@@ -607,11 +607,14 @@ class HandoverQueue:
         now: float,
         destination: str = DESTINATION_HUGGING_FACE,
         files: Mapping[str, bytes] | None = None,
+        equivalent_targets: Iterable[str] = (),
     ) -> dict[str, Any]:
         """Durably record a hand-over once; repeating it returns its receipt.
 
         ``files`` are the bytes copied at hand-over, stored with the job in
-        one transaction and kept until every destination has settled.
+        one transaction and kept until every destination has settled. A job
+        already queued for one of ``equivalent_targets``, other names of the
+        same target, is the same hand-over.
         """
         with self._sessions.begin() as session:
             existing = session.get(HandoverJob, (handover_id, destination))
@@ -619,7 +622,7 @@ class HandoverQueue:
                 if (
                     existing.request != dict(request)
                     or existing.kind != kind
-                    or existing.target != target
+                    or existing.target not in {target, *equivalent_targets}
                 ):
                     raise ValueError(
                         "Hand-over identity conflicts with a queued hand-over."
@@ -668,8 +671,10 @@ class HandoverQueue:
         lease_seconds: float,
         destination: str = DESTINATION_HUGGING_FACE,
         kinds: Iterable[str] | None = None,
+        equivalent_targets: Iterable[str] = (),
     ) -> ClaimedJob | None:
-        """Lease the earliest-due pending job for ``target``.
+        """Lease the earliest-due pending job for ``target``, or for one of
+        ``equivalent_targets``, other names of the same target.
 
         A conditional update allows one current lease; a worker that exits
         leaves its job eligible again once the lease expires.
@@ -677,7 +682,7 @@ class HandoverQueue:
         with self._sessions.begin() as session:
             statement = select(HandoverJob).where(
                 HandoverJob.destination == destination,
-                HandoverJob.target == target,
+                HandoverJob.target.in_({target, *equivalent_targets}),
                 HandoverJob.status == JOB_PENDING,
                 HandoverJob.next_attempt_at <= now,
                 HandoverJob.lease_until <= now,

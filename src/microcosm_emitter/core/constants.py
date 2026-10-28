@@ -22,6 +22,9 @@ CLOUD_RUN_COLLECTOR_URL: Final = (
 # environment variable) chooses the destination. To move the collector, add its
 # new origin here and point PRODUCTION_COLLECTOR_URL at it, in one release; keep
 # the old origin listed while it still serves, so a build can still select it.
+# Every origin listed must reach the same production collector: collector
+# submission rows queued under one are delivered through whichever one an
+# emitter resolves (`same_collector_origins`).
 TRUSTED_COLLECTOR_ORIGINS: Final = frozenset(
     {PRODUCTION_COLLECTOR_URL, CLOUD_RUN_COLLECTOR_URL}
 )
