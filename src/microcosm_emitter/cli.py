@@ -20,6 +20,7 @@ import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from enum import IntEnum, unique
 from importlib.metadata import version
 from pathlib import Path
 from typing import Final
@@ -32,21 +33,45 @@ from microcosm_emitter.compatibility import (
 
 DISTRIBUTION_NAME = "microcosm-emitter"
 
-#: Exit codes of `telemetry-token` and `deliver`, one per kind of failure; 2
-#: is a usage error, as for every command, and 7 any error of
-#: `telemetry-token` the others do not name.
-EXIT_MISSING_CREDENTIAL: Final = 3
-EXIT_REJECTED_CREDENTIAL: Final = 4
-EXIT_COLLECTOR_UNAVAILABLE: Final = 5
-EXIT_LIFETIME_UNSUPPORTED: Final = 6
-EXIT_UNEXPECTED_FAILURE: Final = 7
-#: `status --spool` and `deliver --spool`: the file cannot be used as a spool
-#: database, because this user lacks permission or it is not one this
-#: emitter knows.
-EXIT_UNREADABLE_SPOOL: Final = 7
-#: `deliver --spool`: every other run was delivered, but the collector refused
-#: this login (403) for a run another Hugging Face user registered.
-EXIT_RUN_OF_ANOTHER_USER: Final = 8
+
+@unique
+class ExitCode(IntEnum):
+    """Every exit code of every `microcosm-emitter` command, in one table.
+
+    ``unique`` refuses two members with one value when this module is
+    imported, so a new code cannot take a meaning another command already
+    gives it. Each comment names the commands that return the code.
+    """
+
+    #: Every command: it did what it was asked.
+    SUCCESS = 0
+    #: `host`: the host could not start. Python also exits 1 for an uncaught
+    #: exception, so no other command uses it.
+    HOST_START_FAILURE = 1
+    #: Every command: a usage error, which argparse reports.
+    USAGE_ERROR = 2
+    #: `telemetry-token` and `deliver`: no Hugging Face credential; nothing
+    #: was sent.
+    MISSING_CREDENTIAL = 3
+    #: `telemetry-token` and `deliver`: the collector refused the credential.
+    REJECTED_CREDENTIAL = 4
+    #: `telemetry-token` and `deliver`: the collector could not be reached or
+    #: gave no usable token. `deliver`: it stayed unavailable until the time
+    #: limit.
+    COLLECTOR_UNAVAILABLE = 5
+    #: `telemetry-token`: the collector does not accept `lifetime_seconds`.
+    LIFETIME_UNSUPPORTED = 6
+    #: `telemetry-token`: any error the other codes do not name; only the
+    #: error's type is printed.
+    UNEXPECTED_FAILURE = 7
+    #: `deliver`: every other run was delivered, but the collector refused
+    #: this login (403) for a run another Hugging Face user registered.
+    RUN_OF_ANOTHER_USER = 8
+    #: `status` and `deliver`: the file cannot be used as a spool database,
+    #: because this user lacks permission or it is not one this emitter knows.
+    UNREADABLE_SPOOL = 9
+
+
 UNREADABLE_SPOOL_MESSAGE: Final = (
     "The spool database cannot be read ({error_type}): the file is not a spool "
     "database, or a newer emitter release wrote it."
@@ -60,21 +85,21 @@ SPOOL_PERMISSION_MESSAGE: Final = (
 #: standard error, where ``{answer}`` is empty or the HTTP status.
 CREDENTIAL_FAILURES: Final = {
     "missing": (
-        EXIT_MISSING_CREDENTIAL,
+        ExitCode.MISSING_CREDENTIAL,
         "No Hugging Face credential was found: set HF_TOKEN or HUGGINGFACE_TOKEN, "
         "or run `hf auth login`.",
     ),
     "rejected": (
-        EXIT_REJECTED_CREDENTIAL,
+        ExitCode.REJECTED_CREDENTIAL,
         "The collector refused the Hugging Face credential{answer}: it issues "
         "tokens only to members of the PolicyEngine organization.",
     ),
     "unavailable": (
-        EXIT_COLLECTOR_UNAVAILABLE,
+        ExitCode.COLLECTOR_UNAVAILABLE,
         "The collector could not be reached or gave no usable token{answer}.",
     ),
     "lifetime_unsupported": (
-        EXIT_LIFETIME_UNSUPPORTED,
+        ExitCode.LIFETIME_UNSUPPORTED,
         "The collector refused the request{answer}: it does not accept "
         "`lifetime_seconds`, so it cannot issue a token for another machine yet.",
     ),
@@ -143,7 +168,7 @@ def status(arguments: argparse.Namespace) -> int:
     from microcosm_emitter.telemetry.service.spool_copy import spool_status
 
     print(json.dumps({"runs": spool_status(arguments.spool)}))
-    return 0
+    return ExitCode.SUCCESS
 
 
 def deliver(arguments: argparse.Namespace) -> int:
@@ -177,16 +202,16 @@ def deliver(arguments: argparse.Namespace) -> int:
             DELIVERY_UNFINISHED_MESSAGE.format(seconds=arguments.time_limit_seconds),
             file=sys.stderr,
         )
-        return EXIT_COLLECTOR_UNAVAILABLE
+        return ExitCode.COLLECTOR_UNAVAILABLE
     if delivery.runs_of_other_users:
-        return EXIT_RUN_OF_ANOTHER_USER
-    return 0
+        return ExitCode.RUN_OF_ANOTHER_USER
+    return ExitCode.SUCCESS
 
 
 def _spool_command(
     command: Callable[[argparse.Namespace], int], arguments: argparse.Namespace
 ) -> int:
-    """Run `status` or `deliver`, exiting 7 for a file it cannot use."""
+    """Run `status` or `deliver`, exiting 9 for a file it cannot use."""
     from microcosm_emitter.telemetry.service.spool_copy import UnreadableSpoolError
 
     try:
@@ -198,7 +223,7 @@ def _spool_command(
             else UNREADABLE_SPOOL_MESSAGE
         )
         print(message.format(error_type=error), file=sys.stderr)
-        return EXIT_UNREADABLE_SPOOL
+        return ExitCode.UNREADABLE_SPOOL
 
 
 def _collector_origin(development_collector_url: str | None) -> str:
@@ -266,7 +291,7 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
             }
         )
     )
-    return 0
+    return ExitCode.SUCCESS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -333,13 +358,13 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 file=sys.stderr,
             )
-            return EXIT_UNEXPECTED_FAILURE
+            return ExitCode.UNEXPECTED_FAILURE
     if parsed.command == "status":
         return _spool_command(status, parsed)
     if parsed.command == "deliver":
         return _spool_command(deliver, parsed)
     print(json.dumps(version_report()))
-    return 0
+    return ExitCode.SUCCESS
 
 
 if __name__ == "__main__":
