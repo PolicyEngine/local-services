@@ -273,7 +273,8 @@ class CollectorSession:
     environment; see ``given_collector_token``), the session uses it and never
     reads or exchanges a Hugging Face credential. The given token only writes
     telemetry, so a session for any other scope has no credential
-    (``missing``). It cannot be renewed: once it has expired, or after
+    (``missing``). It cannot be renewed: from ``TOKEN_REFRESH_MARGIN_SECONDS``
+    before it expires, or after
     ``invalidate()`` (a 401), the session answers ``token_expired`` or
     ``token_rejected``. A given token obtained from another origin than
     ``origin`` raises ``GivenCollectorTokenError``: its origin is only
@@ -335,7 +336,10 @@ class CollectorSession:
             return "missing", None
         if self._given_token_rejected:
             return "token_rejected", None
-        if time.time() >= given.expires_at:
+        # The collector allows no clock leeway, so stop as early as an
+        # exchanged token is renewed: a request in the token's last seconds
+        # would get a 401 and count as a refusal.
+        if time.time() + TOKEN_REFRESH_MARGIN_SECONDS >= given.expires_at:
             return "token_expired", None
         return "ok", given.access_token
 
