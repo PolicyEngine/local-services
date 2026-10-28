@@ -10,6 +10,7 @@ import json
 import shutil
 import socket
 import stat
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import get_args
@@ -17,7 +18,7 @@ from typing import get_args
 import pytest
 from fake_collector import FakeCollector
 from given_token import given_token_variables, set_variables
-from sqlalchemy import delete, update
+from sqlalchemy import MetaData, Table, delete, update
 from sqlalchemy.orm import Session
 
 from microcosm_emitter import cli
@@ -486,6 +487,42 @@ def test_only_deliver_recovers_a_copy_left_with_an_unfinished_write(
         "stage_inputs",
         "write_outputs",
     ]
+
+
+def test_deliver_leaves_a_copy_unchanged_when_its_recovered_state_is_refused(
+    collector, operator_login, tmp_path, monkeypatch, capsys
+) -> None:
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
+    # Stamped by a newer emitter release, so its revision is one this one lacks.
+    engine = create_spool_engine(copy)
+    try:
+        version = Table("alembic_version", MetaData(), autoload_with=engine)
+        with engine.begin() as connection:
+            connection.execute(update(version).values(version_num="29991231_01"))
+    finally:
+        engine.dispose()
+    journal = leave_an_unfinished_write(copy)
+    left_behind = {path: path.read_bytes() for path in (copy, journal)}
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+    capsys.readouterr()
+
+    exit_code = cli.main(
+        [
+            "deliver",
+            "--spool",
+            str(copy),
+            "--development-collector-url",
+            collector.origin,
+        ]
+    )
+
+    assert exit_code == 9
+    assert "newer emitter release" in capsys.readouterr().err
+    # The write is rolled back only in the recovered copy, which is deleted.
+    assert {path: path.read_bytes() for path in left_behind} == left_behind
+    assert list(temporary.iterdir()) == []
 
 
 def test_deliver_stops_at_its_time_limit_with_the_events_pending(
