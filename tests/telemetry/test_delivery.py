@@ -313,6 +313,94 @@ def test_a_given_collector_token_replaces_the_hugging_face_exchange(
         spool.close()
 
 
+@pytest.mark.parametrize(
+    "ending", ["expired", "refused at registration", "refused with events"]
+)
+def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
+    tmp_path, monkeypatch, capsys, ending
+) -> None:
+    spool_path = tmp_path / "events.sqlite3"
+    spool = EventSpool(spool_path)
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    _given_token_environment(
+        monkeypatch,
+        expires_in=timedelta(hours=-1 if ending == "expired" else 18),
+    )
+    _no_hugging_face_credential(monkeypatch)
+    requests: list[str] = []
+
+    def collector_refusing_the_token(url, payload, token, *, timeout=5.0):
+        requests.append(url.removeprefix(DEVELOPMENT_COLLECTOR_URL))
+        registering = url.endswith("/v1/runs")
+        if ending == "refused at registration" or (
+            ending == "refused with events" and not registering
+        ):
+            return 401, {"detail": "invalid token"}
+        return (201, {}) if registering else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", collector_refusing_the_token)
+    delivery = CollectorDelivery(
+        spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    for _ in range(3):
+        assert not delivery.flush_once()
+
+    # Pending, not local-only: the token cannot be renewed here, and is not
+    # sent again once refused.
+    with Session(spool._engine) as session:
+        record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+        assert (record.upload_state, record.local_only_reason) == (
+            "pending",
+            "collector_token_expired"
+            if ending == "expired"
+            else "collector_token_rejected",
+        )
+    assert spool.pending_runs() == [registration]
+    assert (
+        len(requests)
+        == {
+            "expired": 0,
+            "refused at registration": 1,
+            "refused with events": 2,
+        }[ending]
+    )
+    assert capsys.readouterr().err.count("collector token") == 1
+    spool.close()
+
+    # Later, an emitter with the operator's Hugging Face login delivers it.
+    for name in (
+        "MICROCOSM_COLLECTOR_TOKEN",
+        "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
+        "MICROCOSM_COLLECTOR_ORIGIN",
+    ):
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf_member")
+
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "operator-session", "expires_in": 3600}
+        assert token == "operator-session"
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    reopened = EventSpool(spool_path)
+    try:
+        assert CollectorDelivery(
+            reopened, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+        ).flush_once()
+        assert not reopened.has_pending()
+        with Session(reopened._engine) as session:
+            record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+            assert (record.upload_state, record.local_only_reason) == (
+                "pending",
+                None,
+            )
+    finally:
+        reopened.close()
+
+
 def test_non_org_credential_keeps_event_local(tmp_path, monkeypatch, capsys) -> None:
     spool = EventSpool(tmp_path / "events.sqlite3")
     registration = _registration()

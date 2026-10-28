@@ -3,6 +3,7 @@
 import json
 import os
 import time
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -187,6 +188,31 @@ def test_persistence_failure_rolls_back_events_sequences_and_lifecycle(
         ("load", "completed"),
         ("compile", "started"),
     ]
+
+
+def test_close_does_not_wait_for_a_given_token_that_expired(tmp_path, monkeypatch):
+    # Its events cannot be delivered from here, so the build's exit is not
+    # held for the drain period.
+    expired = datetime.now(UTC) - timedelta(minutes=1)
+    monkeypatch.setenv("MICROCOSM_COLLECTOR_TOKEN", "synthetic-telemetry-token")
+    monkeypatch.setenv("MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT", expired.isoformat())
+    monkeypatch.setenv("MICROCOSM_COLLECTOR_ORIGIN", "http://127.0.0.1:1")
+    run = TelemetryRun("given-token-run", "US", "test", producer_id="producer")
+    given_token_module = TelemetryModule(
+        {
+            "registration": run.as_registration(),
+            "spool_path": str(tmp_path / "events.sqlite3"),
+            "development_collector_url": "http://127.0.0.1:1",
+        },
+        ModuleContext(os.getpid()),
+    )
+    given_token_module.initialize()
+    given_token_module.tick(time.monotonic())
+
+    started = time.monotonic()
+    given_token_module.close(started + 5)
+
+    assert time.monotonic() - started < 1
 
 
 def test_module_close_disposes_database_when_delivery_fails(module):
