@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from http import HTTPStatus
+from http.client import HTTPException
 from typing import Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
@@ -211,11 +212,11 @@ class ExchangeFailure:
     ``result`` is ``missing`` (no Hugging Face credential, so nothing was
     sent); ``unsendable`` (the credential has characters that an HTTP header
     cannot carry, such as a pasted space, so nothing was sent); ``rejected``
-    (401 or 403); ``intake_unavailable`` (the collector
-    has no intake for the requested scope: 404, or a 200 for another scope);
-    ``lifetime_unsupported`` (422 to ``lifetime_seconds``: the collector's
-    strict exchange body predates it); or ``unavailable`` (no answer, or an
-    answer without a usable token). ``status`` is the collector's HTTP
+    (401 or 403); ``intake_unavailable`` (the collector has no intake for the
+    requested scope: 404, or a 200 for another scope); ``lifetime_unsupported``
+    (422 to ``lifetime_seconds``: the collector's strict exchange body
+    predates it); or ``unavailable`` (no answer, an answer that is not valid
+    HTTP, or one without a usable token). ``status`` is the collector's HTTP
     status, or ``None`` when it did not answer.
     """
 
@@ -255,7 +256,8 @@ def exchange_huggingface_credential(
         status, answer = (post or _http_post)(
             origin + TOKEN_EXCHANGE_PATH, body, hugging_face_token
         )
-    except (OSError, TimeoutError):
+    except (OSError, TimeoutError, HTTPException):
+        # HTTPException: an answer that is not valid HTTP, or is truncated.
         return ExchangeFailure("unavailable")
     if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         return ExchangeFailure("rejected", status)

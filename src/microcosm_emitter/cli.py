@@ -32,7 +32,8 @@ if TYPE_CHECKING:
 DISTRIBUTION_NAME = "microcosm-emitter"
 
 #: Exit codes of `telemetry-token`, one per kind of failure; 2 is a usage
-#: error, as for every command, and 7 any error the others do not name.
+#: error, as for every command, and 7 an unexpected error, which the others do
+#: not name.
 EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
@@ -40,12 +41,19 @@ EXIT_LIFETIME_UNSUPPORTED: Final = 6
 EXIT_UNEXPECTED_FAILURE: Final = 7
 #: Each exchange that gave no token: its exit code, and one line for standard
 #: error. The scope is `telemetry:write`, so ``intake_unavailable`` does not
-#: occur.
+#: occur. An unsendable credential exits as a refused one, as the collector
+#: answered it before the emitter checked it.
 TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = {
     "missing": (
         EXIT_MISSING_CREDENTIAL,
         "No Hugging Face credential was found: set HF_TOKEN or HUGGINGFACE_TOKEN, "
         "or run `hf auth login`.",
+    ),
+    "unsendable": (
+        EXIT_REJECTED_CREDENTIAL,
+        "The Hugging Face credential was not sent: it has characters that an HTTP "
+        "header cannot carry, such as a space or a line break. Check HF_TOKEN, "
+        "HUGGINGFACE_TOKEN or the login saved by `hf auth login`.",
     ),
     "rejected": (
         EXIT_REJECTED_CREDENTIAL,
@@ -62,6 +70,13 @@ TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = 
         "`lifetime_seconds`, so it cannot issue a token for another machine yet.",
     ),
 }
+#: `huggingface_hub` could not read the login `hf auth login` saved, such as a
+#: file this user may not read, and neither variable is set.
+UNREADABLE_LOGIN_MESSAGE: Final = (
+    "The Hugging Face login saved by `hf auth login` could not be read "
+    "({error_type}), and neither HF_TOKEN nor HUGGINGFACE_TOKEN is set; nothing "
+    "was sent."
+)
 #: Only the error's type: its text can quote the credential, as http.client's
 #: error for a header it cannot send does.
 TELEMETRY_TOKEN_UNEXPECTED_FAILURE: Final = (
@@ -130,11 +145,19 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     from microcosm_emitter.core.constants import TELEMETRY_SCOPE
 
     origin = arguments.collector_origin or _collector_origin(None)
+    try:
+        credential = huggingface_token()
+    except (OSError, UnicodeDecodeError) as error:
+        print(
+            UNREADABLE_LOGIN_MESSAGE.format(error_type=type(error).__name__),
+            file=sys.stderr,
+        )
+        return EXIT_MISSING_CREDENTIAL
     # Counted from before the request, so it never overstates the expiry.
     requested_at = time.time()
     exchange = exchange_huggingface_credential(
         origin,
-        huggingface_token(),
+        credential,
         scope=TELEMETRY_SCOPE,
         lifetime_seconds=arguments.lifetime_seconds,
     )
