@@ -101,9 +101,16 @@ COLLECTOR_SETTING_TYPE_ERROR: Final = (
     "a development collector URL or collector origin must be a string"
 )
 COLLECTOR_RESPONSE_TOO_LARGE_ERROR: Final = "collector response exceeds 1 MiB"
+UNSENDABLE_CREDENTIAL_ERROR: Final = (
+    "the credential has characters that an HTTP header cannot carry"
+)
 GIVEN_TOKEN_VARIABLES_ERROR: Final = (
     "MICROCOSM_COLLECTOR_TOKEN, MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT and "
     "MICROCOSM_COLLECTOR_ORIGIN must be set together"
+)
+GIVEN_TOKEN_VALUE_ERROR: Final = (
+    "MICROCOSM_COLLECTOR_TOKEN must be visible ASCII characters, without spaces "
+    "or line breaks"
 )
 GIVEN_TOKEN_EXPIRY_ERROR: Final = (
     "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT must be an ISO 8601 time with a time zone"

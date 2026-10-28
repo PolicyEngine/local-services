@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +32,7 @@ from microcosm_emitter.core.constants import (
     DEVELOPMENT_COLLECTOR_LOOPBACK_ERROR,
     GIVEN_TOKEN_EXPIRY_ERROR,
     GIVEN_TOKEN_ORIGIN_ERROR,
+    GIVEN_TOKEN_VALUE_ERROR,
     GIVEN_TOKEN_VARIABLES_ERROR,
     HTTP_TIMEOUT_SECONDS,
     HTTP_USER_AGENT,
@@ -40,7 +42,12 @@ from microcosm_emitter.core.constants import (
     TELEMETRY_SCOPE,
     TOKEN_EXCHANGE_PATH,
     TOKEN_REFRESH_MARGIN_SECONDS,
+    UNSENDABLE_CREDENTIAL_ERROR,
 )
+
+#: Visible ASCII without spaces: every Hugging Face credential and collector
+#: token. http.client's error for any other header value quotes it whole.
+_SENDABLE_CREDENTIAL = re.compile(r"[!-~]+")
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -91,6 +98,8 @@ def _http_post(
     *,
     timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> tuple[int, dict[str, Any]]:
+    if not _SENDABLE_CREDENTIAL.fullmatch(bearer_token):
+        raise ValueError(UNSENDABLE_CREDENTIAL_ERROR)
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, separators=(",", ":")).encode(),
@@ -160,6 +169,8 @@ def given_collector_token(
         return None
     if not (access_token and expires_at and origin):
         raise GivenCollectorTokenError(GIVEN_TOKEN_VARIABLES_ERROR)
+    if not _SENDABLE_CREDENTIAL.fullmatch(access_token):
+        raise GivenCollectorTokenError(GIVEN_TOKEN_VALUE_ERROR)
     try:
         expiry = datetime.fromisoformat(expires_at)
     except ValueError:

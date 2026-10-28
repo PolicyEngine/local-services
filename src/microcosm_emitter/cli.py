@@ -34,6 +34,7 @@ EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
 EXIT_LIFETIME_UNSUPPORTED: Final = 6
+EXIT_UNEXPECTED_FAILURE: Final = 7
 TELEMETRY_TOKEN_FAILURES: Final = {
     "missing": (
         EXIT_MISSING_CREDENTIAL,
@@ -55,6 +56,12 @@ TELEMETRY_TOKEN_FAILURES: Final = {
         "`lifetime_seconds`, so it cannot issue a token for another machine yet.",
     ),
 }
+#: Only the error's type: its text can quote the credential, as http.client's
+#: error for a header it cannot send does.
+TELEMETRY_TOKEN_UNEXPECTED_FAILURE: Final = (
+    "No telemetry token was obtained: an unexpected {error_type} occurred. Its "
+    "details are not printed, because they can contain the credential."
+)
 
 
 def describe() -> EmitterDescription:
@@ -175,7 +182,16 @@ def main(argv: list[str] | None = None) -> int:
         return host_main(arguments[1:], description=describe())
     parsed = parser.parse_args(arguments)
     if parsed.command == "telemetry-token":
-        return telemetry_token(parsed)
+        try:
+            return telemetry_token(parsed)
+        except Exception as error:
+            print(
+                TELEMETRY_TOKEN_UNEXPECTED_FAILURE.format(
+                    error_type=type(error).__name__
+                ),
+                file=sys.stderr,
+            )
+            return EXIT_UNEXPECTED_FAILURE
     print(json.dumps(version_report()))
     return 0
 
