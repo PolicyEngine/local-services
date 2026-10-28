@@ -154,10 +154,32 @@ def test_status_reads_a_copy_without_changing_it_or_the_network(
     assert hashlib.sha256(spool_path.read_bytes()).hexdigest() == digest
     assert sorted(spool_path.parent.iterdir()) == copied
 
-    not_a_spool = tmp_path / "notes.sqlite3"
-    not_a_spool.write_bytes(b"not a database")
-    assert cli.main(["status", "--spool", str(not_a_spool)]) == 7
-    assert not_a_spool.read_bytes() == b"not a database"
+
+@pytest.mark.parametrize("command", ["status", "deliver"])
+@pytest.mark.parametrize(
+    "content", [b"not a database", b""], ids=["other content", "zero bytes"]
+)
+def test_both_commands_refuse_a_file_that_is_not_a_spool_database(
+    collector, operator_login, tmp_path, capsys, command, content
+) -> None:
+    not_a_spool = tmp_path / "copied" / "events.sqlite3"
+    not_a_spool.parent.mkdir()
+    not_a_spool.write_bytes(content)
+    listing = sorted(not_a_spool.parent.iterdir())
+    arguments = [command, "--spool", str(not_a_spool)]
+    if command == "deliver":
+        arguments += ["--development-collector-url", collector.origin]
+    capsys.readouterr()
+
+    exit_code = cli.main(arguments)
+
+    output = capsys.readouterr()
+    assert exit_code == 7
+    assert output.out == ""
+    assert "not a spool database" in output.err
+    # `deliver` must not write the spool schema into it, or anything beside it.
+    assert not_a_spool.read_bytes() == content
+    assert sorted(not_a_spool.parent.iterdir()) == listing
 
 
 def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
