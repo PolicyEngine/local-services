@@ -1,9 +1,9 @@
 """Every module sends the builder's Hugging Face token to one trusted origin."""
 
 import os
-from datetime import UTC, datetime, timedelta
 
 import pytest
+from given_token import GIVEN_COLLECTOR_TOKEN, given_token_variables, set_variables
 
 from microcosm_emitter.core.auth import CollectorSession
 from microcosm_emitter.core.collector_origin import (
@@ -288,19 +288,11 @@ def test_collector_submissions_refuse_an_unusable_origin_at_start(
         configured_collector_origin(settings)
 
 
-GIVEN_COLLECTOR_TOKEN = "synthetic-telemetry-token"
-GIVEN_TOKEN_EXPIRY = (datetime.now(UTC) + timedelta(hours=18)).isoformat()
-
-
 @pytest.mark.parametrize(
     ("variables", "named_variable"),
     [
         (
-            {
-                "MICROCOSM_COLLECTOR_TOKEN": GIVEN_COLLECTOR_TOKEN,
-                "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT": GIVEN_TOKEN_EXPIRY,
-                "MICROCOSM_COLLECTOR_ORIGIN": PRODUCTION_COLLECTOR_URL,
-            },
+            given_token_variables(PRODUCTION_COLLECTOR_URL),
             "MICROCOSM_COLLECTOR_ORIGIN",
         ),
         (
@@ -309,9 +301,8 @@ GIVEN_TOKEN_EXPIRY = (datetime.now(UTC) + timedelta(hours=18)).isoformat()
         ),
         (
             {
-                "MICROCOSM_COLLECTOR_TOKEN": GIVEN_COLLECTOR_TOKEN,
+                **given_token_variables(DEVELOPMENT_COLLECTOR_URL),
                 "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT": "tomorrow",
-                "MICROCOSM_COLLECTOR_ORIGIN": DEVELOPMENT_COLLECTOR_URL,
             },
             "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
         ),
@@ -323,8 +314,7 @@ def test_telemetry_refuses_to_start_with_an_unusable_given_token(
 ) -> None:
     # The origin variable is only compared: the module still resolves its
     # own origin, and a different one stops it before it opens the spool.
-    for name, value in variables.items():
-        monkeypatch.setenv(name, value)
+    set_variables(monkeypatch, variables)
     module = telemetry_module(
         tmp_path,
         ModuleContext(os.getpid()),

@@ -1,11 +1,17 @@
 import json
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
 from alembic import command
+from given_token import (
+    GIVEN_COLLECTOR_TOKEN,
+    GIVEN_TOKEN_VARIABLES,
+    given_token_variables,
+    set_variables,
+)
 from sqlalchemy.orm import Session
 
 from microcosm_emitter.core import auth as auth_module
@@ -54,19 +60,6 @@ def _registration(run_id: str = "run-a") -> dict[str, object]:
 
 
 DEVELOPMENT_COLLECTOR_URL = "http://127.0.0.1:8080"
-GIVEN_COLLECTOR_TOKEN = "synthetic-telemetry-token"
-
-
-def _given_token_environment(
-    monkeypatch, *, expires_in: timedelta = timedelta(hours=18)
-) -> None:
-    """The variables the Modal runner sets from `telemetry-token`'s output."""
-    expires_at = datetime.now(UTC) + expires_in
-    monkeypatch.setenv("MICROCOSM_COLLECTOR_TOKEN", GIVEN_COLLECTOR_TOKEN)
-    monkeypatch.setenv(
-        "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT", expires_at.isoformat(timespec="seconds")
-    )
-    monkeypatch.setenv("MICROCOSM_COLLECTOR_ORIGIN", DEVELOPMENT_COLLECTOR_URL)
 
 
 def _no_hugging_face_credential(monkeypatch) -> None:
@@ -284,7 +277,7 @@ def test_a_given_collector_token_replaces_the_hugging_face_exchange(
     spool.register(registration)
     spool.append(registration, _event())
     requests: list[tuple[str, str]] = []
-    _given_token_environment(monkeypatch)
+    set_variables(monkeypatch, given_token_variables(DEVELOPMENT_COLLECTOR_URL))
     _no_hugging_face_credential(monkeypatch)
 
     def fake_post(url, payload, token, *, timeout=5.0):
@@ -324,9 +317,12 @@ def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
     registration = _registration()
     spool.register(registration)
     spool.append(registration, _event())
-    _given_token_environment(
+    set_variables(
         monkeypatch,
-        expires_in=timedelta(hours=-1 if ending == "expired" else 18),
+        given_token_variables(
+            DEVELOPMENT_COLLECTOR_URL,
+            expires_in=timedelta(hours=-1 if ending == "expired" else 18),
+        ),
     )
     _no_hugging_face_credential(monkeypatch)
     requests: list[str] = []
@@ -370,11 +366,7 @@ def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
     spool.close()
 
     # Later, an emitter with the operator's Hugging Face login delivers it.
-    for name in (
-        "MICROCOSM_COLLECTOR_TOKEN",
-        "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT",
-        "MICROCOSM_COLLECTOR_ORIGIN",
-    ):
+    for name in GIVEN_TOKEN_VARIABLES:
         monkeypatch.delenv(name)
     monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf_member")
 

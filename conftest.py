@@ -7,7 +7,14 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolate_credentials_and_network(tmp_path, monkeypatch):
-    for name in ("HF_TOKEN", "HUGGINGFACE_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+    from given_token import GIVEN_TOKEN_VARIABLES
+
+    for name in (
+        "HF_TOKEN",
+        "HUGGINGFACE_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        *GIVEN_TOKEN_VARIABLES,
+    ):
         monkeypatch.delenv(name, raising=False)
     hf_home = tmp_path / "hf"
     monkeypatch.setenv("HF_HOME", str(hf_home))
