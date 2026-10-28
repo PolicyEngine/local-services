@@ -286,9 +286,15 @@ def exchange_huggingface_credential(
 #: What ``CollectorSession.credential()`` answers. ``token_expired``,
 #: ``token_rejected`` and ``withheld_from_destination`` come only from a given
 #: token, which cannot be renewed and is sent only to the collector.
+#: ``unsendable`` is a Hugging Face credential that was not sent, because it
+#: contains characters that cannot be sent as a bearer token. The telemetry
+#: module and collector submissions handle it as ``rejected``, the collector's
+#: answer before the emitter checked credentials; the Orrery module's jobs
+#: record it as ``credential_unsendable``.
 SessionResult = Literal[
     "ok",
     "missing",
+    "unsendable",
     "rejected",
     "unavailable",
     "intake_unavailable",
@@ -296,15 +302,12 @@ SessionResult = Literal[
     "token_rejected",
     "withheld_from_destination",
 ]
-#: The session's answer to each exchange that gave no token. An unsendable
-#: credential, such as one with a pasted space, counts as refused: before the
-#: emitter checked credentials, it sent such a one, and the collector refused
-#: it with 401. The session never asks for a lifetime, so
-#: ``lifetime_unsupported`` does not occur; it would count as an answer
-#: without a usable token.
+#: The session's answer to each exchange that gave no token. The session
+#: never asks for a lifetime, so ``lifetime_unsupported`` does not occur; it
+#: would count as an answer without a usable token.
 _FAILED_EXCHANGE_ANSWERS: dict[ExchangeFailureResult, SessionResult] = {
     "missing": "missing",
-    "unsendable": "rejected",
+    "unsendable": "unsendable",
     "rejected": "rejected",
     "unavailable": "unavailable",
     "intake_unavailable": "intake_unavailable",
