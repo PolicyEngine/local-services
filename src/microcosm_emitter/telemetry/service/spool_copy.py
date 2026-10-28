@@ -28,7 +28,6 @@ from __future__ import annotations
 import errno
 import os
 import shutil
-import sqlite3
 import tempfile
 import time
 from collections.abc import Iterator, Mapping
@@ -80,10 +79,12 @@ class UnreadableSpoolError(RuntimeError):
     def __init__(self, error: Exception) -> None:
         super().__init__(type(error).__name__)
         self.permission_denied = isinstance(error, PermissionError)
+        # By the name of SQLite's error code, which the driver's exception
+        # carries; the database modules do not import the driver.
         driver_error = getattr(error, "orig", None)
         self.unfinished_write = (
-            getattr(driver_error, "sqlite_errorcode", None)
-            == sqlite3.SQLITE_READONLY_ROLLBACK
+            getattr(driver_error, "sqlite_errorname", None)
+            == "SQLITE_READONLY_ROLLBACK"
         )
 
 
