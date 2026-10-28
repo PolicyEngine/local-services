@@ -19,6 +19,13 @@ exchange and every submission path answer 404 ``intake_not_enabled``) or
 with a ``telemetry:write`` token and no ``scope``, and submission paths 404
 without a ``code``).
 
+It also takes telemetry, as the collector does: ``POST /v1/runs`` registers a
+run for the Hugging Face user whose credential the token was exchanged for
+(201 again for the same user and metadata, 403 for another user, 409 for
+other metadata), and ``POST /v1/runs/{run_id}/events`` stores events by
+``event_id`` for that user's runs (202). ``refuse_issued_tokens`` makes every
+token issued so far answer 401, as a new signing key would.
+
 The exchange takes ``lifetime_seconds`` with ``telemetry:write`` only, as
 microcosm-collector's exchange for builds on other machines does, and grants
 at most ``MAX_EXCHANGE_LIFETIME_SECONDS``. With ``accepts_lifetime_seconds``
@@ -81,6 +88,13 @@ class FakeCollector:
         self.exchange_requests: list[dict[str, Any]] = []
         #: The bearer credential of each exchange request.
         self.exchange_credentials: list[str] = []
+        #: Registered telemetry runs: their owner and registration.
+        self.runs: dict[str, dict[str, Any]] = {}
+        #: Stored telemetry events, by event ID.
+        self.events: dict[str, dict[str, Any]] = {}
+        #: The Hugging Face credential each issued token was exchanged for,
+        #: which stands for its user.
+        self._token_users: dict[str, str] = {}
         self.accepts_lifetime_seconds = True
         self.created: list[dict[str, Any]] = []
         self.completed: list[str] = []
@@ -172,6 +186,8 @@ class FakeCollector:
                 with collector._lock:
                     if self.path == "/v1/auth/huggingface/exchange":
                         return collector._exchange(self, body)
+                    if self.path == "/v1/runs" or self.path.startswith("/v1/runs/"):
+                        return collector._telemetry(self, json.loads(body))
                     if collector.intake != "on":
                         return collector._intake_not_available(self)
                     scope = self._token_scope()
@@ -268,6 +284,11 @@ class FakeCollector:
             for server in self._servers
         ]
 
+    def refuse_issued_tokens(self) -> None:
+        """Answer every token issued so far with 401."""
+        with self._lock:
+            self._tokens.clear()
+
     def hold_uploads(self) -> None:
         """Make every upload wait until ``release_uploads``."""
         self.uploads_released.clear()
@@ -346,8 +367,9 @@ class FakeCollector:
             token = f"telemetry-token-{len(self._tokens) + 1}"
             self._tokens[token] = "telemetry:write"
             return handler._json(200, {"access_token": token, "expires_in": 900})
-        token = f"session-token-{len(self._tokens) + 1}"
+        token = f"session-token-{len(self._token_users) + 1}"
         self._tokens[token] = scope
+        self._token_users[token] = self.exchange_credentials[-1]
         self._token_expiry[token] = time.monotonic() + lifetime_seconds
         handler._json(
             200,
@@ -357,6 +379,39 @@ class FakeCollector:
                 "expires_in": lifetime_seconds,
                 "scope": scope,
             },
+        )
+
+    def _telemetry(self, handler: Any, body: dict[str, Any]) -> None:
+        scope = handler._token_scope()
+        if scope is None:
+            return handler._json(401, {"detail": "invalid"})
+        if scope != "telemetry:write":
+            return handler._json(403, {"detail": "scope"})
+        token = handler.headers.get("Authorization", "").removeprefix("Bearer ")
+        user = self._token_users[token]
+        if handler.path == "/v1/runs":
+            metadata = {
+                key: value for key, value in body.items() if key != "producer_id"
+            }
+            run = self.runs.setdefault(
+                body["run_id"], {"owner": user, "metadata": metadata}
+            )
+            if run["owner"] != user:
+                return handler._json(403, {"detail": "another user's run"})
+            if run["metadata"] != metadata:
+                return handler._json(409, {"detail": "other metadata"})
+            return handler._json(201, {"registered": True})
+        run = self.runs.get(handler.path.split("/")[3])
+        if run is None:
+            return handler._json(404, {"detail": "unknown run"})
+        if run["owner"] != user:
+            return handler._json(403, {"detail": "another user's run"})
+        duplicates = sum(event["event_id"] in self.events for event in body["events"])
+        for event in body["events"]:
+            self.events.setdefault(event["event_id"], event)
+        handler._json(
+            202,
+            {"accepted": len(body["events"]) - duplicates, "duplicates": duplicates},
         )
 
     @staticmethod
