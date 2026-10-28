@@ -12,6 +12,7 @@ import socket
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from fake_collector import FakeCollector
@@ -29,9 +30,10 @@ from microcosm_emitter.core.constants import TELEMETRY_SCOPE
 from microcosm_emitter.core.database import create_spool_engine
 from microcosm_emitter.core.models import TelemetryEventRecord
 from microcosm_emitter.telemetry.client import TelemetryRun
+from microcosm_emitter.telemetry.service import spool_copy as spool_copy_module
 from microcosm_emitter.telemetry.service.collector import CollectorDelivery
 from microcosm_emitter.telemetry.service.spool import EventSpool
-from microcosm_emitter.telemetry.service.spool_copy import spool_status
+from microcosm_emitter.telemetry.service.spool_copy import LoginFailure, spool_status
 
 OPERATOR_LOGIN = "hf_synthetic_operator"
 OTHER_OPERATOR_LOGIN = "hf_synthetic_other_operator"
@@ -309,6 +311,8 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     failure,
     expected_exit_code,
 ) -> None:
+    # Every login failure deliver_spool reports has an exit code and a message.
+    assert set(get_args(LoginFailure)) <= set(cli.CREDENTIAL_FAILURES)
     copy = copy_of_a_build_on_modal(collector, tmp_path)
     digest = hashlib.sha256(copy.read_bytes()).hexdigest()
     listing = sorted(copy.parent.iterdir())
@@ -382,3 +386,32 @@ def test_deliver_keeps_the_runs_pending_when_its_login_is_refused_partway(
     assert [
         (run["upload_state"], run["undelivered_events"]) for run in spool_status(copy)
     ] == [("pending", 2)]
+
+
+@pytest.mark.parametrize("command", ["status", "deliver"])
+def test_both_commands_print_only_the_type_of_an_unexpected_error(
+    collector, operator_login, tmp_path, monkeypatch, capsys, command
+) -> None:
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
+
+    def unexpected_error(*arguments, **options):
+        raise ValueError(f"an error quoting {OPERATOR_LOGIN}")
+
+    monkeypatch.setattr(
+        spool_copy_module,
+        "spool_status" if command == "status" else "deliver_spool",
+        unexpected_error,
+    )
+    arguments = [command, "--spool", str(copy)]
+    if command == "deliver":
+        arguments += ["--development-collector-url", collector.origin]
+    capsys.readouterr()
+
+    exit_code = cli.main(arguments)
+
+    output = capsys.readouterr()
+    # As `telemetry-token`: exit 1 is only for a host that could not start.
+    assert exit_code == 7
+    assert output.out == ""
+    assert "unexpected ValueError" in output.err
+    assert OPERATOR_LOGIN not in output.err
