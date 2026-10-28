@@ -225,15 +225,21 @@ def deliver(arguments: argparse.Namespace) -> int:
     """Deliver a spool database's pending runs with this machine's login, then
     print its status as `status` does."""
     from microcosm_emitter.telemetry.service.spool_copy import (
+        UnreadableLoginError,
         deliver_spool,
         spool_status,
     )
 
-    delivery = deliver_spool(
-        arguments.spool,
-        development_collector_url=arguments.development_collector_url,
-        time_limit_seconds=arguments.time_limit_seconds,
-    )
+    try:
+        delivery = deliver_spool(
+            arguments.spool,
+            development_collector_url=arguments.development_collector_url,
+            time_limit_seconds=arguments.time_limit_seconds,
+        )
+    except UnreadableLoginError as error:
+        print(UNREADABLE_LOGIN_MESSAGE.format(error_type=error), file=sys.stderr)
+        print(DELIVERY_STOPPED_MESSAGE, file=sys.stderr)
+        return ExitCode.MISSING_CREDENTIAL
     if delivery.login_failure is not None:
         exit_code, message = CREDENTIAL_FAILURES[delivery.login_failure]
         print(message.format(answer=""), file=sys.stderr)

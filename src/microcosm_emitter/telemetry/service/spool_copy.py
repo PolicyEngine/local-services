@@ -42,7 +42,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from microcosm_emitter.core.auth import CollectorSession, SessionResult
+from microcosm_emitter.core.auth import (
+    CollectorSession,
+    SessionResult,
+    huggingface_token,
+)
 from microcosm_emitter.core.collector_origin import resolve_collector_origin
 from microcosm_emitter.core.constants import DRAIN_RETRY_SECONDS
 from microcosm_emitter.core.database import (
@@ -129,6 +133,26 @@ def _read_only_spool(path: Path) -> Iterator[Connection]:
                 yield connection
         finally:
             engine.dispose()
+
+
+class UnreadableLoginError(RuntimeError):
+    """huggingface_hub could not read the login `hf auth login` saved on this
+    machine, such as a file this user may not read, and neither HF_TOKEN nor
+    HUGGINGFACE_TOKEN is set. Nothing was sent. The message is the underlying
+    error's type, never its details."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(type(error).__name__)
+
+
+def _this_machines_login() -> str | None:
+    """This machine's Hugging Face login, raising ``UnreadableLoginError``
+    when the saved one cannot be read."""
+
+    try:
+        return huggingface_token()
+    except (OSError, UnicodeDecodeError) as error:
+        raise UnreadableLoginError(error) from None
 
 
 #: Why this machine's login gave ``deliver_spool`` no collector token:
@@ -288,7 +312,10 @@ def deliver_spool(
     2. It exchanges this machine's Hugging Face login, never a collector token
        given to builds in the environment. A missing, refused or
        unexchangeable login returns at once and leaves the file unchanged, so
-       its runs never become local-only for want of a login here.
+       its runs never become local-only for want of a login here. A saved
+       login it cannot read raises ``UnreadableLoginError``, here or when the
+       session reads it again partway through delivery, which then stops
+       without writing anything more.
     3. It opens the file as a copy, which changes no permissions and prunes
        nothing, and delivers until nothing it may deliver is pending, or
        ``time_limit_seconds`` passes. If the login is missing or refused
@@ -317,7 +344,9 @@ def deliver_spool(
     origin = resolve_collector_origin(
         development_collector_url=development_collector_url
     )
-    session = CollectorSession(origin, use_given_token=False)
+    session = CollectorSession(
+        origin, use_given_token=False, credential=_this_machines_login
+    )
     login = session.credential()
     if login.result != "ok":
         return SpoolDelivery("login_failed", _login_failure(login.result))
