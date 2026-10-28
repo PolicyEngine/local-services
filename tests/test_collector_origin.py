@@ -383,7 +383,12 @@ def test_orrery_sends_a_given_token_only_to_the_collector_and_ends_it_alone(
     for module in modules:
         module.initialize()
     try:
-        assert publishing_elsewhere.delivery.credential() == ("missing", None)
+        # Withheld on purpose, which Orrery's jobs record as
+        # `credential_withheld_from_destination`, not as a missing login.
+        assert publishing_elsewhere.delivery.credential() == (
+            "withheld_from_destination",
+            None,
+        )
         assert publishing_to_the_collector.delivery.credential() == (
             "ok",
             GIVEN_COLLECTOR_TOKEN,
