@@ -17,13 +17,15 @@ made, from any directory: the spool records no paths for telemetry.
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from alembic.util import CommandError
 from sqlalchemy import func, select
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -54,6 +56,31 @@ class RunStatus(TypedDict):
 class UnreadableSpoolError(RuntimeError):
     """The file is not a spool database this emitter can read. The message is
     the underlying error's type, never its details."""
+
+
+@contextmanager
+def _unreadable_spool_errors() -> Iterator[None]:
+    """Report a failure to open or read a spool database as
+    ``UnreadableSpoolError``."""
+
+    try:
+        yield
+    except (SQLAlchemyError, CommandError, RuntimeError, OSError) as error:
+        raise UnreadableSpoolError(type(error).__name__) from None
+
+
+@contextmanager
+def _read_only_spool(path: Path) -> Iterator[Connection]:
+    """A connection that cannot write to the spool database at ``path``,
+    once its revision is one this emitter knows."""
+
+    engine = create_read_only_spool_engine(path)
+    try:
+        with _unreadable_spool_errors(), engine.connect() as connection:
+            require_known_revision(connection)
+            yield connection
+    finally:
+        engine.dispose()
 
 
 #: Why ``deliver_spool`` stopped before opening the file: no Hugging Face
@@ -115,34 +142,23 @@ class _CopiedSpoolDelivery(CollectorDelivery):
 def spool_status(path: Path) -> list[RunStatus]:
     """Every run in the spool database at ``path``, read without writing."""
 
-    engine = create_read_only_spool_engine(path)
-    try:
-        with engine.connect() as connection:
-            require_known_revision(connection)
-            with Session(connection) as session:
-                rows = session.execute(
-                    select(
-                        TelemetryRunRecord,
-                        func.count(TelemetryEventRecord.event_id),
-                    )
-                    .outerjoin(TelemetryRunRecord.events)
-                    .group_by(TelemetryRunRecord.run_id, TelemetryRunRecord.producer_id)
-                    .order_by(TelemetryRunRecord.run_id, TelemetryRunRecord.producer_id)
-                ).all()
-                return [
-                    {
-                        "run_id": run.run_id,
-                        "producer_id": run.producer_id,
-                        "upload_state": run.upload_state,
-                        "reason": run.local_only_reason,
-                        "undelivered_events": undelivered_events,
-                    }
-                    for run, undelivered_events in rows
-                ]
-    except (SQLAlchemyError, CommandError, RuntimeError, OSError) as error:
-        raise UnreadableSpoolError(type(error).__name__) from None
-    finally:
-        engine.dispose()
+    with _read_only_spool(path) as connection, Session(connection) as session:
+        rows = session.execute(
+            select(TelemetryRunRecord, func.count(TelemetryEventRecord.event_id))
+            .outerjoin(TelemetryRunRecord.events)
+            .group_by(TelemetryRunRecord.run_id, TelemetryRunRecord.producer_id)
+            .order_by(TelemetryRunRecord.run_id, TelemetryRunRecord.producer_id)
+        ).all()
+        return [
+            {
+                "run_id": run.run_id,
+                "producer_id": run.producer_id,
+                "upload_state": run.upload_state,
+                "reason": run.local_only_reason,
+                "undelivered_events": undelivered_events,
+            }
+            for run, undelivered_events in rows
+        ]
 
 
 def deliver_spool(
@@ -156,14 +172,19 @@ def deliver_spool(
     It sends to the collector origin the emitter resolves, or to a loopback
     ``development_collector_url``. It uses this machine's Hugging Face login,
     never a collector token given to builds in the environment, and exchanges
-    it before opening the spool: a missing, refused or unexchangeable login
-    returns at once and leaves the file unchanged, so its runs never become
-    local-only for want of a login here. The collector accepts a run
+    it before opening the spool for writing: a missing, refused or
+    unexchangeable login returns at once and leaves the file unchanged, so its
+    runs never become local-only for want of a login here. Before either, it
+    reads the file as ``spool_status`` does, so a file that is not a spool
+    database raises ``UnreadableSpoolError`` without being changed. The collector accepts a run
     registered on another machine again from the same Hugging Face user, and
     counts events it already has as duplicates. A run another Hugging Face
     user registered stays pending, for that user to deliver.
     """
 
+    # Refuse a file that is not a spool database before anything else.
+    with _read_only_spool(path):
+        pass
     origin = resolve_collector_origin(
         development_collector_url=development_collector_url
     )
@@ -172,10 +193,8 @@ def deliver_spool(
     match result:
         case "missing" | "rejected" | "unavailable":
             return SpoolDelivery(result)
-    try:
+    with _unreadable_spool_errors():
         spool = EventSpool(path, prune_on_open=False)
-    except (SQLAlchemyError, CommandError, RuntimeError, OSError) as error:
-        raise UnreadableSpoolError(type(error).__name__) from None
     try:
         delivery = _CopiedSpoolDelivery(
             spool, session=session, development_collector_url=development_collector_url
