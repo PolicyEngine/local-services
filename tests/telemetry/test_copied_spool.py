@@ -8,6 +8,8 @@ on the workstation later, with their own Hugging Face login.
 import hashlib
 import json
 import shutil
+import socket
+import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -101,8 +103,29 @@ def build_on_modal(collector: FakeCollector, spool_path: Path) -> None:
         spool.close()
 
 
+def copy_of_a_build_on_modal(collector: FakeCollector, tmp_path: Path) -> Path:
+    """The spool a build on Modal left, copied to a directory of its own, as
+    the Modal runner copies it to the runs volume, with ordinary modes."""
+    container_spool = tmp_path / "container" / "root" / "events.sqlite3"
+    build_on_modal(collector, container_spool)
+    copy = tmp_path / "runs" / "modal-run" / "telemetry" / "events.sqlite3"
+    copy.parent.mkdir(parents=True)
+    shutil.copyfile(container_spool, copy)
+    copy.parent.chmod(0o755)
+    copy.chmod(0o644)
+    return copy
+
+
+def modes(spool_path: Path) -> tuple[int, int]:
+    """The permission bits of a spool database's directory and of the file."""
+    return (
+        stat.S_IMODE(spool_path.parent.stat().st_mode),
+        stat.S_IMODE(spool_path.stat().st_mode),
+    )
+
+
 def test_status_reads_a_copy_without_changing_it_or_the_network(
-    tmp_path, monkeypatch, capsys
+    operator_login, tmp_path, monkeypatch, capsys
 ) -> None:
     spool_path = tmp_path / "copied" / "events.sqlite3"
     spool = EventSpool(spool_path)
@@ -122,7 +145,8 @@ def test_status_reads_a_copy_without_changing_it_or_the_network(
     def no_network(*arguments, **options):
         raise AssertionError("network request")
 
-    monkeypatch.setattr(auth_module, "_http_post", no_network)
+    # With a login to deliver with, any request would be an attempt to.
+    monkeypatch.setattr(socket.socket, "connect", no_network)
 
     assert cli.main(["status", "--spool", str(spool_path)]) == 0
 
@@ -157,16 +181,28 @@ def test_status_reads_a_copy_without_changing_it_or_the_network(
 
 @pytest.mark.parametrize("command", ["status", "deliver"])
 @pytest.mark.parametrize(
-    "content", [b"not a database", b""], ids=["other content", "zero bytes"]
+    ("content", "mode", "message"),
+    [
+        (b"not a database", 0o600, "not a spool database"),
+        (b"", 0o600, "not a spool database"),
+        # A spool database, which this user may not read.
+        (None, 0o000, "permission denied"),
+    ],
+    ids=["other content", "zero bytes", "no read permission"],
 )
-def test_both_commands_refuse_a_file_that_is_not_a_spool_database(
-    collector, operator_login, tmp_path, capsys, command, content
+def test_both_commands_refuse_a_file_they_cannot_use(
+    collector, operator_login, tmp_path, capsys, command, content, mode, message
 ) -> None:
-    not_a_spool = tmp_path / "copied" / "events.sqlite3"
-    not_a_spool.parent.mkdir()
-    not_a_spool.write_bytes(content)
-    listing = sorted(not_a_spool.parent.iterdir())
-    arguments = [command, "--spool", str(not_a_spool)]
+    spool_path = tmp_path / "copied" / "events.sqlite3"
+    if content is None:
+        build_on_modal(collector, spool_path)
+    else:
+        spool_path.parent.mkdir()
+        spool_path.write_bytes(content)
+    original = spool_path.read_bytes()
+    listing = sorted(spool_path.parent.iterdir())
+    spool_path.chmod(mode)
+    arguments = [command, "--spool", str(spool_path)]
     if command == "deliver":
         arguments += ["--development-collector-url", collector.origin]
     capsys.readouterr()
@@ -176,20 +212,18 @@ def test_both_commands_refuse_a_file_that_is_not_a_spool_database(
     output = capsys.readouterr()
     assert exit_code == 7
     assert output.out == ""
-    assert "not a spool database" in output.err
+    assert message in output.err
+    assert modes(spool_path)[1] == mode
+    spool_path.chmod(0o600)
     # `deliver` must not write the spool schema into it, or anything beside it.
-    assert not_a_spool.read_bytes() == content
-    assert sorted(not_a_spool.parent.iterdir()) == listing
+    assert spool_path.read_bytes() == original
+    assert sorted(spool_path.parent.iterdir()) == listing
 
 
 def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
     collector, operator_login, tmp_path, monkeypatch, capsys
 ) -> None:
-    container_spool = tmp_path / "container" / "root" / "events.sqlite3"
-    build_on_modal(collector, container_spool)
-    copy = tmp_path / "runs" / "modal-run" / "telemetry" / "events.sqlite3"
-    copy.parent.mkdir(parents=True)
-    shutil.copyfile(container_spool, copy)
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
     # Delivery may come after the spool's 7-day retention period.
     age_events(copy, days=8)
     # A token given to builds is not the operator's login, even if it is
@@ -237,7 +271,9 @@ def test_deliver_sends_a_copy_from_another_machine_only_with_the_owners_login(
     ]
     assert collector.runs["modal-run"]["owner"] == OPERATOR_LOGIN
     assert OPERATOR_LOGIN not in output.err
-    # Only the copy changed.
+    # Only the copy's events changed, not its permissions or the original.
+    assert modes(copy) == (0o755, 0o644)
+    container_spool = tmp_path / "container" / "root" / "events.sqlite3"
     assert spool_status(container_spool)[0]["undelivered_events"] == 2
 
 
@@ -254,9 +290,9 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     failure,
     expected_exit_code,
 ) -> None:
-    copy = tmp_path / "copied" / "events.sqlite3"
-    build_on_modal(collector, copy)
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
     digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+    listing = sorted(copy.parent.iterdir())
     collector_url = collector.origin
     if failure == "no login":
         monkeypatch.delenv("HF_TOKEN")
@@ -276,3 +312,7 @@ def test_deliver_without_a_usable_login_leaves_the_copy_unchanged(
     assert output.err.strip()
     # A missing or refused login must not make the copy's runs local-only.
     assert hashlib.sha256(copy.read_bytes()).hexdigest() == digest
+    # Nor is the copy opened for writing, which would leave a lock file beside
+    # it, even where the collector is unreachable and nothing would be written.
+    assert sorted(copy.parent.iterdir()) == listing
+    assert modes(copy) == (0o755, 0o644)
