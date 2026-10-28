@@ -10,6 +10,7 @@ from typing import Any
 
 from microcosm_emitter.core.auth import (
     CollectorSession,
+    SessionResult,
     _http_post,
     huggingface_token,
 )
@@ -40,7 +41,7 @@ _RETRYABLE_CLIENT_ERRORS = frozenset(
 )
 #: Session answers for a given token that can no longer be used, and the
 #: reason each pending run records.
-_UNUSABLE_GIVEN_TOKEN_REASONS = {
+_UNUSABLE_GIVEN_TOKEN_REASONS: dict[SessionResult, str] = {
     "token_expired": PENDING_GIVEN_TOKEN_EXPIRED,
     "token_rejected": PENDING_GIVEN_TOKEN_REJECTED,
 }

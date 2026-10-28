@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from http import HTTPStatus
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from huggingface_hub import get_token
@@ -264,6 +264,32 @@ def exchange_huggingface_credential(
     return TokenExchange("ok", status, access_token, expires_in)
 
 
+#: What ``CollectorSession.credential()`` answers. ``token_expired`` and
+#: ``token_rejected`` come only from a given token, which cannot be renewed.
+SessionResult = Literal[
+    "ok",
+    "missing",
+    "rejected",
+    "unavailable",
+    "intake_unavailable",
+    "token_expired",
+    "token_rejected",
+]
+
+
+class SessionCredential(NamedTuple):
+    """A session's answer; ``token`` is set only when ``result`` is ``ok``.
+
+    It unpacks as ``result, token``. Its repr leaves the token out.
+    """
+
+    result: SessionResult
+    token: str | None = None
+
+    def __repr__(self) -> str:
+        return f"SessionCredential(result={self.result!r})"
+
+
 class CollectorSession:
     """One thread-safe short-lived credential shared by independent publishers.
 
@@ -271,8 +297,8 @@ class CollectorSession:
     ``artifacts:submit``; ``exchange_huggingface_credential`` says what each
     answer means. The session reuses a token until shortly before it expires.
 
-    With a token given in ``environment`` (by default the process
-    environment; see ``given_collector_token``), the session uses it and never
+    With a token given in the process environment (see
+    ``given_collector_token``), the session uses it and never
     reads or exchanges a Hugging Face credential. The given token only writes
     telemetry, so a session for any other scope has no credential
     (``missing``). It is sent only to ``origin``, the collector it was
@@ -294,7 +320,6 @@ class CollectorSession:
         credential=None,
         scope=None,
         destination: str | None = None,
-        environment: Mapping[str, str] | None = None,
     ):
         import threading
 
@@ -305,9 +330,7 @@ class CollectorSession:
         self._credential = credential or huggingface_token
         self._session_token: tuple[str, float] | None = None
         self._lock = threading.Lock()
-        self.given_token = given_collector_token(
-            os.environ if environment is None else environment
-        )
+        self.given_token = given_collector_token(os.environ)
         if self.given_token is not None and self.given_token.origin != origin:
             raise GivenCollectorTokenError(GIVEN_TOKEN_ORIGIN_ERROR)
         self._given_token_rejected = False
@@ -318,7 +341,7 @@ class CollectorSession:
             # A given token is never sent again once the collector refused it.
             self._given_token_rejected = self.given_token is not None
 
-    def credential(self) -> tuple[str, str | None]:
+    def credential(self) -> SessionCredential:
         with self._lock:
             if self.given_token is not None:
                 return self._given_credential(self.given_token)
@@ -327,31 +350,31 @@ class CollectorSession:
                 and self._session_token[1]
                 > time.monotonic() + TOKEN_REFRESH_MARGIN_SECONDS
             ):
-                return "ok", self._session_token[0]
+                return SessionCredential("ok", self._session_token[0])
             exchange = exchange_huggingface_credential(
                 self.origin, self._credential(), scope=self.scope, post=self._post
             )
             if exchange.result != "ok":
-                return exchange.result, None
+                return SessionCredential(exchange.result)
             token = exchange.access_token
             lifetime = max(MINIMUM_TOKEN_LIFETIME_SECONDS, exchange.expires_in)
             self._session_token = (token, time.monotonic() + lifetime)
-            return "ok", token
+            return SessionCredential("ok", token)
 
-    def _given_credential(self, given: GivenCollectorToken) -> tuple[str, str | None]:
+    def _given_credential(self, given: GivenCollectorToken) -> SessionCredential:
         if (
             self.scope not in (None, TELEMETRY_SCOPE)
             or self._destination != self.origin
         ):
-            return "missing", None
+            return SessionCredential("missing")
         if self._given_token_rejected:
-            return "token_rejected", None
+            return SessionCredential("token_rejected")
         # The collector allows no clock leeway, so stop as early as an
         # exchanged token is renewed: a request in the token's last seconds
         # would get a 401 and count as a refusal.
         if time.time() + TOKEN_REFRESH_MARGIN_SECONDS >= given.expires_at:
-            return "token_expired", None
-        return "ok", given.access_token
+            return SessionCredential("token_expired")
+        return SessionCredential("ok", given.access_token)
 
 
 def shared_session(
