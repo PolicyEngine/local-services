@@ -60,16 +60,17 @@ class ExitCode(IntEnum):
     #: or it has characters that an HTTP header cannot carry and was not sent.
     REJECTED_CREDENTIAL = 4
     #: `telemetry-token` and `deliver`: the collector could not be reached or
-    #: gave no usable token. `deliver`: it stayed unavailable until the time
-    #: limit.
+    #: gave no usable token. `deliver`: also, the time limit passed with events
+    #: still pending.
     COLLECTOR_UNAVAILABLE = 5
     #: `telemetry-token`: the collector does not accept `lifetime_seconds`.
     LIFETIME_UNSUPPORTED = 6
     #: `telemetry-token`, `status` and `deliver`: an unexpected error, which
     #: the other codes do not name; only the error's type is printed.
     UNEXPECTED_FAILURE = 7
-    #: `deliver`: every other run was delivered, but the collector refused
-    #: this login (403) for a run another Hugging Face user registered.
+    #: `deliver`: the collector refused this login (403) for a run another
+    #: Hugging Face user registered. Every other run was delivered, or
+    #: excluded from upload for a 409 or another permanent 4xx answer.
     RUN_OF_ANOTHER_USER = 8
     #: `status` and `deliver`: the file cannot be used as a spool database,
     #: because this user lacks permission or it is not one this emitter knows.
@@ -128,8 +129,9 @@ CREDENTIAL_FAILURES: Final[
     ),
 }
 DELIVERY_UNFINISHED_MESSAGE: Final = (
-    "Events are still pending after {seconds} seconds: the collector was "
-    "unavailable. Run `deliver` again later; delivered events are not sent twice."
+    "Events are still pending at the time limit (--time-limit-seconds {seconds}): "
+    "the collector was unavailable, or there was more to deliver. Run `deliver` "
+    "again, with a longer limit if needed; delivered events are not sent twice."
 )
 RUN_OF_ANOTHER_USER_MESSAGE: Final = (
     "Runs not delivered: {run_ids}. The collector refused this login (403): "
@@ -406,7 +408,9 @@ def main(argv: list[str] | None = None) -> int:
         "--time-limit-seconds",
         type=_positive_integer,
         default=DEFAULT_DELIVERY_TIME_LIMIT_SECONDS,
-        help="How long to keep trying while the collector is unavailable.",
+        help="How many seconds delivery may take in all, whether or not the "
+        "collector answers, before `deliver` stops with events still pending "
+        "(default: %(default)s).",
     )
     _add_development_collector_url(deliver_parser)
     if arguments[:1] == ["host"]:
