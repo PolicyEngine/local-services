@@ -73,12 +73,19 @@ class ExitCode(IntEnum):
     RUN_OF_ANOTHER_USER = 8
     #: `status` and `deliver`: the file cannot be used as a spool database,
     #: because this user lacks permission or it is not one this emitter knows.
+    #: `status` also: a write in the journal beside it did not finish.
     UNREADABLE_SPOOL = 9
 
 
 UNREADABLE_SPOOL_MESSAGE: Final = (
     "The spool database cannot be read ({error_type}): the file is not a spool "
     "database, or a newer emitter release wrote it."
+)
+SPOOL_UNFINISHED_WRITE_MESSAGE: Final = (
+    "The spool database cannot be read without changing it ({error_type}): the "
+    "journal file beside it holds a write that did not finish, which SQLite must "
+    "roll back first. `status` changes nothing; `deliver` checks the file, then "
+    "rolls the write back and delivers it."
 )
 SPOOL_PERMISSION_MESSAGE: Final = (
     "The spool database cannot be opened ({error_type}): permission denied. "
@@ -259,11 +266,12 @@ def _spool_command(
     try:
         return command(arguments)
     except UnreadableSpoolError as error:
-        message = (
-            SPOOL_PERMISSION_MESSAGE
-            if error.permission_denied
-            else UNREADABLE_SPOOL_MESSAGE
-        )
+        if error.permission_denied:
+            message = SPOOL_PERMISSION_MESSAGE
+        elif error.unfinished_write:
+            message = SPOOL_UNFINISHED_WRITE_MESSAGE
+        else:
+            message = UNREADABLE_SPOOL_MESSAGE
         print(message.format(error_type=error), file=sys.stderr)
         return ExitCode.UNREADABLE_SPOOL
     except Exception as error:

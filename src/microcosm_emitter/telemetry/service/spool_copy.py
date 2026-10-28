@@ -14,12 +14,22 @@ and ``deliver_spool`` opens it as a copy, which changes no permissions and
 prunes nothing: an event leaves the copy only when the collector acknowledges
 it. A copy may be delivered long after it was made, from any directory: the
 spool records no paths for telemetry.
+
+A copy taken after its emitter stopped during a commit has a journal beside
+it holding a write that did not finish. SQLite rolls that write back the
+first time a connection that may write reads the file, and refuses a
+read-only one. So ``spool_status`` refuses such a copy, saying why, and
+``deliver_spool`` checks a recovered copy of both files elsewhere before it
+opens the file itself, which rolls the write back.
 """
 
 from __future__ import annotations
 
 import errno
 import os
+import shutil
+import sqlite3
+import tempfile
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -36,7 +46,10 @@ from sqlalchemy.orm import Session
 from microcosm_emitter.core.auth import CollectorSession, SessionResult
 from microcosm_emitter.core.collector_origin import resolve_collector_origin
 from microcosm_emitter.core.constants import DRAIN_RETRY_SECONDS
-from microcosm_emitter.core.database import create_read_only_spool_engine
+from microcosm_emitter.core.database import (
+    create_read_only_spool_engine,
+    create_spool_engine,
+)
 from microcosm_emitter.core.migrations import require_known_revision
 from microcosm_emitter.core.models import TelemetryEventRecord, TelemetryRunRecord
 from microcosm_emitter.telemetry.service.collector import CollectorDelivery
@@ -59,13 +72,19 @@ class RunStatus(TypedDict):
 
 class UnreadableSpoolError(RuntimeError):
     """The file cannot be used as a spool database: this user lacks
-    permission (``permission_denied``), or it is not a spool database this
-    emitter knows. The message is the underlying error's type, never its
-    details."""
+    permission (``permission_denied``), a journal beside it holds a write
+    that did not finish, which a read-only connection cannot roll back
+    (``unfinished_write``), or it is not a spool database this emitter knows.
+    The message is the underlying error's type, never its details."""
 
     def __init__(self, error: Exception) -> None:
         super().__init__(type(error).__name__)
         self.permission_denied = isinstance(error, PermissionError)
+        driver_error = getattr(error, "orig", None)
+        self.unfinished_write = (
+            getattr(driver_error, "sqlite_errorcode", None)
+            == sqlite3.SQLITE_READONLY_ROLLBACK
+        )
 
 
 @contextmanager
@@ -131,6 +150,30 @@ _LOGIN_FAILURES: dict[SessionResult, LoginFailure] = {
 
 def _login_failure(result: SessionResult) -> LoginFailure:
     return _LOGIN_FAILURES.get(result, "unavailable")
+
+
+def _journal(path: Path) -> Path:
+    """SQLite's rollback journal for the database at ``path``."""
+    return path.with_name(f"{path.name}-journal")
+
+
+def _check_recovered_copy(path: Path) -> None:
+    """Refuse, as ``_read_only_spool`` does, a spool database whose journal
+    holds a write that did not finish, once SQLite has rolled that write back
+    in a copy of both files. The copy is in a temporary directory only this
+    user may open, and is deleted afterwards; the file itself is not
+    written."""
+
+    with _unreadable_spool_errors(), tempfile.TemporaryDirectory() as directory:
+        recovered = Path(directory) / path.name
+        shutil.copyfile(path, recovered)
+        shutil.copyfile(_journal(path), _journal(recovered))
+        engine = create_spool_engine(recovered)
+        try:
+            with engine.connect() as connection:
+                require_known_revision(connection)
+        finally:
+            engine.dispose()
 
 
 @dataclass(frozen=True)
@@ -239,6 +282,8 @@ def deliver_spool(
     1. It refuses, unchanged, a file this user may not read and write (or
        whose directory it may not write), or that is not a spool database of
        a revision this emitter knows, by raising ``UnreadableSpoolError``.
+       When a journal beside the file holds a write that did not finish, it
+       checks a recovered copy of both files instead (``_check_recovered_copy``).
     2. It exchanges this machine's Hugging Face login, never a collector token
        given to builds in the environment. A missing, refused or
        unexchangeable login returns at once and leaves the file unchanged, so
@@ -258,8 +303,16 @@ def deliver_spool(
     # before anything else.
     with _unreadable_spool_errors():
         _require_permissions(path, write=True)
-    with _read_only_spool(path):
-        pass
+    try:
+        with _read_only_spool(path):
+            pass
+    except UnreadableSpoolError as refusal:
+        if not refusal.unfinished_write:
+            raise
+        # Opening the file to deliver it rolls the write back. Check what
+        # that leaves first, so the file is written only once it is known to
+        # be a spool database, and a login works.
+        _check_recovered_copy(path)
     origin = resolve_collector_origin(
         development_collector_url=development_collector_url
     )
