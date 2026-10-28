@@ -140,7 +140,7 @@ class CollectorDelivery:
                 print(NO_CREDENTIAL_MESSAGE, file=sys.stderr, flush=True)
                 self._warned_no_token = True
             self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
-        elif result == "rejected":
+        elif result in ("rejected", "unsendable"):
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_CREDENTIAL)
         elif result in _UNUSABLE_GIVEN_TOKEN_REASONS:
             self._keep_pending(registration, _UNUSABLE_GIVEN_TOKEN_REASONS[result])

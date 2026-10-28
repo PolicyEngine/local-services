@@ -272,7 +272,7 @@ class CollectorSubmissionClient:
             return token
         if result == "missing":
             raise _StepFailedError(SubmissionOutcome("pending", CREDENTIAL_MISSING))
-        if result == "rejected":
+        if result in ("rejected", "unsendable"):
             raise _StepFailedError(SubmissionOutcome("failed", CREDENTIAL_REJECTED))
         if result == "intake_unavailable":
             raise _StepFailedError(self._intake_unavailable())

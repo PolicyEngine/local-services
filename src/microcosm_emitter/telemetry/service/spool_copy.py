@@ -112,15 +112,18 @@ def _read_only_spool(path: Path) -> Iterator[Connection]:
 
 
 #: Why this machine's login gave ``deliver_spool`` no collector token:
-#: ``missing`` (no Hugging Face login), ``rejected`` (the collector refused
-#: it), or ``unavailable`` (the collector could not be reached or gave no
-#: usable token; only before delivery starts, as delivery retries it).
-LoginFailure = Literal["missing", "rejected", "unavailable"]
+#: ``missing`` (no Hugging Face login), ``unsendable`` (it has characters that
+#: an HTTP header cannot carry, so it was not sent), ``rejected`` (the
+#: collector refused it), or ``unavailable`` (the collector could not be
+#: reached or gave no usable token; only before delivery starts, as delivery
+#: retries it).
+LoginFailure = Literal["missing", "unsendable", "rejected", "unavailable"]
 #: The failure for each answer of the session other than ``ok``. Its session
 #: has no scope and ignores given tokens, so it gives no other answer; any
 #: other would count as ``unavailable``.
 _LOGIN_FAILURES: dict[SessionResult, LoginFailure] = {
     "missing": "missing",
+    "unsendable": "unsendable",
     "rejected": "rejected",
     "unavailable": "unavailable",
 }
