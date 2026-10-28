@@ -8,6 +8,11 @@ import time
 import pytest
 from fake_hugging_face import PRIVATE_REPOSITORY, STAGING_REPOSITORY
 
+from microcosm_emitter.core.constants import (
+    CLOUD_RUN_COLLECTOR_URL,
+    PRODUCTION_COLLECTOR_URL,
+    TRUSTED_COLLECTOR_ORIGINS,
+)
 from microcosm_emitter_interface.bundles import BundleFile, StageDatasetBundle
 from microcosm_emitter_interface.submissions import CollectorProvenance
 
@@ -751,26 +756,39 @@ def test_a_collector_row_is_free_within_one_lease_after_shutdown(two_emitters):
     assert second_client.submitted
 
 
-# Rows queued under another origin of the same collector --------------------
+# Rows queued under another origin ------------------------------------------
 #
 # Emitters released before the collector's hostname became the default queue
 # collector rows under the Cloud Run address. That address reaches the same
 # collector, so an emitter at the default must still deliver those rows after
 # the machine upgrades, and a bundle handed over again must join its row.
+# Any other origin is another collector, even when it is trusted: its rows wait
+# for an emitter at that origin.
+
+#: An origin a later release might trust, such as a staging collector's.
+ANOTHER_TRUSTED_ORIGIN = "https://another-collector.example"
 
 
-def test_rows_queued_under_the_cloud_run_address_are_delivered_by_default(
-    module_factory, collector, capsys
+@pytest.mark.parametrize(
+    ("queued_origin", "delivered_by_default"),
+    [(CLOUD_RUN_COLLECTOR_URL, True), (ANOTHER_TRUSTED_ORIGIN, False)],
+    ids=["cloud run address", "another trusted origin"],
+)
+def test_a_default_emitter_takes_only_rows_queued_for_its_own_collector(
+    module_factory, collector, capsys, monkeypatch, queued_origin, delivered_by_default
 ):
-    from microcosm_emitter.core.constants import (
-        CLOUD_RUN_COLLECTOR_URL,
-        PRODUCTION_COLLECTOR_URL,
+    from microcosm_emitter.core import collector_origin as collector_origin_module
+
+    monkeypatch.setattr(
+        collector_origin_module,
+        "TRUSTED_COLLECTOR_ORIGINS",
+        TRUSTED_COLLECTOR_ORIGINS | {ANOTHER_TRUSTED_ORIGIN},
     )
 
-    # As an emitter at the earlier default: it queues the collector row and
-    # commits the bundle to Hugging Face, but is never let reach a collector.
+    # As an emitter at that origin: it queues the collector row and commits
+    # the bundle to Hugging Face, but is never let reach a collector.
     earlier = module_factory.start(
-        collector_submissions=True, collector_origin=CLOUD_RUN_COLLECTOR_URL
+        collector_submissions=True, collector_origin=queued_origin
     )
     request = bundle(earlier)
     try:
@@ -798,8 +816,14 @@ def test_rows_queued_under_the_cloud_run_address_are_delivered_by_default(
     finally:
         upgraded.module.close(0)
 
-    assert recording_client.submitted == ["calibration-diagnostics"]
-    assert "could not be queued for the collector" not in capsys.readouterr().err
+    expected_submissions = ["calibration-diagnostics"] if delivered_by_default else []
+    assert recording_client.submitted == expected_submissions
+    # Handing the bundle over again joins a row queued for the same collector,
+    # and reports a row queued for another one.
+    queue_conflict_reported = (
+        "could not be queued for the collector" in capsys.readouterr().err
+    )
+    assert queue_conflict_reported is not delivered_by_default
 
 
 # Status checks after completion --------------------------------------------
