@@ -665,6 +665,9 @@ class RecordingSubmissionClient:
         self.submitted.append(planned.kind)
         return SubmissionOutcome("pending", "UPLOAD_FAILED")
 
+    def close(self) -> None:
+        """Nothing to close: the module calls this when it stops."""
+
 
 @pytest.fixture
 def short_collector_leases(monkeypatch):
@@ -746,6 +749,57 @@ def test_a_collector_row_is_free_within_one_lease_after_shutdown(two_emitters):
         seconds=SHORT_SUBMISSION_LEASE_SECONDS * 3,
     ), "the collector row stayed leased after shutdown"
     assert second_client.submitted
+
+
+# Rows queued under another origin of the same collector --------------------
+#
+# Emitters released before the collector's hostname became the default queue
+# collector rows under the Cloud Run address. That address reaches the same
+# collector, so an emitter at the default must still deliver those rows after
+# the machine upgrades, and a bundle handed over again must join its row.
+
+
+def test_rows_queued_under_the_cloud_run_address_are_delivered_by_default(
+    module_factory, collector, capsys
+):
+    from microcosm_emitter.core.constants import (
+        CLOUD_RUN_COLLECTOR_URL,
+        PRODUCTION_COLLECTOR_URL,
+    )
+
+    # As an emitter at the earlier default: it queues the collector row and
+    # commits the bundle to Hugging Face, but is never let reach a collector.
+    earlier = module_factory.start(
+        collector_submissions=True, collector_origin=CLOUD_RUN_COLLECTOR_URL
+    )
+    request = bundle(earlier)
+    try:
+        stage(earlier, request)
+        earlier.module.delivery.run_cycle()
+    finally:
+        earlier.module.close(0)
+
+    # A development collector is not the same collector: it takes no such row.
+    development = module_factory.start(
+        collector_submissions=True, development_collector_url=collector.origin
+    )
+    try:
+        assert development.module.collector_delivery.run_cycle() == 0
+    finally:
+        development.module.close(0)
+
+    upgraded = module_factory.start(collector_submissions=True)
+    upgraded.module.collector_delivery.client.close()
+    recording_client = RecordingSubmissionClient(PRODUCTION_COLLECTOR_URL)
+    upgraded.module.collector_delivery.client = recording_client
+    try:
+        stage(upgraded, request)
+        upgraded.module.collector_delivery.run_cycle()
+    finally:
+        upgraded.module.close(0)
+
+    assert recording_client.submitted == ["calibration-diagnostics"]
+    assert "could not be queued for the collector" not in capsys.readouterr().err
 
 
 # Status checks after completion --------------------------------------------
