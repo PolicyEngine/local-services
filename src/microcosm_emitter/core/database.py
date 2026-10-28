@@ -28,6 +28,22 @@ def create_spool_engine(path: Path | str) -> Engine:
     )
 
 
+def create_read_only_spool_engine(path: Path | str) -> Engine:
+    """Open an existing spool database so that nothing can write to it.
+
+    SQLite refuses every write, and creates no missing file, in this mode.
+    """
+
+    return create_engine(
+        URL.create(
+            "sqlite+pysqlite",
+            database=Path(path).resolve().as_uri(),
+            query={"mode": "ro", "uri": "true"},
+        ),
+        connect_args={"timeout": DATABASE_TIMEOUT_SECONDS},
+    )
+
+
 def create_spool_session_factory(engine: Engine) -> sessionmaker[Session]:
     """Create short-lived ORM sessions bound to the spool engine."""
 

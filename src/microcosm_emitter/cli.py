@@ -7,7 +7,8 @@ user, including any Hugging Face credential. It is never a system service.
 `microcosm-emitter telemetry-token` runs on the operator's workstation when it
 launches a build on a machine without a Hugging Face credential, such as
 Modal: it obtains a collector token that can only write telemetry, for the
-emitter on that machine.
+emitter on that machine. `microcosm-emitter status --spool` reports on a
+spool database copied back from that machine without changing it.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import argparse
 import json
 import sys
 from importlib.metadata import version
+from pathlib import Path
 from typing import Final
 
 from microcosm_emitter.compatibility import (
@@ -32,6 +34,13 @@ EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
 EXIT_LIFETIME_UNSUPPORTED: Final = 6
+#: `status --spool` and `deliver --spool`: the file is not a spool database
+#: this emitter can read.
+EXIT_UNREADABLE_SPOOL: Final = 7
+UNREADABLE_SPOOL_MESSAGE: Final = (
+    "The spool database cannot be read ({error_type}): the file is not a spool "
+    "database, or a newer emitter release wrote it."
+)
 TELEMETRY_TOKEN_FAILURES: Final = {
     "missing": (
         EXIT_MISSING_CREDENTIAL,
@@ -75,6 +84,39 @@ def _positive_integer(value: str) -> int:
     if number < 1:
         raise argparse.ArgumentTypeError("must be a positive whole number")
     return number
+
+
+def _existing_file(value: str) -> Path:
+    path = Path(value)
+    if not path.is_file():
+        raise argparse.ArgumentTypeError("must name an existing file")
+    return path
+
+
+def _add_spool(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--spool",
+        type=_existing_file,
+        required=True,
+        help="A spool database (events.sqlite3), such as one copied from a build "
+        "on another machine.",
+    )
+
+
+def status(arguments: argparse.Namespace) -> int:
+    """Print each run in a spool database as JSON, changing nothing."""
+    from microcosm_emitter.telemetry.service.spool_copy import (
+        UnreadableSpoolError,
+        spool_status,
+    )
+
+    try:
+        runs = spool_status(arguments.spool)
+    except UnreadableSpoolError as error:
+        print(UNREADABLE_SPOOL_MESSAGE.format(error_type=error), file=sys.stderr)
+        return EXIT_UNREADABLE_SPOOL
+    print(json.dumps({"runs": runs}))
+    return 0
 
 
 def _collector_origin(development_collector_url: str | None) -> str:
@@ -154,6 +196,12 @@ def main(argv: list[str] | None = None) -> int:
         help="How long the token should last; the collector may grant less.",
     )
     _add_development_collector_url(token_parser)
+    status_parser = commands.add_parser(
+        "status",
+        help="Print each run in a spool database, with its upload state and "
+        "undelivered events, as JSON. Reads only: no network, no changes.",
+    )
+    _add_spool(status_parser)
     if arguments[:1] == ["host"]:
         # The host parses its own options.
         from microcosm_emitter.host.__main__ import main as host_main
@@ -162,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     parsed = parser.parse_args(arguments)
     if parsed.command == "telemetry-token":
         return telemetry_token(parsed)
+    if parsed.command == "status":
+        return status(parsed)
     print(json.dumps(version_report()))
     return 0
 

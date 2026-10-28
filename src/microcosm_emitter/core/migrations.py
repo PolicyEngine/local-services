@@ -87,6 +87,19 @@ def upgrade_database(engine: Engine, history: MigrationHistory) -> None:
                 command.upgrade(config, _MIGRATION_TARGET)
 
 
+def require_known_revision(
+    connection: Connection, history: MigrationHistory = SPOOL_HISTORY
+) -> None:
+    """Refuse a database without a revision, or with one ``history`` lacks,
+    such as one a newer emitter wrote. Reads only."""
+
+    revision = MigrationContext.configure(connection).get_current_revision()
+    if revision is None:
+        raise RuntimeError(f"Refusing an unversioned {history.label} database.")
+    with alembic_config(history=history) as config:
+        ScriptDirectory.from_config(config).get_revision(revision)
+
+
 def upgrade_spool_database(engine: Engine) -> None:
     """Apply every committed spool migration to an engine."""
 
