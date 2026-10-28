@@ -36,6 +36,15 @@ PRODUCTION_COLLECTOR_ORIGIN_PAIR: Final = frozenset(
 # resolves that origin.
 TRUSTED_COLLECTOR_ORIGINS: Final = PRODUCTION_COLLECTOR_ORIGIN_PAIR
 
+# A collector token obtained on another machine with `microcosm-emitter
+# telemetry-token`, for an emitter without a Hugging Face credential, such as
+# one in a Modal container. The variables only supply that token:
+# MICROCOSM_COLLECTOR_ORIGIN is compared with the origin the emitter resolved,
+# and never chooses where it sends.
+COLLECTOR_TOKEN_VARIABLE: Final = "MICROCOSM_COLLECTOR_TOKEN"
+COLLECTOR_TOKEN_EXPIRES_AT_VARIABLE: Final = "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT"
+COLLECTOR_TOKEN_ORIGIN_VARIABLE: Final = "MICROCOSM_COLLECTOR_ORIGIN"
+
 LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 TOKEN_EXCHANGE_PATH: Final = "/v1/auth/huggingface/exchange"
 TELEMETRY_SCOPE: Final = "telemetry:write"
@@ -79,6 +88,18 @@ COLLECTOR_SETTING_TYPE_ERROR: Final = (
     "a development collector URL or collector origin must be a string"
 )
 COLLECTOR_RESPONSE_TOO_LARGE_ERROR: Final = "collector response exceeds 1 MiB"
+GIVEN_TOKEN_VARIABLES_ERROR: Final = (
+    "MICROCOSM_COLLECTOR_TOKEN, MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT and "
+    "MICROCOSM_COLLECTOR_ORIGIN must be set together"
+)
+GIVEN_TOKEN_EXPIRY_ERROR: Final = (
+    "MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT must be an ISO 8601 time with a time zone"
+)
+GIVEN_TOKEN_ORIGIN_ERROR: Final = (
+    "MICROCOSM_COLLECTOR_ORIGIN names another collector than the one this emitter "
+    "sends to, which `microcosm-emitter version` prints"
+)
+TELEMETRY_REFUSED_MESSAGE: Final = "Microcosm telemetry cannot start: {reason}."
 
 DEFAULT_TOKEN_LIFETIME_SECONDS: Final = 3_600
 MINIMUM_TOKEN_LIFETIME_SECONDS: Final = 60
