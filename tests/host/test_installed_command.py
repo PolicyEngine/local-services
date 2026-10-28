@@ -361,7 +361,9 @@ def test_parent_that_exits_while_its_creation_time_is_read_is_refused(monkeypatc
         process_module.parent_process(4321, None)
 
 
-def test_version_command_prints_the_emitter_and_protocol_versions():
+def test_version_command_prints_the_versions_and_the_collector_origin():
+    from microcosm_emitter.core.constants import PRODUCTION_COLLECTOR_URL
+
     result = subprocess.run(
         [installed_command(), "version"],
         capture_output=True,
@@ -369,9 +371,12 @@ def test_version_command_prints_the_emitter_and_protocol_versions():
         timeout=30,
         check=True,
     )
+    # The Modal runner compares the collector origin with the origin a
+    # collector token was obtained for, before it stages any input.
     assert json.loads(result.stdout) == {
         "emitter_version": version("microcosm-emitter"),
         "protocol_versions": supported_protocol_versions(),
+        "collector_origin": PRODUCTION_COLLECTOR_URL,
     }
 
 
