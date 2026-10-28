@@ -17,7 +17,7 @@ from typing import get_args
 import pytest
 from fake_collector import FakeCollector
 from given_token import given_token_variables, set_variables
-from sqlalchemy import update
+from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from microcosm_emitter import cli
@@ -76,6 +76,27 @@ def age_events(spool_path: Path, days: int) -> None:
             session.execute(update(TelemetryEventRecord).values(created_at=created_at))
     finally:
         engine.dispose()
+
+
+def leave_an_unfinished_write(spool_path: Path) -> Path:
+    """Leave the journal of a write that never finished beside a spool
+    database, as an emitter stopped during a commit does, and return it."""
+    journal = spool_path.with_name(f"{spool_path.name}-journal")
+    engine = create_spool_engine(spool_path)
+    try:
+        with engine.connect() as connection:
+            # Without syncing, SQLite marks the journal as one to roll back
+            # from its first write, as it does just before a commit changes
+            # the database file.
+            connection.exec_driver_sql("PRAGMA synchronous = OFF")
+            connection.commit()
+            connection.execute(delete(TelemetryEventRecord))
+            unfinished = journal.read_bytes()
+            connection.rollback()
+    finally:
+        engine.dispose()
+    journal.write_bytes(unfinished)
+    return journal
 
 
 def build_on_modal(collector: FakeCollector, spool_path: Path) -> None:
@@ -415,3 +436,43 @@ def test_both_commands_print_only_the_type_of_an_unexpected_error(
     assert output.out == ""
     assert "unexpected ValueError" in output.err
     assert OPERATOR_LOGIN not in output.err
+
+
+def test_only_deliver_recovers_a_copy_left_with_an_unfinished_write(
+    collector, operator_login, tmp_path, monkeypatch, capsys
+) -> None:
+    copy = copy_of_a_build_on_modal(collector, tmp_path)
+    journal = leave_an_unfinished_write(copy)
+    left_behind = {path: path.read_bytes() for path in (copy, journal)}
+    deliver = [
+        "deliver",
+        "--spool",
+        str(copy),
+        "--development-collector-url",
+        collector.origin,
+    ]
+    capsys.readouterr()
+
+    # Only a connection that may write can roll the write back.
+    assert cli.main(["status", "--spool", str(copy)]) == 9
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "did not finish" in output.err
+    # `deliver` checks the file without writing to it, then stops for the
+    # missing login.
+    monkeypatch.delenv("HF_TOKEN")
+    assert cli.main(deliver) == 3
+    assert {path: path.read_bytes() for path in left_behind} == left_behind
+    monkeypatch.setenv("HF_TOKEN", OPERATOR_LOGIN)
+    capsys.readouterr()
+
+    exit_code = cli.main(deliver)
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["runs"][0]["undelivered_events"] == 0
+    assert not journal.exists()
+    assert sorted(event["stage_id"] for event in collector.events.values()) == [
+        "calibrate",
+        "stage_inputs",
+        "write_outputs",
+    ]
