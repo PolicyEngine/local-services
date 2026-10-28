@@ -15,6 +15,7 @@ from importlib.metadata import version
 from microcosm_emitter.compatibility import (
     SUPPORTED_PROTOCOL_VERSIONS,
     EmitterDescription,
+    VersionReport,
 )
 
 DISTRIBUTION_NAME = "microcosm-emitter"
@@ -28,6 +29,13 @@ def describe() -> EmitterDescription:
     }
 
 
+def version_report() -> VersionReport:
+    """The versions, and the collector origin this emitter sends to by default."""
+    from microcosm_emitter.core.collector_origin import resolve_collector_origin
+
+    return {**describe(), "collector_origin": resolve_collector_origin()}
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else list(argv)
     parser = argparse.ArgumentParser(prog="microcosm-emitter", description=__doc__)
@@ -38,7 +46,9 @@ def main(argv: list[str] | None = None) -> int:
         add_help=False,
     )
     commands.add_parser(
-        "version", help="Print the emitter and socket protocol versions as JSON."
+        "version",
+        help="Print the emitter and socket protocol versions and the collector "
+        "origin as JSON.",
     )
     selected, _ = parser.parse_known_args(arguments[:1])
     if selected.command == "host":
@@ -46,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return host_main(arguments[1:], description=describe())
     parser.parse_args(arguments)
-    print(json.dumps(describe()))
+    print(json.dumps(version_report()))
     return 0
 
 

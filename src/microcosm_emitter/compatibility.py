@@ -11,10 +11,21 @@ SUPPORTED_PROTOCOL_VERSIONS: Final = (1,)
 
 
 class EmitterDescription(TypedDict):
-    """What `microcosm-emitter version` prints."""
+    """The versions a client checks before sending any hand-over."""
 
     emitter_version: str
     protocol_versions: list[int]
+
+
+class VersionReport(EmitterDescription):
+    """What `microcosm-emitter version` prints.
+
+    ``collector_origin`` is the collector this emitter sends to when no module
+    setting chooses another trusted origin. The Modal runner compares it with
+    the origin a collector token was obtained for.
+    """
+
+    collector_origin: str
 
 
 class HelloResponse(EmitterDescription):
