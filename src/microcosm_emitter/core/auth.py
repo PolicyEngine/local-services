@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -32,6 +33,7 @@ from microcosm_emitter.core.constants import (
     DEVELOPMENT_COLLECTOR_LOOPBACK_ERROR,
     GIVEN_TOKEN_EXPIRY_ERROR,
     GIVEN_TOKEN_ORIGIN_ERROR,
+    GIVEN_TOKEN_START_ERROR_MESSAGE,
     GIVEN_TOKEN_VALUE_ERROR,
     GIVEN_TOKEN_VARIABLES_ERROR,
     HTTP_TIMEOUT_SECONDS,
@@ -362,8 +364,20 @@ def shared_session(
     own for it: a 401 that one module receives ends the token for that
     module only. ``destination`` is the origin the module sends the
     credential to, when that is not the collector.
+
+    Unusable given-token variables raise ``GivenCollectorTokenError``, which
+    stops the whole host at start, so this prints the reason first: the
+    host prints only a fixed startup failure.
     """
-    session = CollectorSession(origin, destination=destination)
+    try:
+        session = CollectorSession(origin, destination=destination)
+    except GivenCollectorTokenError as error:
+        print(
+            GIVEN_TOKEN_START_ERROR_MESSAGE.format(reason=error),
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
     if session.given_token is not None:
         return session
     shared = services.setdefault("collector_session", session)
