@@ -893,6 +893,53 @@ def test_a_malformed_collector_answer_is_retried_like_a_network_failure(
         server.server_close()
 
 
+def test_a_collector_token_that_cannot_be_sent_is_retried_like_an_outage(
+    tmp_path, monkeypatch
+) -> None:
+    exchanges: list[str] = []
+    sent: list[str] = []
+
+    def collector_issuing_a_token_with_a_space(url, payload, token, *, timeout=5.0):
+        exchanges.append(url)
+        return 200, {"access_token": "session token", "expires_in": 3600}
+
+    # The real request, which refuses a token it cannot send with ValueError.
+    real_post = collector_module._http_post
+
+    def send(url, payload, token, *, timeout=5.0):
+        sent.append(url)
+        return real_post(url, payload, token, timeout=timeout)
+
+    monkeypatch.setattr(
+        auth_module, "_http_post", collector_issuing_a_token_with_a_space
+    )
+    monkeypatch.setattr(collector_module, "_http_post", send)
+    monkeypatch.setenv("HF_TOKEN", "hf_synthetic_member")
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    module = _telemetry_module(tmp_path, DEVELOPMENT_COLLECTOR_URL)
+    try:
+        # The host stops a module whose tick raises.
+        module.tick(clock[0])
+
+        # The session does not keep the token, so nothing is sent with it,
+        # and the run and its queued event stay as they were.
+        assert sent == []
+        assert module.spool.pending_runs() == [module.registration]
+        assert _run_state(module.spool) == ("pending", None)
+        assert len(module.spool.batch("run-a", "producer-a")) == 1
+
+        # The exchange is tried again after the backoff, as after an outage.
+        module.tick(clock[0])
+        assert len(exchanges) == 1
+        clock[0] += 100.0
+        module.tick(clock[0])
+        assert len(exchanges) == 2
+        assert sent == []
+    finally:
+        module.close(clock[0])
+
+
 def test_resource_sampler_keeps_reaped_child_cpu_monotonic(monkeypatch) -> None:
     state = {"child_alive": True}
 
