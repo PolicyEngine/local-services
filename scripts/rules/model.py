@@ -166,14 +166,18 @@ class Agents:
 
 @dataclass(frozen=True)
 class CiScripts:
-    """Where workflow scripts live, where their tests are, and their baselines."""
+    """Which workflows to read, where scripts' tests are, and the baselines.
 
-    workflows: str
-    scripts_dir: str
+    ``workflows`` holds one or more globs. ``script_directories`` is the
+    ``[repository]`` table's: the directories whose shell scripts are checked.
+    """
+
+    workflows: tuple[str, ...]
     test_globs: tuple[str, ...]
     multiline_baseline: str
     untested_baseline: str
     shellcheck_baseline: str
+    script_directories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

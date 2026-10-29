@@ -4,7 +4,10 @@ Three checks, each ratcheted against a baseline file listed in ``[ci_scripts]``:
 
 1. A workflow ``run:`` block holds one line of code and no chained commands.
 2. Every shell script a workflow calls is referenced by at least one test.
-3. Every shell script in the scripts directory passes ``shellcheck``.
+3. Every shell script in the script directories passes ``shellcheck``.
+
+The workflows are the files ``[ci_scripts].workflows`` globs match, and the
+script directories are ``[repository].script_directories``.
 
 Anything found that isn't in the baseline fails, and so does a baseline entry
 that no longer applies, so baselines only shrink.
@@ -44,6 +47,11 @@ class Findings:
     notes: list[str] = field(default_factory=list)
 
 
+def workflow_files(config: CiScripts, root: Path) -> list[Path]:
+    """Return each workflow file one of the ``workflows`` globs matches, once."""
+    return sorted({path for pattern in config.workflows for path in root.glob(pattern)})
+
+
 def multiline_runs(config: CiScripts, root: Path) -> set[str]:
     """Return ``workflow :: job :: step`` for each run: block that is not one command.
 
@@ -51,7 +59,7 @@ def multiline_runs(config: CiScripts, root: Path) -> set[str]:
     ``&&``, ``||`` or ``;``.
     """
     found = set()
-    for workflow in sorted(root.glob(config.workflows)):
+    for workflow in workflow_files(config, root):
         relative = workflow.relative_to(root).as_posix()
         for job in workflow_jobs(workflow)[0].values():
             for block in job.run_blocks:
@@ -61,10 +69,15 @@ def multiline_runs(config: CiScripts, root: Path) -> set[str]:
 
 
 def called_scripts(config: CiScripts, root: Path) -> set[str]:
-    """Shell scripts in the scripts directory that a workflow calls."""
-    pattern = re.compile(re.escape(config.scripts_dir.rstrip("/")) + r"/[\w.-]+\.sh")
+    """Shell scripts in the script directories that a workflow calls."""
+    if not config.script_directories:
+        return set()
+    directories = "|".join(
+        re.escape(directory.rstrip("/")) for directory in config.script_directories
+    )
+    pattern = re.compile(rf"(?:{directories})/[\w.-]+\.sh")
     called = set()
-    for workflow in root.glob(config.workflows):
+    for workflow in workflow_files(config, root):
         for job in workflow_jobs(workflow)[0].values():
             called.update(pattern.findall(job.run_text))
     return {path for path in called if (root / path).is_file()}
@@ -92,7 +105,8 @@ def shellcheck_failures(config: CiScripts, root: Path) -> set[str] | None:
         return None
     scripts = sorted(
         path.relative_to(root).as_posix()
-        for path in (root / config.scripts_dir).glob("*.sh")
+        for directory in config.script_directories
+        for path in (root / directory).glob("*.sh")
     )
     if not scripts:
         return set()
@@ -160,15 +174,15 @@ def compare(registry: Registry, findings: Findings, root: Path) -> list[Violatio
             findings.multiline,
             config.multiline_baseline,
             "move the commands into a tested script under "
-            f"{config.scripts_dir} and call it from a single-line run:",
+            f"{' or '.join(config.script_directories)} and call it from a "
+            "single-line run:",
         ),
         (
             "untested",
             "untested workflow script",
             findings.untested,
             config.untested_baseline,
-            "add a test that runs the script "
-            "(see docs/engineering/skills/ci-workflows.md)",
+            "add a test that runs the script",
         ),
         (
             "shellcheck",

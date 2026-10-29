@@ -64,7 +64,6 @@ _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _AGENTS_KEYS = {"instructions", "adapters", "max_adapter_lines"}
 _CI_SCRIPTS_KEYS = {
     "workflows",
-    "scripts_dir",
     "test_globs",
     "multiline_baseline",
     "untested_baseline",
@@ -271,7 +270,27 @@ def _agents(c: _Collector, raw: object) -> Agents | None:
     )
 
 
-def _ci_scripts(c: _Collector, raw: object) -> CiScripts | None:
+def _workflow_globs(c: _Collector, raw: dict[str, Any]) -> tuple[str, ...]:
+    """Read ``[ci_scripts].workflows``: one glob, or a list of them."""
+    value = raw.get("workflows")
+    if isinstance(value, str) and value.strip():
+        return (value,)
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, str) and item.strip() for item in value)
+    ):
+        return tuple(value)
+    c.add(
+        None,
+        "ci_scripts.workflows must be a glob or a non-empty list of globs",
+        'set workflows = [".github/workflows/*.yml", ".github/workflows/*.yaml"]',
+    )
+    return ()
+
+
+def _ci_scripts(c: _Collector, raw: object, repository: Repository) -> CiScripts | None:
+    """Read ``[ci_scripts]``; its script directories are ``[repository]``'s."""
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -280,8 +299,8 @@ def _ci_scripts(c: _Collector, raw: object) -> CiScripts | None:
     c.unknown_keys(None, raw, _CI_SCRIPTS_KEYS, "ci_scripts")
     where = "ci_scripts"
     return CiScripts(
-        workflows=c.string(None, raw, "workflows", where),
-        scripts_dir=c.string(None, raw, "scripts_dir", where),
+        workflows=_workflow_globs(c, raw),
+        script_directories=repository.script_directories,
         test_globs=c.string_list(None, raw, "test_globs", where),
         multiline_baseline=c.string(None, raw, "multiline_baseline", where),
         untested_baseline=c.string(None, raw, "untested_baseline", where),
@@ -555,7 +574,7 @@ def parse(raw: dict[str, Any]) -> tuple[Registry | None, list[Violation]]:
         discovery=_discovery(c, raw.get("discovery"), repository),
         rules=tuple(rule for rule in rules if rule is not None),
         agents=_agents(c, raw.get("agents")),
-        ci_scripts=_ci_scripts(c, raw.get("ci_scripts")),
+        ci_scripts=_ci_scripts(c, raw.get("ci_scripts"), repository),
         issue_repository=_issue_repository(c, raw),
         repository=repository,
     )

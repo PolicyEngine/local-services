@@ -324,21 +324,14 @@ def _validate_agents(registry: Registry, root: Path) -> list[Violation]:
 
 
 def _validate_ci_scripts(registry: Registry, root: Path) -> list[Violation]:
-    """Check that the ``[ci_scripts]`` directory and baseline files exist."""
+    """Check that the ``[ci_scripts]`` baseline files exist.
+
+    ``_validate_repository`` checks its script directories.
+    """
     config = registry.ci_scripts
     if config is None:
         return []
-    violations = []
-    if config.scripts_dir and not (root / config.scripts_dir).is_dir():
-        violations.append(
-            Violation(
-                None,
-                "schema",
-                f"ci_scripts.scripts_dir {config.scripts_dir} does not exist",
-                "fix [ci_scripts]",
-            )
-        )
-    violations.extend(
+    return [
         Violation(
             None,
             "schema",
@@ -351,8 +344,7 @@ def _validate_ci_scripts(registry: Registry, root: Path) -> list[Violation]:
             config.shellcheck_baseline,
         )
         if path and not (root / path).is_file()
-    )
-    return violations
+    ]
 
 
 def _duplicate_ids(registry: Registry, category_ids: list[str]) -> list[Violation]:

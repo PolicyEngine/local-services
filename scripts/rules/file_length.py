@@ -30,8 +30,7 @@ TEST_DIRECTORIES = frozenset({"tests", "fixtures"})
 TEST_FILE_NAMES = frozenset({"conftest.py"})
 SPLIT_FIX = (
     "split it into modules that each hold one responsibility and stay under the "
-    "limit, keeping its public names importable from the original module "
-    "(see docs/engineering/skills/file-length.md)"
+    "limit, keeping its public names importable from the original module"
 )
 
 
