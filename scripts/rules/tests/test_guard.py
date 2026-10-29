@@ -881,6 +881,50 @@ class HiddenRuleTest(unittest.TestCase):
                 repo.write("pyproject.toml", per_file_ignore_config(pattern))
                 self.assertEqual([m for m in repo.messages() if "per-file" in m], [])
 
+    def test_file_level_exceptions_follow_the_registry_directories(self) -> None:
+        with Repo(
+            {
+                "tools/build.py": "print(1)\n",
+                **with_rule(per_file_ignore_rule("tools", "tools/**")),
+            }
+        ) as repo:
+            repo.write("pyproject.toml", per_file_ignore_config("tools/**"))
+            self.assert_violation(
+                repo, "may not take file-level exceptions: tools/build.py"
+            )
+
+            repo.edit(
+                "rules/registry.toml",
+                'file_exception_directories = ["tests", ".github", "scripts"]',
+                'file_exception_directories = ["tests", ".github", "scripts", "tools"]',
+            )
+            repo.render()
+            self.assertEqual([m for m in repo.messages() if "per-file" in m], [])
+
+    def test_a_directory_the_registry_leaves_out_takes_no_exceptions(self) -> None:
+        with Repo(
+            {
+                **with_rule(per_file_ignore_rule("scripts", "scripts/**")),
+            }
+        ) as repo:
+            repo.write("pyproject.toml", per_file_ignore_config("scripts/**"))
+            repo.edit(
+                "rules/registry.toml",
+                'file_exception_directories = ["tests", ".github", "scripts"]',
+                'file_exception_directories = ["tests"]',
+            )
+            repo.render()
+
+            self.assertIn(
+                "[ex.quality.scripts-ignores] enforcer: ruff per-file-ignores "
+                "'scripts/**' covers files that may not take file-level exceptions: "
+                "scripts/run_quality_guards.py. Fix: file-level exceptions are only "
+                "for files under tests and for modules that run as a program; "
+                "narrow the pattern and suppress other findings inline with a "
+                "reason.",
+                repo.messages(),
+            )
+
     def test_file_level_exception_outside_allowed_files_is_rejected(self) -> None:
         with Repo(with_rule(per_file_ignore_rule("routes", "pkg/*.py"))) as repo:
             repo.write("pyproject.toml", per_file_ignore_config("pkg/*.py"))

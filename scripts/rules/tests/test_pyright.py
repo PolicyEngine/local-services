@@ -175,7 +175,11 @@ class CoverageTest(unittest.TestCase):
     def test_the_guard_names_each_unlisted_package_and_the_fix(self) -> None:
         with Repo(
             {
-                "rules/registry.toml": REGISTRY + PYRIGHT_RULES + COVERAGE_RULE,
+                "rules/registry.toml": REGISTRY.replace(
+                    'packages = ["."]', 'packages = ["libs/*", "projects/*"]'
+                )
+                + PYRIGHT_RULES
+                + COVERAGE_RULE,
                 "libs/alpha/pyproject.toml": "",
                 "projects/service/pyproject.toml": "",
                 "projects/added/pyproject.toml": "",
@@ -190,6 +194,68 @@ class CoverageTest(unittest.TestCase):
                     "type-check it. Fix: add it to a Pyright rule's "
                     "enforcer.projects in rules/registry.toml and to the pyright "
                     "job's matrix in .github/workflows/pr.yml."
+                ],
+            )
+
+
+class CoverageLayoutTest(unittest.TestCase):
+    """The packages are the registry's: the root, a packages/ directory, ..."""
+
+    def unlisted(self, packages: str, rules: str = "") -> list[str]:
+        registry_text = (
+            REGISTRY.replace('packages = ["."]', f"packages = {packages}") + rules
+        )
+        registry, problems = load_text(registry_text)
+        assert registry is not None and not problems, problems
+        with Repo(
+            {
+                "rules/registry.toml": registry_text,
+                "packages/interface/pyproject.toml": "",
+                "libs/alpha/pyproject.toml": "",
+            },
+            render=False,
+        ) as repo:
+            return unlisted_packages(registry, repo.root)
+
+    def test_the_registry_names_the_package_directories(self) -> None:
+        self.assertEqual(
+            self.unlisted('[".", "packages/*"]'), [".", "packages/interface"]
+        )
+        self.assertEqual(self.unlisted('["packages/*"]'), ["packages/interface"])
+
+    def test_a_listed_root_package_is_covered(self) -> None:
+        rule = PYRIGHT_RULES.split("[[rule]]")[1].replace(
+            'projects = ["libs/alpha"]', 'projects = ["."]'
+        )
+
+        self.assertEqual(
+            self.unlisted('[".", "packages/*"]', "[[rule]]" + rule),
+            ["packages/interface"],
+        )
+
+    def test_the_fix_names_the_pull_request_workflow(self) -> None:
+        registry_text = (
+            REGISTRY.replace('packages = ["."]', 'packages = ["packages/*"]').replace(
+                'pr_workflow = ".github/workflows/pr.yml"',
+                'pr_workflow = ".github/workflows/pr.yaml"',
+            )
+            + COVERAGE_RULE
+        )
+        with Repo(
+            {
+                "rules/registry.toml": registry_text,
+                "packages/interface/pyproject.toml": "",
+            },
+            render=False,
+        ) as repo:
+            self.assertEqual(
+                check_coverage(repo.root),
+                [
+                    "[ex.quality.every-package-type-checked] pyright-coverage: "
+                    "package packages/interface has no Pyright rule, so CI doesn't "
+                    "type-check it. Fix: add it to a Pyright rule's "
+                    "enforcer.projects in rules/registry.toml and to the pyright "
+                    "job's matrix in .github/workflows/pr.yaml."
                 ],
             )
 
