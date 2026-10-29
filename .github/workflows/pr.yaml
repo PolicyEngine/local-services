@@ -39,14 +39,40 @@ jobs:
   verify:
     uses: ./.github/workflows/ci.yml
 
+  rules:
+    name: Rules registry
+    runs-on: ubuntu-latest
+    # The guard looks up the tracking issue of each [rule.downgrade] with the
+    # job's token.
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The guard reads the base branch's registry to refuse a weaker rule.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          python-version: "3.13"
+      # The ci-scripts tests run shellcheck; the tool needs nothing else.
+      - run: uv tool install shellcheck-py==0.11.0.1
+      - name: Test the rules tool
+        run: uv run --no-project python -m unittest discover -s scripts/rules/tests -t .
+      - name: Check the rules registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-project python scripts/run_quality_guards.py
+
   # The main ruleset requires this check by name.
   required:
     name: Required checks
     if: always()
-    needs: [lint-workflows, changelog, verify]
+    needs: [lint-workflows, changelog, verify, rules]
     runs-on: ubuntu-latest
     steps:
       - name: Require all validation jobs to succeed
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: test "$RESULTS" = "success success success"
+        run: test "$RESULTS" = "success success success success"
