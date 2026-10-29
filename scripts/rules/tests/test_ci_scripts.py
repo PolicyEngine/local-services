@@ -17,6 +17,7 @@ from scripts.rules.ci_scripts import (
 )
 from scripts.rules.load import load_text
 from scripts.rules.model import CiScripts
+from scripts.rules.tests.support import REPOSITORY_TABLE
 from scripts.rules.workflows import chains_commands, code_lines, parse_jobs
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ci_scripts"
@@ -122,9 +123,13 @@ class CodeLinesTest(unittest.TestCase):
         self.assertEqual(steps, [("Named after", 2), ("step 3", 1)])
 
 
-REGISTRY = """
+REGISTRY = (
+    """
 schema_version = 1
 repo = "example"
+"""
+    + REPOSITORY_TABLE
+    + """
 
 [[category]]
 id = "ci"
@@ -158,6 +163,7 @@ invocation = "run_quality_guards.py"
 file = "rules/baselines/ci-multiline-run.txt"
 count = 1
 """
+)
 
 
 class CompareTest(unittest.TestCase):

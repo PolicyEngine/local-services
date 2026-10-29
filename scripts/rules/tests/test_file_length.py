@@ -20,12 +20,17 @@ from scripts.rules.file_length import (
     run_check,
 )
 from scripts.rules.load import load_text
+from scripts.rules.tests.support import REPOSITORY_TABLE
 
 FIXTURES = Path(__file__).parent / "fixtures" / "file_length"
 
-FILE_LENGTH_RULE = """
+FILE_LENGTH_RULE = (
+    """
 schema_version = 1
 repo = "example"
+"""
+    + REPOSITORY_TABLE
+    + """
 
 [[category]]
 id = "quality"
@@ -51,6 +56,7 @@ invocation = "run_quality_guards.py"
 file = "rules/baselines/python-file-length.txt"
 count = 1
 """
+)
 
 
 def write_lines(root: Path, path: str, line_count: int) -> None:

@@ -17,16 +17,22 @@ from scripts.rules.locked_installs import (
     scan,
     tracked_files,
 )
+from scripts.rules.tests.support import REPOSITORY_TABLE
 
 FIXTURES = Path(__file__).parent / "fixtures" / "locked_installs"
-REGISTRY_HEADER = """
+REGISTRY_HEADER = (
+    """
 schema_version = 1
 repo = "example"
+"""
+    + REPOSITORY_TABLE
+    + """
 
 [[category]]
 id = "dependencies"
 title = "Dependencies"
 """
+)
 RULE_TEMPLATE = """
 [[rule]]
 id = "{rule_id}"

@@ -2,6 +2,14 @@
 schema_version = 1
 repo = "proof"
 
+[repository]
+rule_prefix = "proof"
+pr_workflow = ".github/workflows/pr.yml"
+required_check = "CI complete"
+script_directories = ["scripts"]
+packages = ["libs/*", "projects/*"]
+file_exception_directories = ["tests"]
+
 [[category]]
 id = "quality"
 title = "Quality"

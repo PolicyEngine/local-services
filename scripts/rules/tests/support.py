@@ -15,10 +15,24 @@ from scripts.rules.resolve import clear_caches
 
 TODAY = date(2026, 6, 1)
 
-REGISTRY = """
+# The example repository's layout; registries in other tests reuse it.
+REPOSITORY_TABLE = """
+[repository]
+rule_prefix = "ex"
+pr_workflow = ".github/workflows/pr.yml"
+required_check = "CI complete"
+script_directories = ["scripts"]
+packages = ["."]
+file_exception_directories = ["tests", ".github", "scripts"]
+"""
+
+REGISTRY = (
+    """
 schema_version = 1
 repo = "example"
-
+"""
+    + REPOSITORY_TABLE
+    + """
 [[category]]
 id = "layers"
 title = "Layers"
@@ -127,6 +141,7 @@ autofix = false
 [rule.enforcer]
 kind = "none"
 """
+)
 
 WORKFLOW = """
 name: Pull request
