@@ -104,10 +104,10 @@ def _telemetry_module(tmp_path, collector_url: str) -> TelemetryModule:
     return module
 
 
-def _run_state(spool: EventSpool) -> tuple[str, str | None]:
+def _run_state(spool: EventSpool, run_id: str = "run-a") -> tuple[str, str | None]:
     """The run's upload state and the reason it records."""
     with Session(spool._engine) as session:
-        record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+        record = session.get(TelemetryRunRecord, (run_id, "producer-a"))
         return record.upload_state, record.local_only_reason
 
 
@@ -540,23 +540,30 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
 
 
 @pytest.mark.parametrize(
-    "saved_login",
+    "unreadable_login",
     [
-        None,
         PermissionError(13, "Permission denied", "/synthetic/hf/token"),
         UnicodeDecodeError("utf-8", b"\xffsynthetic", 0, 1, "invalid start byte"),
     ],
-    ids=["absent", "not readable by this user", "not text"],
+    ids=["not readable by this user", "not text"],
 )
-def test_an_unreadable_saved_login_is_handled_like_a_missing_one(
-    tmp_path, monkeypatch, capsys, saved_login
+def test_an_unreadable_saved_login_keeps_runs_pending_until_it_can_be_read(
+    tmp_path, monkeypatch, capsys, unreadable_login
 ) -> None:
+    # An earlier build's run, still pending in the event queue file.
+    spool_path = tmp_path / "events.sqlite3"
+    earlier = _registration("run-earlier")
+    earlier_queue = EventSpool(spool_path)
+    earlier_queue.register(earlier)
+    earlier_queue.append(earlier, _event())
+    earlier_queue.close()
     # Neither HF_TOKEN nor HUGGINGFACE_TOKEN is set, so the emitter reads the
     # login saved by `hf auth login`.
-    def read_saved_login() -> str | None:
-        if saved_login is not None:
-            raise saved_login
-        return None
+    login_reads: list[str] = []
+
+    def read_saved_login() -> str:
+        login_reads.append("read")
+        raise unreadable_login
 
     def refuse_request(*arguments, **options):
         raise AssertionError("sent a request without a credential")
@@ -564,27 +571,60 @@ def test_an_unreadable_saved_login_is_handled_like_a_missing_one(
     monkeypatch.setattr(auth_module, "get_token", read_saved_login)
     monkeypatch.setattr(auth_module, "_http_post", refuse_request)
     monkeypatch.setattr(collector_module, "_http_post", refuse_request)
+    real_monotonic = time.monotonic
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
     module = _telemetry_module(tmp_path, DEVELOPMENT_COLLECTOR_URL)
     try:
         # The host stops a module whose tick raises.
-        module.tick(time.monotonic())
-        module.tick(time.monotonic())
+        module.tick(clock[0])
 
-        # The run's events stay recorded, local-only, for the reason a
-        # missing login gives.
-        assert module.spool.has_pending()
-        assert _run_state(module.spool) == (
-            "local_only",
-            "missing_huggingface_credential",
-        )
+        # Both runs stay pending, saying why; neither becomes local-only.
+        assert len(module.spool.pending_runs()) == 2
+        for run_id in ("run-a", "run-earlier"):
+            assert _run_state(module.spool, run_id) == (
+                "pending",
+                "huggingface_login_unreadable",
+            )
+
+        # The login is read again only after the backoff.
+        reads = len(login_reads)
+        module.tick(clock[0])
+        assert len(login_reads) == reads
+        clock[0] += 100.0
+        module.tick(clock[0])
+        assert len(login_reads) > reads
     finally:
-        module.close(time.monotonic())
+        monkeypatch.setattr(collector_module.time, "monotonic", real_monotonic)
+        started = time.monotonic()
+        module.close(started + 5)
+    # Nothing can be delivered from here, so the shutdown drain ends at once.
+    assert time.monotonic() - started < 1
     warning = capsys.readouterr().err
-    assert warning.count("Microcosm telemetry is local-only") == 1
-    if saved_login is not None:
-        # Only the error's type: its text names the path or quotes the file.
-        assert f"could not be read ({type(saved_login).__name__})" in warning
-        assert "synthetic" not in warning and "0xff" not in warning
+    assert warning.count("Microcosm telemetry is waiting") == 1
+    # Only the error's type: its text names the path or quotes the file.
+    assert f"could not be read ({type(unreadable_login).__name__})" in warning
+    assert "synthetic" not in warning and "0xff" not in warning
+
+    # Once the login can be read, the next emitter delivers both runs.
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic-session", "expires_in": 3600}
+        assert token == "synthetic-session"
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(auth_module, "get_token", lambda: "hf_synthetic_member")
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    reopened = EventSpool(spool_path)
+    try:
+        assert CollectorDelivery(
+            reopened, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+        ).flush_once()
+        assert not reopened.has_pending()
+        for run_id in ("run-a", "run-earlier"):
+            assert _run_state(reopened, run_id) == ("pending", None)
+    finally:
+        reopened.close()
 
 
 def _hub_outage() -> HfHubHTTPError:
