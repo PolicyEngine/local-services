@@ -118,10 +118,37 @@ class Ignored:
 
 
 @dataclass(frozen=True)
-class Discovery:
-    """Where the guard looks for unregistered checks, and which ones it may skip."""
+class Repository:
+    """The ``[repository]`` table: where this repository keeps what checks read.
 
-    workflows: tuple[str, ...] = (".github/workflows/pr.yml",)
+    ``rule_prefix`` starts every rule id. ``pr_workflow`` is the workflow that
+    runs on every pull request, and ``required_check`` the name of its job that
+    the main branch requires. ``script_directories`` hold the scripts that
+    workflows call, ``packages`` are globs of the package directories (``.`` is
+    the repository root), and ``file_exception_directories`` are the directory
+    names under which a ruff per-file ignore may switch rules off.
+    """
+
+    rule_prefix: str = ""
+    pr_workflow: str = ""
+    required_check: str = ""
+    script_directories: tuple[str, ...] = ()
+    packages: tuple[str, ...] = ()
+    file_exception_directories: tuple[str, ...] = ()
+
+    def rule_id(self, name: str) -> str:
+        """Return the id of this repository's rule ``name``, such as ``ci.x``."""
+        return f"{self.rule_prefix}.{name}"
+
+
+@dataclass(frozen=True)
+class Discovery:
+    """Where the guard looks for unregistered checks, and which ones it may skip.
+
+    ``workflows`` defaults to the repository's pull-request workflow.
+    """
+
+    workflows: tuple[str, ...] = ()
     guard_test_globs: tuple[str, ...] = ()
     extra_guard_tests: tuple[str, ...] = ()
     ignore_jobs: tuple[Ignored, ...] = ()
@@ -283,6 +310,7 @@ class Registry:
     ci_scripts: CiScripts | None = None
     # The GitHub repository, as owner/name, whose issues downgrades name.
     issue_repository: str = ""
+    repository: Repository = field(default_factory=Repository)
 
     def rule(self, rule_id: str) -> Rule | None:
         """Return the rule with ``rule_id``, or None if the registry has none."""

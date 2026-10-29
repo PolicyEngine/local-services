@@ -19,11 +19,11 @@ from scripts.rules.file_exceptions import (
     matching_files,
     out_of_scope_files,
 )
-from scripts.rules.model import CiRef, Kind, Rule, Violation
+from scripts.rules.model import CiRef, Kind, Rule, Violation, normalized_package
 from scripts.rules.workflows import JobBlock, parse_jobs
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
     from pathlib import Path
 
 DEFAULT_RUNNER = "scripts/run_quality_guards.py"
@@ -137,6 +137,24 @@ def guard_names(root: Path, runner: str = DEFAULT_RUNNER) -> list[str] | None:
                 )
             ]
     return []
+
+
+def package_directories(root: Path, patterns: Iterable[str]) -> list[str]:
+    """Return the package directories the glob ``patterns`` match, sorted.
+
+    A package directory holds a pyproject.toml; ``.`` names the repository root.
+    """
+    found = set()
+    for pattern in patterns:
+        if normalized_package(pattern) == ".":
+            if (root / "pyproject.toml").is_file():
+                found.add(".")
+            continue
+        found.update(
+            path.parent.relative_to(root).as_posix()
+            for path in root.glob(f"{pattern.rstrip('/')}/pyproject.toml")
+        )
+    return sorted(found)
 
 
 def _toml(path: Path) -> dict[str, Any]:

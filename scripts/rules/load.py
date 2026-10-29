@@ -26,6 +26,7 @@ from scripts.rules.model import (
     Kind,
     Proof,
     Registry,
+    Repository,
     Rule,
     RuleException,
     Status,
@@ -46,7 +47,18 @@ _TOP_KEYS = {
     "agents",
     "ci_scripts",
     "issue_repository",
+    "repository",
 }
+_REPOSITORY_KEYS = {
+    "rule_prefix",
+    "pr_workflow",
+    "required_check",
+    "script_directories",
+    "packages",
+    "file_exception_directories",
+}
+# The first part of every rule id: one lowercase word.
+_RULE_PREFIX = re.compile(r"[a-z][a-z0-9]*")
 # A GitHub repository's owner/name.
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _AGENTS_KEYS = {"instructions", "adapters", "max_adapter_lines"}
@@ -182,16 +194,54 @@ def _ignored(c: _Collector, raw: object, key: str, field: str) -> tuple[Ignored,
     return tuple(items)
 
 
-def _discovery(c: _Collector, raw: object) -> Discovery:
+def _repository(c: _Collector, raw: object) -> Repository:
+    """Read ``[repository]``, which every registry needs; report what is missing."""
     if raw is None:
-        return Discovery()
+        c.add(
+            None,
+            "the registry has no [repository] table",
+            "add [repository] with rule_prefix, pr_workflow, required_check, "
+            "script_directories, packages and file_exception_directories",
+        )
+        return Repository()
+    if not isinstance(raw, dict):
+        c.add(None, "repository must be a table", "write [repository]")
+        return Repository()
+    c.unknown_keys(None, raw, _REPOSITORY_KEYS, "repository")
+    where = "repository"
+    prefix = c.string(None, raw, "rule_prefix", where)
+    if prefix and not _RULE_PREFIX.fullmatch(prefix):
+        c.add(
+            None,
+            f"repository.rule_prefix is {prefix!r}, not one lowercase word",
+            "use the word every rule id starts with, such as 'emitter'",
+        )
+    return Repository(
+        rule_prefix=prefix,
+        pr_workflow=c.string(None, raw, "pr_workflow", where),
+        required_check=c.string(None, raw, "required_check", where),
+        script_directories=c.string_list(None, raw, "script_directories", where),
+        packages=c.string_list(None, raw, "packages", where),
+        file_exception_directories=c.string_list(
+            None, raw, "file_exception_directories", where
+        ),
+    )
+
+
+def _discovery(c: _Collector, raw: object, repository: Repository) -> Discovery:
+    """Read ``[discovery]``; its workflows default to the pull-request workflow."""
+    default = Discovery(
+        workflows=(repository.pr_workflow,) if repository.pr_workflow else ()
+    )
+    if raw is None:
+        return default
     if not isinstance(raw, dict):
         c.add(None, "discovery must be a table", "write [discovery]")
-        return Discovery()
+        return default
     c.unknown_keys(None, raw, _DISCOVERY_KEYS, "discovery")
     workflows = c.string_list(None, raw, "workflows", "discovery", required=False)
     return Discovery(
-        workflows=workflows or Discovery().workflows,
+        workflows=workflows or default.workflows,
         guard_test_globs=c.string_list(
             None, raw, "guard_test_globs", "discovery", required=False
         ),
@@ -496,16 +546,18 @@ def parse(raw: dict[str, Any]) -> tuple[Registry | None, list[Violation]]:
             )
 
     rules = [_rule(c, entry, i) for i, entry in enumerate(raw.get("rule", []))]
+    repository = _repository(c, raw.get("repository"))
 
     registry = Registry(
         schema_version=1,
         repo=c.string(None, raw, "repo", "registry"),
         categories=tuple(categories),
-        discovery=_discovery(c, raw.get("discovery")),
+        discovery=_discovery(c, raw.get("discovery"), repository),
         rules=tuple(rule for rule in rules if rule is not None),
         agents=_agents(c, raw.get("agents")),
         ci_scripts=_ci_scripts(c, raw.get("ci_scripts")),
         issue_repository=_issue_repository(c, raw),
+        repository=repository,
     )
     return registry, c.violations
 

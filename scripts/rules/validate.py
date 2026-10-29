@@ -15,7 +15,7 @@ from scripts.rules.model import (
     Violation,
     normalized_package,
 )
-from scripts.rules.resolve import PROOF_CI_FIELDS, node_exists
+from scripts.rules.resolve import PROOF_CI_FIELDS, node_exists, package_directories
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -376,8 +376,46 @@ def _duplicate_ids(registry: Registry, category_ids: list[str]) -> list[Violatio
     return violations
 
 
+def _validate_repository(registry: Registry, root: Path) -> list[Violation]:
+    """Check that the workflow, directories and packages ``[repository]`` names exist."""
+    repository = registry.repository
+    violations = []
+    if repository.pr_workflow and not (root / repository.pr_workflow).is_file():
+        violations.append(
+            Violation(
+                None,
+                "schema",
+                f"repository.pr_workflow {repository.pr_workflow} does not exist",
+                "name the workflow that runs on every pull request",
+            )
+        )
+    violations.extend(
+        Violation(
+            None,
+            "schema",
+            f"repository.script_directories names {directory}, which is not a "
+            "directory",
+            "list the directories that hold the repository's scripts",
+        )
+        for directory in repository.script_directories
+        if not (root / directory).is_dir()
+    )
+    violations.extend(
+        Violation(
+            None,
+            "schema",
+            f"repository.packages pattern {pattern!r} matches no directory with a "
+            "pyproject.toml",
+            "list the package directories, with . for the repository root",
+        )
+        for pattern in repository.packages
+        if not package_directories(root, [pattern])
+    )
+    return violations
+
+
 def _validate_identity(
-    rule: Rule, root: Path, category_ids: list[str]
+    rule: Rule, root: Path, category_ids: list[str], prefix: str
 ) -> list[Violation]:
     """Check the rule's id, category, rationale link and scope globs."""
     violations = []
@@ -387,6 +425,14 @@ def _validate_identity(
                 rule,
                 "id must be lowercase dotted, e.g. 'api.v2.routes-no-sql'",
                 "rename the rule",
+            )
+        )
+    elif rule.id and prefix and not rule.id.startswith(f"{prefix}."):
+        violations.append(
+            _schema_violation(
+                rule,
+                f"id does not start with '{prefix}.', the registry's rule_prefix",
+                f"rename the rule to start with '{prefix}.'",
             )
         )
     if rule.category not in category_ids:
@@ -475,11 +521,11 @@ def _validate_expiry(rule: Rule, root: Path, today: date) -> list[Violation]:
 
 
 def _validate_rule(
-    rule: Rule, root: Path, category_ids: list[str], today: date
+    rule: Rule, root: Path, category_ids: list[str], today: date, prefix: str
 ) -> list[Violation]:
     """Run every per-rule check, in the order the guard reports them."""
     return [
-        *_validate_identity(rule, root, category_ids),
+        *_validate_identity(rule, root, category_ids, prefix),
         *_validate_enforcer(rule),
         *_validate_cross_fields(rule),
         *_validate_proof(rule, root),
@@ -554,12 +600,14 @@ def validate(registry: Registry, root: Path, today: date) -> list[Violation]:
     """
     category_ids = [category.id for category in registry.categories]
     violations = [
+        *_validate_repository(registry, root),
         *_validate_agents(registry, root),
         *_validate_ci_scripts(registry, root),
         *_duplicate_ids(registry, category_ids),
     ]
+    prefix = registry.repository.rule_prefix
     for rule in registry.rules:
-        violations.extend(_validate_rule(rule, root, category_ids, today))
+        violations.extend(_validate_rule(rule, root, category_ids, today, prefix))
     violations.extend(_pyright_projects_listed_twice(registry))
     violations.extend(_validate_downgrades(registry))
     return violations
