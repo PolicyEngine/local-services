@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import threading
@@ -761,6 +762,42 @@ def test_a_collector_outage_after_the_login_can_be_read_is_retried_at_shutdown(
         assert spool.pending_runs() == [registration]
     finally:
         spool.close()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError(errno.EACCES, "Permission denied", "/synthetic/hf/token"),
+        IsADirectoryError(errno.EISDIR, "Is a directory", "/synthetic/hf/token"),
+        OSError(
+            errno.ELOOP, "Too many levels of symbolic links", "/synthetic/hf/token"
+        ),
+        UnicodeDecodeError("utf-8", b"\xffsynthetic", 0, 1, "invalid start byte"),
+    ],
+    ids=[
+        "not readable by this user",
+        "a directory",
+        "a symbolic link loop",
+        "not text",
+    ],
+)
+def test_a_saved_login_that_cannot_be_read_raises_an_error_without_its_details(
+    monkeypatch, error
+) -> None:
+    def get_token() -> str:
+        raise error
+
+    monkeypatch.setattr(auth_module, "get_token", get_token)
+
+    with pytest.raises(auth_module.UnreadableLoginError) as raised:
+        auth_module.huggingface_token()
+
+    unreadable = raised.value
+    assert unreadable.error_type == type(error).__name__
+    # Nothing keeps the original error, not even as context: its text names
+    # the file, and a UnicodeDecodeError holds the file's bytes.
+    assert unreadable.__context__ is None and unreadable.__cause__ is None
+    assert "synthetic" not in str(unreadable)
 
 
 def _hub_outage() -> HfHubHTTPError:
