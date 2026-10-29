@@ -75,6 +75,19 @@ def _no_hugging_face_credential(monkeypatch) -> None:
     monkeypatch.setattr(auth_module, "get_token", refuse)
 
 
+#: Collector answers that are not valid HTTP. http.client raises an
+#: HTTPException for each, which is not an OSError.
+MALFORMED_ANSWERS = {
+    # Ends inside its first chunk: IncompleteRead.
+    "truncated chunked answer": (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        b'Transfer-Encoding: chunked\r\n\r\n40\r\n{"accepted"'
+    ),
+    # BadStatusLine.
+    "answer that is not HTTP": b"not an HTTP answer\r\n",
+}
+
+
 def _telemetry_module(tmp_path, collector_url: str) -> TelemetryModule:
     """A telemetry module for one run, started as the host starts it."""
     module = TelemetryModule(
@@ -680,6 +693,73 @@ def test_transient_collector_rejection_remains_retryable(
         assert len(attempts) == 2 and not spool.has_pending()
     finally:
         spool.close()
+
+
+@pytest.mark.parametrize("malformed_answer", sorted(MALFORMED_ANSWERS))
+@pytest.mark.parametrize("endpoint", ["registration", "events"])
+def test_a_malformed_collector_answer_is_retried_like_a_network_failure(
+    tmp_path, monkeypatch, endpoint, malformed_answer
+) -> None:
+    malformed_path = (
+        "/v1/runs" if endpoint == "registration" else "/v1/runs/run-a/events"
+    )
+    paths: list[str] = []
+
+    class Collector(BaseHTTPRequestHandler):
+        """Answers the first request to ``malformed_path`` with broken HTTP."""
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            paths.append(self.path)
+            if self.path.endswith("/exchange"):
+                return self._json(
+                    200, {"access_token": "synthetic-session", "expires_in": 3600}
+                )
+            if self.path == malformed_path and paths.count(self.path) == 1:
+                self.wfile.write(MALFORMED_ANSWERS[malformed_answer])
+                return
+            self._json(201 if self.path == "/v1/runs" else 202, {})
+
+        def _json(self, status: int, document: dict[str, object]) -> None:
+            body = json.dumps(document).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("HF_TOKEN", "hf_synthetic_member")
+    module = _telemetry_module(tmp_path, f"http://127.0.0.1:{server.server_port}")
+    try:
+        # The host stops a module whose tick raises.
+        module.tick(clock[0])
+        assert paths.count(malformed_path) == 1
+
+        # The run and its queued event stay as they were.
+        assert module.spool.pending_runs() == [module.registration]
+        assert _run_state(module.spool) == ("pending", None)
+        assert len(module.spool.batch("run-a", "producer-a")) == 1
+
+        # Retried after the backoff, as for any network failure.
+        module.tick(clock[0])
+        assert paths.count(malformed_path) == 1
+        clock[0] += 100.0
+        module.tick(clock[0])
+        assert paths.count(malformed_path) == 2
+        assert not module.spool.has_pending()
+    finally:
+        module.close(clock[0])
+        server.shutdown()
+        server_thread.join(timeout=2)
+        server.server_close()
 
 
 def test_resource_sampler_keeps_reaped_child_cpu_monotonic(monkeypatch) -> None:
