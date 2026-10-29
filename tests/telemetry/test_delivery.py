@@ -627,6 +627,50 @@ def test_an_unreadable_saved_login_keeps_runs_pending_until_it_can_be_read(
         reopened.close()
 
 
+def test_delivery_resumes_once_the_saved_login_can_be_read(
+    tmp_path, monkeypatch
+) -> None:
+    spool = EventSpool(tmp_path / "events.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    saved_login: list[str | Exception] = [
+        PermissionError(13, "Permission denied", "/synthetic/hf/token")
+    ]
+
+    def read_saved_login() -> str:
+        if isinstance(saved_login[0], Exception):
+            raise saved_login[0]
+        return saved_login[0]
+
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic-session", "expires_in": 3600}
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(auth_module, "get_token", read_saved_login)
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    delivery = CollectorDelivery(
+        spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    try:
+        assert not delivery.flush_once()
+        assert delivery.waiting_for_credential
+
+        # The user repairs the file, and the next attempt delivers the run.
+        saved_login[0] = "hf_synthetic_member"
+        clock[0] += 100.0
+        assert delivery.flush_once()
+        assert not spool.has_pending()
+        assert _run_state(spool) == ("pending", None)
+        # So the shutdown drain waits for deliveries again.
+        assert not delivery.waiting_for_credential
+    finally:
+        spool.close()
+
+
 def _hub_outage() -> HfHubHTTPError:
     """What huggingface_hub raises for a 503 from the Hub: an OSError."""
     request = httpx.Request("POST", "https://huggingface.co/oauth/token")
