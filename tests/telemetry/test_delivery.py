@@ -1,5 +1,7 @@
 import json
+import os
 import threading
+import time
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -31,6 +33,7 @@ from microcosm_emitter.core.models import (
     TelemetryRunRecord,
     serialized_json_length,
 )
+from microcosm_emitter.host.contracts import ModuleContext
 from microcosm_emitter.telemetry.client import (
     TelemetryRun,
 )
@@ -41,6 +44,7 @@ from microcosm_emitter.telemetry.service import collector as collector_module
 from microcosm_emitter.telemetry.service import resources as resources_module
 from microcosm_emitter.telemetry.service import spool as spool_module
 from microcosm_emitter.telemetry.service.collector import CollectorDelivery
+from microcosm_emitter.telemetry.service.module import TelemetryModule
 from microcosm_emitter.telemetry.service.sanitization import (
     sanitize_details,
     sanitize_json,
@@ -69,6 +73,27 @@ def _no_hugging_face_credential(monkeypatch) -> None:
     monkeypatch.setattr(collector_module, "huggingface_token", refuse)
     monkeypatch.setattr(auth_module, "huggingface_token", refuse)
     monkeypatch.setattr(auth_module, "get_token", refuse)
+
+
+def _telemetry_module(tmp_path, collector_url: str) -> TelemetryModule:
+    """A telemetry module for one run, started as the host starts it."""
+    module = TelemetryModule(
+        {
+            "registration": _registration(),
+            "spool_path": str(tmp_path / "events.sqlite3"),
+            "development_collector_url": collector_url,
+        },
+        ModuleContext(os.getpid()),
+    )
+    module.initialize()
+    return module
+
+
+def _run_state(spool: EventSpool) -> tuple[str, str | None]:
+    """The run's upload state and the reason it records."""
+    with Session(spool._engine) as session:
+        record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+        return record.upload_state, record.local_only_reason
 
 
 def _event(stage_id: str = "compile_targets") -> dict[str, object]:
@@ -497,6 +522,54 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
     reopened = EventSpool(spool_path)
     monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-later")
     assert reopened.pending_runs() == []
+
+
+@pytest.mark.parametrize(
+    "saved_login",
+    [
+        None,
+        PermissionError(13, "Permission denied", "/synthetic/hf/token"),
+        UnicodeDecodeError("utf-8", b"\xffsynthetic", 0, 1, "invalid start byte"),
+    ],
+    ids=["absent", "not readable by this user", "not text"],
+)
+def test_an_unreadable_saved_login_is_handled_like_a_missing_one(
+    tmp_path, monkeypatch, capsys, saved_login
+) -> None:
+    # Neither HF_TOKEN nor HUGGINGFACE_TOKEN is set, so the emitter reads the
+    # login saved by `hf auth login`.
+    def read_saved_login() -> str | None:
+        if saved_login is not None:
+            raise saved_login
+        return None
+
+    def refuse_request(*arguments, **options):
+        raise AssertionError("sent a request without a credential")
+
+    monkeypatch.setattr(auth_module, "get_token", read_saved_login)
+    monkeypatch.setattr(auth_module, "_http_post", refuse_request)
+    monkeypatch.setattr(collector_module, "_http_post", refuse_request)
+    module = _telemetry_module(tmp_path, DEVELOPMENT_COLLECTOR_URL)
+    try:
+        # The host stops a module whose tick raises.
+        module.tick(time.monotonic())
+        module.tick(time.monotonic())
+
+        # The run's events stay recorded, local-only, for the reason a
+        # missing login gives.
+        assert module.spool.has_pending()
+        assert _run_state(module.spool) == (
+            "local_only",
+            "missing_huggingface_credential",
+        )
+    finally:
+        module.close(time.monotonic())
+    warning = capsys.readouterr().err
+    assert warning.count("Microcosm telemetry is local-only") == 1
+    if saved_login is not None:
+        # Only the error's type: its text names the path or quotes the file.
+        assert f"could not be read ({type(saved_login).__name__})" in warning
+        assert "synthetic" not in warning and "0xff" not in warning
 
 
 @pytest.mark.parametrize("endpoint", ["registration", "events"])
