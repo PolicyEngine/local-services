@@ -40,14 +40,13 @@ from scripts.rules.model import (
     Violation,
     normalized_package,
 )
+from scripts.rules.resolve import package_directories
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 PYRIGHT_VERSION = "1.1.414"
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Where uv packages live: each directory here with a pyproject.toml is one.
-PACKAGE_GLOBS = ("libs/*/pyproject.toml", "projects/*/pyproject.toml")
 COVERAGE_GUARD = "pyright-coverage"
 ENTRY_SEPARATOR = " :: "
 # The name a baseline entry gives an error Pyright reports without a rule.
@@ -285,14 +284,14 @@ def ratcheted_packages(registry: Registry) -> list[str]:
 
 
 def unlisted_packages(registry: Registry, root: Path) -> list[str]:
-    """Return each uv package under ``root`` that no Pyright rule lists."""
+    """Return each package under ``root`` that no Pyright rule lists.
+
+    The packages are the directories with a pyproject.toml that the
+    registry's ``[repository].packages`` globs match.
+    """
     listed = set(listed_packages(registry))
-    packages = {
-        path.parent.relative_to(root).as_posix()
-        for pattern in PACKAGE_GLOBS
-        for path in root.glob(pattern)
-    }
-    return sorted(packages - listed)
+    packages = package_directories(root, registry.repository.packages)
+    return sorted(set(packages) - listed)
 
 
 def check_coverage(root: Path = REPO_ROOT) -> list[str]:
@@ -316,7 +315,8 @@ def check_coverage(root: Path = REPO_ROOT) -> list[str]:
                 COVERAGE_GUARD,
                 f"package {package} has no Pyright rule, so CI doesn't type-check it",
                 "add it to a Pyright rule's enforcer.projects in rules/registry.toml "
-                "and to the pyright job's matrix in .github/workflows/pr.yml",
+                "and to the pyright job's matrix in "
+                f"{registry.repository.pr_workflow}",
             )
         )
         for package in unlisted_packages(registry, root)

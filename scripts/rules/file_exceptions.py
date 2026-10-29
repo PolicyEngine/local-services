@@ -3,10 +3,10 @@
 A ruff ``per-file-ignores`` entry switches rules off for whole files, so it is
 allowed only for files where that is the norm rather than an exception to it:
 
-- **tests**: files under a ``tests`` or ``authenticated_tests`` directory;
-- **CI/CD scripts**: files under ``.github``;
-- **command-line scripts**: files under a ``scripts`` directory, or Python
-  modules that run as a program through ``if __name__ == "__main__":``.
+- files under a directory named in the registry's
+  ``[repository].file_exception_directories``, such as ``tests``, ``.github``
+  or a directory of command-line scripts;
+- Python modules that run as a program through ``if __name__ == "__main__":``.
 
 Everywhere else a kept finding gets an inline suppression with its reason. See
 docs/engineering/skills/rules-registry.md#file-level-exceptions.
@@ -19,10 +19,13 @@ import os
 import re
 from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-TEST_DIRECTORIES = frozenset({"tests", "authenticated_tests"})
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+# The one directory starting with a dot whose Python files ruff lints here.
 CI_DIRECTORY = ".github"
-SCRIPT_DIRECTORY = "scripts"
 LINTED_SUFFIXES = (".py", ".pyi")
 # Directories that hold no source of this repository.
 SKIPPED_DIRECTORIES = frozenset(
@@ -134,18 +137,23 @@ def runs_as_program(root: Path, path: str) -> bool:
     return False
 
 
-def allows_file_level_exceptions(root: Path, path: str) -> bool:
-    """Return whether a file is a test, a CI/CD script or a command-line script."""
+def allows_file_level_exceptions(
+    root: Path, path: str, allowed_directories: Iterable[str]
+) -> bool:
+    """Return whether a file is under an allowed directory or runs as a program.
+
+    ``allowed_directories`` are directory names, matched at any depth.
+    """
+    allowed = set(allowed_directories)
     directories = path.split("/")[:-1]
-    return (
-        any(directory in TEST_DIRECTORIES for directory in directories)
-        or (bool(directories) and directories[0] == CI_DIRECTORY)
-        or SCRIPT_DIRECTORY in directories
-        or runs_as_program(root, path)
+    return any(directory in allowed for directory in directories) or runs_as_program(
+        root, path
     )
 
 
-def out_of_scope_files(root: Path, pattern: str) -> list[str] | None:
+def out_of_scope_files(
+    root: Path, pattern: str, allowed_directories: Iterable[str]
+) -> list[str] | None:
     """Return the files a pattern covers that may not take file-level exceptions.
 
     ``None`` means the pattern can't be checked: it is negated, so it covers
@@ -153,8 +161,9 @@ def out_of_scope_files(root: Path, pattern: str) -> list[str] | None:
     """
     if pattern.startswith("!"):
         return None
+    allowed = tuple(allowed_directories)
     return [
         path
         for path in matching_files(root, pattern)
-        if not allows_file_level_exceptions(root, path)
+        if not allows_file_level_exceptions(root, path, allowed)
     ]

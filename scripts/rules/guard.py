@@ -92,7 +92,7 @@ def run_guard(
 
     result.violations += validate(registry, root, today or date.today())
     for rule in registry.rules:
-        result.violations += resolve_enforcer(rule, root)
+        result.violations += resolve_enforcer(rule, root, registry.repository)
         result.violations += resolve_ci(rule, root)
         result.violations += resolve_proof_ci(rule, root)
     result.violations += discover_hidden(registry, root)

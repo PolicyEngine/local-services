@@ -19,7 +19,14 @@ from scripts.rules.file_exceptions import (
     matching_files,
     out_of_scope_files,
 )
-from scripts.rules.model import CiRef, Kind, Rule, Violation, normalized_package
+from scripts.rules.model import (
+    CiRef,
+    Kind,
+    Repository,
+    Rule,
+    Violation,
+    normalized_package,
+)
 from scripts.rules.workflows import JobBlock, parse_jobs
 
 if TYPE_CHECKING:
@@ -221,7 +228,7 @@ def _v(rule: Rule, message: str, fix: str) -> Violation:
     return Violation(rule.id, "enforcer", message, fix)
 
 
-def _resolve_pytest(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_pytest(rule: Rule, root: Path, _repository: Repository) -> list[Violation]:
     violations = []
     project = rule.enforcer.get("project")
     if project and not (root / project).is_dir():
@@ -245,7 +252,9 @@ def _resolve_pytest(rule: Rule, root: Path) -> list[Violation]:
     return violations
 
 
-def _resolve_quality_guard(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_quality_guard(
+    rule: Rule, root: Path, _repository: Repository
+) -> list[Violation]:
     runner = rule.enforcer.get("runner", DEFAULT_RUNNER)
     names = guard_names(root, runner)
     if names is None:
@@ -264,7 +273,7 @@ def _resolve_quality_guard(rule: Rule, root: Path) -> list[Violation]:
     return []
 
 
-def _resolve_ruff(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_ruff(rule: Rule, root: Path, repository: Repository) -> list[Violation]:
     mode = rule.enforcer.get("mode")
     codes = rule.enforcer.get("codes", [])
     if mode == "lint":
@@ -291,15 +300,21 @@ def _resolve_ruff(rule: Rule, root: Path) -> list[Violation]:
                     "match enforcer.pattern/codes to the ruff config",
                 )
             ]
-        return _file_level_exception_scope(rule, root, pattern)
+        return _file_level_exception_scope(
+            rule, root, pattern, repository.file_exception_directories
+        )
     return []
 
 
 def _file_level_exception_scope(
-    rule: Rule, root: Path, pattern: str
+    rule: Rule, root: Path, pattern: str, allowed_directories: tuple[str, ...]
 ) -> list[Violation]:
-    """Check a per-file ignore covers only tests, CI/CD and command-line scripts."""
-    out_of_scope = out_of_scope_files(root, pattern)
+    """Check a per-file ignore covers only files that may take one.
+
+    Those are files under ``allowed_directories`` and modules that run as a
+    program.
+    """
+    out_of_scope = out_of_scope_files(root, pattern, allowed_directories)
     if out_of_scope is None:
         return [
             _v(
@@ -325,15 +340,16 @@ def _file_level_exception_scope(
                 rule,
                 f"ruff per-file-ignores {pattern!r} covers files that may not take "
                 f"file-level exceptions: {shown}{more}",
-                "file-level exceptions are only for tests, CI/CD scripts and "
-                "command-line scripts; narrow the pattern and suppress other "
-                "findings inline with a reason",
+                "file-level exceptions are only for files under "
+                f"{' or '.join(allowed_directories)} and for modules that run as "
+                "a program; narrow the pattern and suppress other findings "
+                "inline with a reason",
             )
         ]
     return []
 
 
-def _resolve_mypy(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_mypy(rule: Rule, root: Path, _repository: Repository) -> list[Violation]:
     configured = mypy_files(root)
     missing = [p for p in rule.enforcer.get("paths", []) if p not in configured]
     if missing:
@@ -347,7 +363,9 @@ def _resolve_mypy(rule: Rule, root: Path) -> list[Violation]:
     return []
 
 
-def _resolve_pyright(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_pyright(
+    rule: Rule, root: Path, _repository: Repository
+) -> list[Violation]:
     """Check that each package exists and says in pyproject.toml what Pyright checks."""
     violations = []
     for project in rule.enforcer.get("projects", []):
@@ -379,8 +397,10 @@ def _resolve_pyright(rule: Rule, root: Path) -> list[Violation]:
     return violations
 
 
-def _resolve_file_field(field_name: str) -> Callable[[Rule, Path], list[Violation]]:
-    def resolve(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_file_field(
+    field_name: str,
+) -> Callable[[Rule, Path, Repository], list[Violation]]:
+    def resolve(rule: Rule, root: Path, _repository: Repository) -> list[Violation]:
         value = rule.enforcer.get(field_name)
         if value and not (root / value).exists():
             return [
@@ -395,7 +415,9 @@ def _resolve_file_field(field_name: str) -> Callable[[Rule, Path], list[Violatio
     return resolve
 
 
-def _resolve_workflow_job(rule: Rule, root: Path) -> list[Violation]:
+def _resolve_workflow_job(
+    rule: Rule, root: Path, _repository: Repository
+) -> list[Violation]:
     step = rule.enforcer.get("step")
     if not step:
         return []
@@ -413,7 +435,8 @@ def _resolve_workflow_job(rule: Rule, root: Path) -> list[Violation]:
     return violations
 
 
-RESOLVERS: dict[Kind, Callable[[Rule, Path], list[Violation]]] = {
+# Each resolver checks one kind of enforcer, given the registry's [repository].
+RESOLVERS: dict[Kind, Callable[[Rule, Path, Repository], list[Violation]]] = {
     Kind.PYTEST: _resolve_pytest,
     Kind.QUALITY_GUARD: _resolve_quality_guard,
     Kind.RUFF: _resolve_ruff,
@@ -423,13 +446,13 @@ RESOLVERS: dict[Kind, Callable[[Rule, Path], list[Violation]]] = {
     Kind.WORKFLOW_JOB: _resolve_workflow_job,
     Kind.DOCS_GUARD: _resolve_file_field("doc"),
     Kind.LLM_REVIEW: _resolve_file_field("prompt"),
-    Kind.NONE: lambda _rule, _root: [],
+    Kind.NONE: lambda _rule, _root, _repository: [],
 }
 
 
-def resolve_enforcer(rule: Rule, root: Path) -> list[Violation]:
+def resolve_enforcer(rule: Rule, root: Path, repository: Repository) -> list[Violation]:
     """Check that the rule's enforcer exists where its kind says it should."""
-    return RESOLVERS[rule.enforcer.kind](rule, root)
+    return RESOLVERS[rule.enforcer.kind](rule, root, repository)
 
 
 # --- CI wiring ------------------------------------------------------------
