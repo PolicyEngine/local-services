@@ -73,6 +73,14 @@ NO_CREDENTIAL_MESSAGE: Final = (
     "Microcosm telemetry is local-only: no ambient Hugging Face credential was "
     "found. The dataset build will continue."
 )
+# The login saved by `hf auth login` could not be read, and neither variable is
+# set: handled as a missing credential. Only the error's type, since its text
+# names the file, or quotes the file's bytes.
+UNREADABLE_LOGIN_LOCAL_ONLY_MESSAGE: Final = (
+    "Microcosm telemetry is local-only: the Hugging Face login saved by `hf auth "
+    "login` could not be read ({error_type}), and neither HF_TOKEN nor "
+    "HUGGINGFACE_TOKEN is set. The dataset build will continue."
+)
 REJECTED_CREDENTIAL_MESSAGE: Final = (
     "Microcosm telemetry is local-only for this run: the ambient Hugging Face "
     "credential was not accepted as a PolicyEngine organization member. The "

@@ -71,7 +71,8 @@ TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = 
     ),
 }
 #: `huggingface_hub` could not read the login `hf auth login` saved, such as a
-#: file this user may not read, and neither variable is set.
+#: file this user may not read, and neither variable is set
+#: (``UnreadableLoginError``).
 UNREADABLE_LOGIN_MESSAGE: Final = (
     "The Hugging Face login saved by `hf auth login` could not be read "
     "({error_type}), and neither HF_TOKEN nor HUGGINGFACE_TOKEN is set; nothing "
@@ -139,6 +140,7 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     """
     from microcosm_emitter.core.auth import (
         ExchangeFailure,
+        UnreadableLoginError,
         exchange_huggingface_credential,
         huggingface_token,
     )
@@ -147,9 +149,9 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     origin = arguments.collector_origin or _collector_origin(None)
     try:
         credential = huggingface_token()
-    except (OSError, UnicodeDecodeError) as error:
+    except UnreadableLoginError as error:
         print(
-            UNREADABLE_LOGIN_MESSAGE.format(error_type=type(error).__name__),
+            UNREADABLE_LOGIN_MESSAGE.format(error_type=error.error_type),
             file=sys.stderr,
         )
         return EXIT_MISSING_CREDENTIAL

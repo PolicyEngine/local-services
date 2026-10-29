@@ -132,14 +132,42 @@ def _http_post(
         return error.code, _decode_response(body)
 
 
+class UnreadableLoginError(OSError):
+    """The login saved by `hf auth login` could not be read, such as a file
+    this user may not read or one that is not text, and neither `HF_TOKEN`
+    nor `HUGGINGFACE_TOKEN` is set.
+
+    ``error_type`` is the name of the error ``huggingface_hub`` raised. Its
+    text is not kept: it names the file, or quotes the file's bytes. An
+    ``OSError``, as reading a file that fails is, so callers that handled the
+    ``PermissionError`` before still handle it.
+    """
+
+    def __init__(self, error_type: str) -> None:
+        super().__init__(
+            f"the saved Hugging Face login could not be read ({error_type})"
+        )
+        self.error_type = error_type
+
+
 def huggingface_token() -> str | None:
     """The build's Hugging Face token: `HF_TOKEN`, then `HUGGINGFACE_TOKEN`, then
-    the token saved by `hf auth login`; `None` without one."""
-    return (
+    the token saved by `hf auth login`; `None` without one.
+
+    Raises ``UnreadableLoginError`` when only the saved login is left and it
+    cannot be read.
+    """
+    variable_token = (
         os.environ.get("HF_TOKEN", "").strip()
         or os.environ.get("HUGGINGFACE_TOKEN", "").strip()
-        or get_token()
     )
+    if variable_token:
+        return variable_token
+    try:
+        return get_token()
+    except (OSError, UnicodeDecodeError) as error:
+        # huggingface_hub catches only FileNotFoundError when it reads the file.
+        raise UnreadableLoginError(type(error).__name__) from None
 
 
 @dataclass(frozen=True)
@@ -354,6 +382,10 @@ class CollectorSession:
     ``token_expired`` or ``token_rejected``. A given token obtained from
     another origin than ``origin`` raises ``GivenCollectorTokenError``: its
     origin is only compared, and never chooses where anything is sent.
+
+    Without a given token, ``credential()`` raises the ``UnreadableLoginError``
+    of ``huggingface_token`` when the saved login cannot be read; the
+    telemetry module handles it as a missing credential.
     """
 
     def __init__(

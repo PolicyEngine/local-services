@@ -11,6 +11,7 @@ from typing import Any
 from microcosm_emitter.core.auth import (
     CollectorSession,
     SessionResult,
+    UnreadableLoginError,
     _http_post,
     huggingface_token,
 )
@@ -29,6 +30,7 @@ from microcosm_emitter.core.constants import (
     REJECTED_CREDENTIAL_MESSAGE,
     RUN_EVENTS_PATH_TEMPLATE,
     RUN_REGISTRATION_PATH,
+    UNREADABLE_LOGIN_LOCAL_ONLY_MESSAGE,
     UNSENDABLE_CREDENTIAL_MESSAGE,
 )
 from microcosm_emitter.telemetry.constants import (
@@ -136,12 +138,17 @@ class CollectorDelivery:
         return made_progress
 
     def _collector_token(self, registration: Mapping[str, Any]) -> str | None:
-        result, token = self.session.credential()
+        try:
+            result, token = self.session.credential()
+        except UnreadableLoginError as error:
+            # Like a missing login: this emitter has no credential to send.
+            self._local_only_without_credential(
+                registration,
+                UNREADABLE_LOGIN_LOCAL_ONLY_MESSAGE.format(error_type=error.error_type),
+            )
+            return None
         if result == "missing":
-            if not self._warned_no_token:
-                print(NO_CREDENTIAL_MESSAGE, file=sys.stderr, flush=True)
-                self._warned_no_token = True
-            self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
+            self._local_only_without_credential(registration, NO_CREDENTIAL_MESSAGE)
         elif result == "rejected":
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_CREDENTIAL)
         elif result == "unsendable":
@@ -155,6 +162,16 @@ class CollectorDelivery:
         elif result != "ok":
             self._defer_retry()
         return token
+
+    def _local_only_without_credential(
+        self, registration: Mapping[str, Any], warning: str
+    ) -> None:
+        """Keep the run's events local, warning once for this module."""
+
+        if not self._warned_no_token:
+            print(warning, file=sys.stderr, flush=True)
+            self._warned_no_token = True
+        self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
 
     def _keep_pending(self, registration: Mapping[str, Any], reason: str) -> None:
         """Leave the run for an emitter with a credential, saying why once."""
