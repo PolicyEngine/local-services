@@ -25,18 +25,24 @@ class OrreryModule:
         self._warned = False
 
     def initialize(self) -> None:
-        # Refuse an untrusted collector origin before opening the queue.
+        # Refuse an untrusted collector origin, or an unusable given
+        # collector token, before opening the queue.
         origin = configured_collector_origin(self.configuration)
+        publication_origin = self.configuration.get(
+            "publication_origin", DEFAULT_GRAPH_PUBLICATION_ORIGIN
+        )
+        # The credential goes to the publication origin, not the collector,
+        # so a collector token given to this emitter is never sent there.
+        session = shared_session(
+            self.context.services, origin, destination=publication_origin
+        )
         queue = GraphPublicationQueue(Path(self.configuration["spool_path"]))
         self.queue = queue
-        session = shared_session(self.context.services, origin)
         self.delivery = GraphPublicationDelivery(
             queue,
             credential=session.credential,
             invalidate_credential=session.invalidate,
-            origin=self.configuration.get(
-                "publication_origin", DEFAULT_GRAPH_PUBLICATION_ORIGIN
-            ),
+            origin=publication_origin,
         )
 
     def handle_message(self, message: JsonObject) -> None:

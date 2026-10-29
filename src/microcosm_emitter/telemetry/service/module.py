@@ -51,14 +51,16 @@ class TelemetryModule:
         self.heartbeat_seconds = max(MINIMUM_HEARTBEAT_SECONDS, heartbeat)
         self._next_heartbeat = time.monotonic() + self.heartbeat_seconds
         self.sampler = ProcessTreeSampler(self.context.parent_pid)
+        # Refuse an untrusted origin, or an unusable given collector token,
+        # before opening the spool.
+        session = shared_session(
+            self.context.services, configured_collector_origin(self.configuration)
+        )
         self.spool = EventSpool(self.configuration["spool_path"])
         try:
             self.delivery = CollectorDelivery(
                 self.spool,
-                session=shared_session(
-                    self.context.services,
-                    configured_collector_origin(self.configuration),
-                ),
+                session=session,
                 # Empty settings count as unset, as configured_collector_origin
                 # treats them, so the delivery and the session agree.
                 development_collector_url=(
@@ -119,6 +121,9 @@ class TelemetryModule:
             if self.delivery is not None:
                 while time.monotonic() < deadline and self.spool.has_deliverable():
                     if not self.delivery.flush_once():
+                        if self.delivery.waiting_for_credential:
+                            # Nothing more can be delivered from here.
+                            break
                         time.sleep(
                             min(
                                 DRAIN_RETRY_SECONDS, max(0, deadline - time.monotonic())

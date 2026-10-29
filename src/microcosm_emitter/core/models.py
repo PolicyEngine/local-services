@@ -86,6 +86,8 @@ class TelemetryRunRecord(SpoolModel):
         nullable=False,
         default=UPLOAD_STATE_PENDING,
     )
+    #: Why a local-only run is excluded from upload or, for a pending run,
+    #: why delivery waits (a given collector token expired or was refused).
     local_only_reason: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
     events: Mapped[list[TelemetryEventRecord]] = relationship(

@@ -1,13 +1,21 @@
 import json
 import threading
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
 from alembic import command
+from given_token import (
+    GIVEN_COLLECTOR_TOKEN,
+    GIVEN_TOKEN_VARIABLES,
+    given_token_variables,
+    set_variables,
+)
 from sqlalchemy.orm import Session
 
-from microcosm_emitter.core.auth import _development_collector_url
+from microcosm_emitter.core import auth as auth_module
+from microcosm_emitter.core.auth import CollectorSession, _development_collector_url
 from microcosm_emitter.core.constants import (
     PRODUCTION_COLLECTOR_URL,
 )
@@ -49,6 +57,18 @@ def _registration(run_id: str = "run-a") -> dict[str, object]:
         candidate_id="candidate-a",
         producer_id="producer-a",
     ).as_registration()
+
+
+DEVELOPMENT_COLLECTOR_URL = "http://127.0.0.1:8080"
+
+
+def _no_hugging_face_credential(monkeypatch) -> None:
+    def refuse() -> str:
+        raise AssertionError("read the Hugging Face credential")
+
+    monkeypatch.setattr(collector_module, "huggingface_token", refuse)
+    monkeypatch.setattr(auth_module, "huggingface_token", refuse)
+    monkeypatch.setattr(auth_module, "get_token", refuse)
 
 
 def _event(stage_id: str = "compile_targets") -> dict[str, object]:
@@ -249,30 +269,190 @@ def test_collector_delivery_exchanges_hf_token_then_flushes(
     assert not spool.has_pending()
 
 
-def test_non_org_credential_keeps_event_local(tmp_path, monkeypatch, capsys) -> None:
+def test_a_given_collector_token_replaces_the_hugging_face_exchange(
+    tmp_path, monkeypatch
+) -> None:
+    spool = EventSpool(tmp_path / "events.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    requests: list[tuple[str, str]] = []
+    set_variables(monkeypatch, given_token_variables(DEVELOPMENT_COLLECTOR_URL))
+    _no_hugging_face_credential(monkeypatch)
+
+    def fake_post(url, payload, token, *, timeout=5.0):
+        requests.append((url.removeprefix(DEVELOPMENT_COLLECTOR_URL), token))
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", fake_post)
+    try:
+        delivery = CollectorDelivery(
+            spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+        )
+        assert delivery.flush_once()
+        assert requests == [
+            ("/v1/runs", GIVEN_COLLECTOR_TOKEN),
+            ("/v1/runs/run-a/events", GIVEN_COLLECTOR_TOKEN),
+        ]
+        assert spool.batch("run-a", "producer-a") == []
+        # The token only writes telemetry: a session for another scope, such
+        # as collector submissions, has no credential rather than reading the
+        # Hugging Face one.
+        submissions = CollectorSession(
+            DEVELOPMENT_COLLECTOR_URL, scope="artifacts:submit"
+        )
+        assert submissions.credential() == ("missing", None)
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        "expires within the safety margin",
+        "refused at registration",
+        "refused with events",
+    ],
+)
+def test_an_unusable_given_token_leaves_the_run_for_a_later_emitter(
+    tmp_path, monkeypatch, capsys, ending
+) -> None:
+    spool_path = tmp_path / "events.sqlite3"
+    spool = EventSpool(spool_path)
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    set_variables(
+        monkeypatch,
+        given_token_variables(
+            DEVELOPMENT_COLLECTOR_URL,
+            # The collector allows no clock leeway, so the last seconds of a
+            # token would get a 401: it counts as expired 30 s early.
+            expires_in=timedelta(
+                seconds=10
+                if ending == "expires within the safety margin"
+                else 18 * 3600
+            ),
+        ),
+    )
+    _no_hugging_face_credential(monkeypatch)
+    requests: list[str] = []
+
+    def collector_refusing_the_token(url, payload, token, *, timeout=5.0):
+        requests.append(url.removeprefix(DEVELOPMENT_COLLECTOR_URL))
+        registering = url.endswith("/v1/runs")
+        if ending == "refused at registration" or (
+            ending == "refused with events" and not registering
+        ):
+            return 401, {"detail": "invalid token"}
+        return (201, {}) if registering else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", collector_refusing_the_token)
+    delivery = CollectorDelivery(
+        spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    for _ in range(3):
+        assert not delivery.flush_once()
+
+    # Pending, not local-only: the token cannot be renewed here, and is not
+    # sent again once refused.
+    with Session(spool._engine) as session:
+        record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+        assert (record.upload_state, record.local_only_reason) == (
+            "pending",
+            "collector_token_expired"
+            if ending == "expires within the safety margin"
+            else "collector_token_rejected",
+        )
+    assert spool.pending_runs() == [registration]
+    assert (
+        len(requests)
+        == {
+            "expires within the safety margin": 0,
+            "refused at registration": 1,
+            "refused with events": 2,
+        }[ending]
+    )
+    assert capsys.readouterr().err.count("collector token") == 1
+    spool.close()
+
+    # Later, an emitter with the operator's Hugging Face login delivers it.
+    for name in GIVEN_TOKEN_VARIABLES:
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf_member")
+
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "operator-session", "expires_in": 3600}
+        assert token == "operator-session"
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    reopened = EventSpool(spool_path)
+    try:
+        assert CollectorDelivery(
+            reopened, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+        ).flush_once()
+        assert not reopened.has_pending()
+        with Session(reopened._engine) as session:
+            record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+            assert (record.upload_state, record.local_only_reason) == (
+                "pending",
+                None,
+            )
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize(
+    ("credential", "warning"),
+    [
+        ("hf-outsider", "not accepted as a PolicyEngine organization member"),
+        ("hf-member with a pasted space", "contains characters that cannot be sent"),
+    ],
+    ids=["outside the organization", "not sendable as a bearer token"],
+)
+def test_a_refused_or_unsendable_credential_keeps_events_local(
+    tmp_path, monkeypatch, capsys, credential, warning
+) -> None:
     spool = EventSpool(tmp_path / "events.sqlite3")
     registration = _registration()
     spool.register(registration)
     spool.append(registration, _event())
     requests: list[dict[str, object]] = []
-    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf-outsider")
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: credential)
 
-    def reject(url, payload, token, *, timeout=5.0):
+    def collector_refusing_outsiders(url, payload, token, *, timeout=5.0):
         requests.append(payload)
-        return 403, {"detail": "not a member"}
+        if token == "hf-outsider":
+            return 403, {"detail": "not a member"}
+        # The real request, which refuses a credential it cannot send.
+        return auth_module._http_post(url, payload, token, timeout=timeout)
 
-    monkeypatch.setattr(collector_module, "_http_post", reject)
+    monkeypatch.setattr(collector_module, "_http_post", collector_refusing_outsiders)
     delivery = CollectorDelivery(
         spool,
         development_collector_url="http://127.0.0.1:8080",
     )
 
+    # Neither stops delivery: the run's events stay recorded, local-only, as
+    # for any credential the collector refuses.
     assert not delivery.flush_once()
     assert not delivery.flush_once()
     assert spool.has_pending()
     assert spool.pending_runs() == []
-    assert requests == [{}]
-    assert capsys.readouterr().err.count("local-only for this run") == 1
+    with Session(spool._engine) as session:
+        record = session.get(TelemetryRunRecord, ("run-a", "producer-a"))
+        assert (record.upload_state, record.local_only_reason) == (
+            "local_only",
+            "huggingface_credential_rejected",
+        )
+    # An unsendable credential is never sent.
+    assert requests == ([{}] if credential == "hf-outsider" else [])
+    # One warning, giving the cause.
+    standard_error = capsys.readouterr().err
+    assert standard_error.count("local-only for this run") == 1
+    assert warning in standard_error
 
 
 def test_identity_provider_outage_keeps_events_eligible_for_retry(

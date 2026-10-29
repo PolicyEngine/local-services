@@ -186,6 +186,25 @@ class EventSpool:
             run.local_only_reason = reason
             run.updated_at = utc_now()
 
+    def record_pending_reason(
+        self,
+        run_id: str,
+        producer_id: str,
+        reason: str | None,
+    ) -> None:
+        """Record why a pending run waits, or clear it with ``None``.
+
+        A local-only run keeps the reason it was excluded for.
+        """
+
+        with self._lock, self._session_factory.begin() as session:
+            run = session.get(TelemetryRunRecord, (run_id, producer_id))
+            if run is None or run.upload_state != UPLOAD_STATE_PENDING:
+                return
+            if run.local_only_reason != reason:
+                run.local_only_reason = reason
+                run.updated_at = utc_now()
+
     def has_deliverable(self) -> bool:
         """Return whether any queued event remains eligible for delivery."""
 

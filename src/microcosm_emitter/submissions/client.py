@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -33,6 +33,9 @@ from microcosm_emitter.huggingface.service.hub import (
 )
 from microcosm_emitter.huggingface.service.queue import sha256_file
 from microcosm_emitter.submissions.planning import PlannedSubmission
+
+if TYPE_CHECKING:
+    from microcosm_emitter.core.auth import SessionCredential
 
 SUBMIT_SCOPE: Final = "artifacts:submit"
 SUBMISSIONS_PATH: Final = "/v1/submissions"
@@ -226,7 +229,7 @@ class CollectorSubmissionClient:
         self,
         origin: str,
         *,
-        credential: Callable[[], tuple[str, str | None]],
+        credential: Callable[[], SessionCredential],
         invalidate_credential: Callable[[], None],
         http: httpx.Client | None = None,
         allow_loopback_uploads: bool = False,
@@ -269,7 +272,7 @@ class CollectorSubmissionClient:
             return token
         if result == "missing":
             raise _StepFailedError(SubmissionOutcome("pending", CREDENTIAL_MISSING))
-        if result == "rejected":
+        if result in ("rejected", "unsendable"):
             raise _StepFailedError(SubmissionOutcome("failed", CREDENTIAL_REJECTED))
         if result == "intake_unavailable":
             raise _StepFailedError(self._intake_unavailable())

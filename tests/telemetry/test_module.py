@@ -3,9 +3,11 @@
 import json
 import os
 import time
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
+from given_token import given_token_variables, set_variables
 from sqlalchemy import event as sqlalchemy_event
 
 from microcosm_emitter.host.contracts import ModuleContext
@@ -187,6 +189,31 @@ def test_persistence_failure_rolls_back_events_sequences_and_lifecycle(
         ("load", "completed"),
         ("compile", "started"),
     ]
+
+
+def test_close_does_not_wait_for_a_given_token_that_expired(tmp_path, monkeypatch):
+    # Its events cannot be delivered from here, so the build's exit is not
+    # held for the drain period.
+    set_variables(
+        monkeypatch,
+        given_token_variables("http://127.0.0.1:1", expires_in=timedelta(minutes=-1)),
+    )
+    run = TelemetryRun("given-token-run", "US", "test", producer_id="producer")
+    given_token_module = TelemetryModule(
+        {
+            "registration": run.as_registration(),
+            "spool_path": str(tmp_path / "events.sqlite3"),
+            "development_collector_url": "http://127.0.0.1:1",
+        },
+        ModuleContext(os.getpid()),
+    )
+    given_token_module.initialize()
+    given_token_module.tick(time.monotonic())
+
+    started = time.monotonic()
+    given_token_module.close(started + 5)
+
+    assert time.monotonic() - started < 1
 
 
 def test_module_close_disposes_database_when_delivery_fails(module):
