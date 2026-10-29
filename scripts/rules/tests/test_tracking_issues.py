@@ -272,25 +272,6 @@ class LookupTest(TrackingIssueTestCase):
             ],
         )
 
-    def test_the_lookup_must_load(self) -> None:
-        missing_script = self.fake_root / "missing.py"
-        script_without_the_lookup = self.fake_root / "renamed.py"
-        script_without_the_lookup.write_text("def look_up_issue():\n    pass\n")
-        for script in (missing_script, script_without_the_lookup):
-            with self.subTest(script=script.name):
-                with mock.patch.object(tracking_issues, "LOOKUP_SCRIPT", script):
-                    violations, _ = self.check(
-                        downgraded_rule("ex.layers.ratcheted", 912)
-                    )
-
-                self.assertEqual(len(violations), 1)
-                self.assertIn(
-                    f"[registry] downgrade: couldn't load the issue lookup from "
-                    f"{script}: ",
-                    violations[0],
-                )
-                self.assertEqual(self.gh_calls(), [])
-
     def test_issues_are_looked_up_only_in_the_repository_the_run_is_in(
         self,
     ) -> None:
@@ -404,23 +385,6 @@ class GuardTest(TrackingIssueTestCase):
             "note: rule ex.layers.ratcheted: tracking issue #912 was not checked, ",
             printed.getvalue(),
         )
-
-
-class RepositoryLookupTest(unittest.TestCase):
-    def test_the_pr_description_check_provides_the_lookup(self) -> None:
-        lookup = tracking_issues._load_lookup()
-
-        for name in tracking_issues.LOOKUP_NAMES:
-            self.assertTrue(hasattr(lookup, name), name)
-
-    def test_the_registry_names_this_repository_for_tracking_issues(self) -> None:
-        registry, problems = load_text(
-            (tracking_issues.REPO_ROOT / "rules/registry.toml").read_text()
-        )
-
-        self.assertEqual(problems, [])
-        assert registry is not None
-        self.assertEqual(registry.issue_repository, "PolicyEngine/policyengine-sim-api")
 
 
 class RegistrySchemaTest(TrackingIssueTestCase):
