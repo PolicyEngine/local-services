@@ -10,25 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.rules import (  # noqa: E402
-    ci_scripts,
-    file_length,
-    locked_installs,
-    pyright,
-    uv_version,
-)
 from scripts.rules import guard as rules_guard  # noqa: E402
 
 Guard = tuple[str, Callable[[], list[str]]]
 
-GUARDS: tuple[Guard, ...] = (
-    ("rules-registry", rules_guard.check),
-    ("ci-scripts", ci_scripts.check),
-    ("pyright-coverage", pyright.check_coverage),
-    ("locked-installs", locked_installs.check),
-    ("uv-version", uv_version.check),
-    ("file-length", file_length.check),
-)
+# Each guard needs a quality-guard rule in rules/registry.toml. The other
+# checkers in scripts/rules (ci_scripts.check, file_length.check,
+# locked_installs.check, pyright.check_coverage and uv_version.check) are added
+# here together with the rules that register them.
+GUARDS: tuple[Guard, ...] = (("rules-registry", rules_guard.check),)
 
 
 def main() -> int:

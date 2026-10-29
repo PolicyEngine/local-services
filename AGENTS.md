@@ -8,3 +8,23 @@
 - Tests use temporary databases created through real migrations, synthetic credentials, and loopback network services. Never use ambient credentials or contact the production collector in tests.
 - Preserve the existing collector protocol; do not add a general hosted events API.
 - Push feature branches and open PRs; do not push directly to main. Do not automatically merge or monitor queued checks.
+
+## Rules
+
+<!-- BEGIN GENERATED: rules (python -m scripts.rules render) -->
+
+Every rule for this repository lives in `rules/registry.toml` and is rendered,
+with its enforcement and gaps, in `docs/generated/rules.md`. Blocking rules
+fail CI. Doc-only rules are not checked automatically, so follow them yourself.
+To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
+
+### Code quality
+
+- `emitter.quality.ruff-lint`: All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles. (blocking: ruff check (B, E, F, I, N, UP, W))
+
+### Process and repository hygiene
+
+- `emitter.agents.adapters-point-to-agents-md`: CLAUDE.md only points to AGENTS.md; guidance and rules are written in AGENTS.md alone. (blocking: quality guard `rules-registry`)
+- `emitter.process.rules-registry`: Every rule is registered in rules/registry.toml, is enforced where it claims to be, runs in a job the required check waits for if it blocks merges, and its rendered views are current. (blocking: quality guard `rules-registry`)
+
+<!-- END GENERATED: rules -->
