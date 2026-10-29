@@ -1,9 +1,8 @@
 """Check that each ``[rule.downgrade]`` names an open issue.
 
 The issue tracks restoring the rule, and lives in the registry's
-``issue_repository``. The lookup is the PR description check's
-(``.github/scripts/check_pr_description.py``): it runs ``gh api``, which reads its
-token from ``GH_TOKEN`` or ``GITHUB_TOKEN``.
+``issue_repository``. The lookup (``issues.py``) runs ``gh api``, which reads
+its token from ``GH_TOKEN`` or ``GITHUB_TOKEN``.
 
 On GitHub Actions the check never passes without an answer from GitHub: a
 missing token, or a lookup that fails, is a violation. Elsewhere, without a
@@ -16,52 +15,27 @@ set, the two must match, so a pull request can't name an issue elsewhere.
 
 from __future__ import annotations
 
-import importlib.util
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scripts.rules.issues import (
+    IssueLookupError,
+    NotAnOpenIssueError,
+    require_open_issue,
+)
 from scripts.rules.model import Violation
 
 if TYPE_CHECKING:
-    from types import ModuleType
-
     from scripts.rules.model import Registry, Rule
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-LOOKUP_SCRIPT = REPO_ROOT / ".github" / "scripts" / "check_pr_description.py"
 # gh reads its token from the first of these that is set.
 TOKEN_VARIABLES = ("GH_TOKEN", "GITHUB_TOKEN")
 CHECK = "downgrade"
 NEITHER_VARIABLE_SET = "neither GH_TOKEN nor GITHUB_TOKEN is set"
-# What the check uses from the lookup script.
-LOOKUP_NAMES = ("require_open_issue", "NotAnOpenIssueError", "IssueLookupError")
-
-
-class LookupUnavailableError(Exception):
-    """The issue lookup script could not be loaded."""
-
-
-def _load_lookup() -> ModuleType:
-    """Load the PR description check, whose ``require_open_issue`` is the lookup."""
-    spec = importlib.util.spec_from_file_location("check_pr_description", LOOKUP_SCRIPT)
-    if spec is None or spec.loader is None:
-        msg = "it is not a Python module"
-        raise LookupUnavailableError(msg)
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except (ImportError, OSError, SyntaxError) as error:
-        raise LookupUnavailableError(str(error)) from error
-    missing = [name for name in LOOKUP_NAMES if not hasattr(module, name)]
-    if missing:
-        msg = f"it doesn't define {', '.join(missing)}"
-        raise LookupUnavailableError(msg)
-    return module
 
 
 def _check_issue(
-    lookup: ModuleType, repository: str, token_variable: str, rule: Rule, issue: int
+    repository: str, token_variable: str, rule: Rule, issue: int
 ) -> tuple[Violation | None, str | None]:
     """Look up one downgrade's issue; return a violation or a note.
 
@@ -69,8 +43,8 @@ def _check_issue(
     that fails.
     """
     try:
-        lookup.require_open_issue(repository, issue)
-    except lookup.NotAnOpenIssueError as error:
+        require_open_issue(repository, issue)
+    except NotAnOpenIssueError as error:
         fix = (
             f"set issue to the number of an open issue in {repository} that tracks "
             "restoring the rule"
@@ -82,7 +56,7 @@ def _check_issue(
         return Violation(
             rule.id, CHECK, f"issue = {issue} names no open issue: {problem}", fix
         ), None
-    except lookup.IssueLookupError as error:
+    except IssueLookupError as error:
         problem = str(error).rstrip(".")
     except OSError as error:
         problem = f"gh could not run ({error})"
@@ -144,22 +118,10 @@ def check_tracking_issues(registry: Registry) -> tuple[list[Violation], list[str
             'for example GH_TOKEN="$(gh auth token)"'
             for rule, issue in downgraded
         ]
-    try:
-        lookup = _load_lookup()
-    except LookupUnavailableError as error:
-        return [
-            Violation(
-                None,
-                CHECK,
-                f"couldn't load the issue lookup from {LOOKUP_SCRIPT}: {error}",
-                "restore .github/scripts/check_pr_description.py, whose "
-                "require_open_issue looks issues up",
-            )
-        ], []
     violations: list[Violation] = []
     notes: list[str] = []
     for rule, issue in downgraded:
-        violation, note = _check_issue(lookup, repository, token_variable, rule, issue)
+        violation, note = _check_issue(repository, token_variable, rule, issue)
         if violation is not None:
             violations.append(violation)
         if note is not None:
