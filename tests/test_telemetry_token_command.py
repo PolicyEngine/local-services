@@ -8,8 +8,10 @@ origin reach standard output; nothing about the token reaches standard error.
 import json
 from datetime import datetime, timedelta
 
+import httpx
 import pytest
 from fake_collector import FakeCollector
+from huggingface_hub.errors import HfHubHTTPError
 
 from microcosm_emitter import cli
 from microcosm_emitter.core import auth as auth_module
@@ -39,6 +41,15 @@ def operator_login(monkeypatch):
 
 def unreadable_saved_login() -> str:
     raise PermissionError("the saved token file is not readable")
+
+
+def failed_oidc_exchange() -> str:
+    """get_token() with HF_OIDC_RESOURCE set, when the Hub answers 503."""
+    request = httpx.Request("POST", "https://huggingface.co/oauth/token")
+    raise HfHubHTTPError(
+        "503 Server Error: Service Unavailable",
+        response=httpx.Response(503, request=request),
+    )
 
 
 def unexpected_error(*arguments, **options):
@@ -95,6 +106,8 @@ def test_prints_a_telemetry_token_for_the_requested_lifetime(
         # Not a bearer token the collector would accept, so it counts as refused.
         ("credential with a line break", 4),
         ("unreadable saved login", 3),
+        # Not a saved login that cannot be read, so not exit 3.
+        ("OIDC token exchange that fails", 7),
         ("collector unreachable", 5),
         ("collector answers 503", 5),
         ("collector answer that is not HTTP", 5),
@@ -131,6 +144,10 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
     elif failure == "unreadable saved login":
         monkeypatch.delenv("HF_TOKEN")
         monkeypatch.setattr(auth_module, "get_token", unreadable_saved_login)
+    elif failure == "OIDC token exchange that fails":
+        monkeypatch.delenv("HF_TOKEN")
+        monkeypatch.setenv("HF_OIDC_RESOURCE", "datasets/policyengine/synthetic")
+        monkeypatch.setattr(auth_module, "get_token", failed_oidc_exchange)
     elif failure == "unexpected error":
         monkeypatch.setattr(
             auth_module, "exchange_huggingface_credential", unexpected_error
@@ -149,6 +166,8 @@ def test_each_failure_has_its_own_exit_code_and_prints_nothing(
         assert "cannot be sent as a bearer token" in output.err
     elif failure == "unreadable saved login":
         assert "could not be read (PermissionError)" in output.err
+    elif failure == "OIDC token exchange that fails":
+        assert "unexpected HfHubHTTPError" in output.err
     if expected_exit_code in {2, 3, 7} or failure == "credential with a line break":
         assert collector.exchange_requests == []
 

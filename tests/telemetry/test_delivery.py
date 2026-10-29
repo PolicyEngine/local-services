@@ -6,6 +6,7 @@ from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from alembic import command
 from given_token import (
@@ -14,6 +15,7 @@ from given_token import (
     given_token_variables,
     set_variables,
 )
+from huggingface_hub.errors import HfHubHTTPError
 from sqlalchemy.orm import Session
 
 from microcosm_emitter.core import auth as auth_module
@@ -583,6 +585,51 @@ def test_an_unreadable_saved_login_is_handled_like_a_missing_one(
         # Only the error's type: its text names the path or quotes the file.
         assert f"could not be read ({type(saved_login).__name__})" in warning
         assert "synthetic" not in warning and "0xff" not in warning
+
+
+def _hub_outage() -> HfHubHTTPError:
+    """What huggingface_hub raises for a 503 from the Hub: an OSError."""
+    request = httpx.Request("POST", "https://huggingface.co/oauth/token")
+    return HfHubHTTPError(
+        "503 Server Error: Service Unavailable",
+        response=httpx.Response(503, request=request),
+    )
+
+
+@pytest.mark.parametrize(
+    ("oidc_resource", "error"),
+    [
+        ("datasets/policyengine/synthetic", _hub_outage()),
+        (
+            "datasets/policyengine/synthetic",
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        ),
+        (None, _hub_outage()),
+    ],
+    ids=[
+        "Hub outage during the OIDC exchange",
+        "OIDC answer that is not text",
+        "Hub outage without OIDC",
+    ],
+)
+def test_only_a_saved_login_that_cannot_be_read_counts_as_unreadable(
+    monkeypatch, oidc_resource, error
+) -> None:
+    # With HF_OIDC_RESOURCE set, huggingface_hub exchanges a CI OIDC token
+    # instead of reading the saved login. Its errors, and any OSError that
+    # does not come from reading a file, propagate as before.
+    if oidc_resource is not None:
+        monkeypatch.setenv("HF_OIDC_RESOURCE", oidc_resource)
+
+    def get_token() -> str:
+        raise error
+
+    monkeypatch.setattr(auth_module, "get_token", get_token)
+
+    with pytest.raises(type(error)) as raised:
+        auth_module.huggingface_token()
+
+    assert raised.value is error
 
 
 @pytest.mark.parametrize("endpoint", ["registration", "events"])
