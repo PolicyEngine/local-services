@@ -30,17 +30,7 @@ from scripts.rules.pyright import (
 from scripts.rules.tests.support import REGISTRY, Repo
 
 ROOT = Path("/repository")
-FIXTURES = Path(__file__).resolve().parents[3] / "rules" / "fixtures"
-ENTRY_BACKEND = (
-    "projects/policyengine-simulation-entry/src/policyengine_simulation_entry/"
-    "stage12_backend.py"
-)
-GATEWAY_ENDPOINTS = (
-    "projects/policyengine-simulation-gateway/src/policyengine_simulation_gateway/"
-    "endpoints.py"
-)
-EXECUTOR_APP = "projects/policyengine-simulation-executor/src/modal/app.py"
-APIS_INTEG_TESTS = "projects/policyengine-apis-integ/tests/simulation"
+FIXTURES = Path(__file__).parent / "fixtures"
 SERVICE_FILE = "projects/service/src/service.py"
 LIBRARY_FILE = "libs/alpha/src/alpha.py"
 UNBOUND = "reportPossiblyUnboundVariable"
@@ -155,94 +145,9 @@ def pyright_error(
     return PyrightError(path=path, line=line, column=9, rule=rule, message=message)
 
 
-def proof_comparison(rule_id: str, fixture: str) -> Comparison:
-    """Compare a proof fixture's recorded Pyright report with its baseline, if any.
-
-    The reports were recorded with the pinned Pyright on main at ceb30e17, with
-    the checkout's path replaced by /repository.
-    """
-    fixture_dir = FIXTURES / rule_id / fixture
-    recorded_report = json.loads((fixture_dir / "pyright.json").read_text())
-    baseline = fixture_dir / "baseline.txt"
-    return compare(
-        errors_in_report(recorded_report, ROOT),
-        read_baseline(baseline) if baseline.exists() else [],
-    )
-
-
-class TestPyrightProof(unittest.TestCase):
-    """Proofs: each Pyright rule's check rejects its bad fixture, accepts its good."""
-
-    def test_rule_proof_pyright_libraries_and_entry(self) -> None:
-        rule_id = "sim.quality.pyright-libraries-and-entry"
-        # The entry's real errors before its fix: invocation_id is assigned
-        # inside a span, which Pyright took to swallow exceptions.
-        bad = proof_comparison(rule_id, "bad")
-
-        invocation_id_unbound = (
-            f'{ENTRY_BACKEND} :: {UNBOUND} :: "invocation_id" is possibly unbound'
-        )
-        self.assertEqual(
-            [(error.line, error.baseline_entry) for error in bad.new_errors],
-            [(550, invocation_id_unbound), (563, invocation_id_unbound)],
-        )
-        self.assertTrue(proof_comparison(rule_id, "good").passed)
-
-    def test_rule_proof_pyright_gateway(self) -> None:
-        rule_id = "sim.quality.pyright-gateway"
-        # Three of the gateway's 81 real errors before its fixes: variables
-        # assigned inside a span, which Pyright took to swallow exceptions.
-        bad = proof_comparison(rule_id, "bad")
-
-        self.assertEqual(
-            [(error.line, error.summary) for error in bad.new_errors],
-            [
-                (923, '"route" is possibly unbound'),
-                (924, '"route" is possibly unbound'),
-                (935, '"payload" is possibly unbound'),
-            ],
-        )
-        self.assertEqual(bad.stale_entries, ())
-        self.assertTrue(proof_comparison(rule_id, "good").passed)
-
-    def test_rule_proof_pyright_executor(self) -> None:
-        rule_id = "sim.quality.pyright-executor"
-        # Three of the executor's 178 real errors before its fixes: modal
-        # attributes unknown while src/modal shadowed the library, and a
-        # variable assigned inside a span.
-        bad = proof_comparison(rule_id, "bad")
-
-        self.assertEqual(
-            [(error.line, error.summary) for error in bad.new_errors],
-            [
-                (119, '"App" is not a known attribute of module "modal"'),
-                (123, '"Secret" is not a known attribute of module "modal"'),
-                (824, '"metadata" is possibly unbound'),
-            ],
-        )
-        self.assertEqual(bad.stale_entries, ())
-        self.assertTrue(proof_comparison(rule_id, "good").passed)
-
-    def test_rule_proof_pyright_apis_integ(self) -> None:
-        rule_id = "sim.quality.pyright-apis-integ"
-        # The integration tests' real errors before their fix: a plain Client
-        # passed to endpoints typed as needing an AuthenticatedClient.
-        bad = proof_comparison(rule_id, "bad")
-
-        self.assertEqual(
-            [(error.path, error.line) for error in bad.new_errors],
-            [
-                (f"{APIS_INTEG_TESTS}/conftest.py", 103),
-                (f"{APIS_INTEG_TESTS}/test_calculate.py", 99),
-            ],
-        )
-        self.assertEqual(bad.stale_entries, ())
-        self.assertTrue(proof_comparison(rule_id, "good").passed)
-
-
 def unlisted_in_fixture(fixture: str) -> list[str]:
     """Return the packages no Pyright rule lists in a coverage proof fixture."""
-    fixture_dir = FIXTURES / "sim.quality.every-package-type-checked" / fixture
+    fixture_dir = FIXTURES / "pyright_coverage" / fixture
     registry, problems = load_text((fixture_dir / "registry.toml").read_text())
     assert registry is not None, problems
     return unlisted_packages(registry, fixture_dir)

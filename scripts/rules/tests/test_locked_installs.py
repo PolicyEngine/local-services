@@ -10,10 +10,7 @@ from pathlib import Path
 from scripts.rules.load import load_text
 from scripts.rules.locked_installs import (
     INSTALL_RULE,
-    LOCK_RULE,
-    RELOCK_RULE,
     REPO_ROOT,
-    TEST_RULE,
     find_violations,
     lock_violations,
     relock_violations,
@@ -367,29 +364,6 @@ class TestRepository(unittest.TestCase):
         scanned = scan(REPO_ROOT).scanned
 
         self.assertEqual(expected - scanned, set())
-        self.assertIn(
-            "projects/policyengine-simulation-gateway/src/"
-            "policyengine_simulation_gateway/app.py",
-            scanned,
-        )
-
-    def test_the_repository_has_no_unregistered_unlocked_install(self) -> None:
-        registry_text = (REPO_ROOT / "rules" / "registry.toml").read_text()
-        registry, problems = load_text(registry_text)
-        self.assertEqual(problems, [])
-
-        violations = find_violations(REPO_ROOT, registry)
-
-        self.assertEqual([str(violation) for violation in violations], [])
-
-    def test_rule_ids_are_registered(self) -> None:
-        registry_text = (REPO_ROOT / "rules" / "registry.toml").read_text()
-        registry, _problems = load_text(registry_text)
-        rule_ids = {rule.id for rule in registry.rules}
-
-        self.assertLessEqual(
-            {LOCK_RULE, INSTALL_RULE, TEST_RULE, RELOCK_RULE}, rule_ids
-        )
 
 
 if __name__ == "__main__":

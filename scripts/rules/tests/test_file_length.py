@@ -21,8 +21,7 @@ from scripts.rules.file_length import (
 )
 from scripts.rules.load import load_text
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-FIXTURES = REPO_ROOT / "rules" / "fixtures" / "sim.quality.python-file-length"
+FIXTURES = Path(__file__).parent / "fixtures" / "file_length"
 
 FILE_LENGTH_RULE = """
 schema_version = 1

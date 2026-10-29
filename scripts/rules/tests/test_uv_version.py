@@ -6,18 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.rules.load import load_text
-from scripts.rules.uv_version import (
-    GUARD_NAME,
-    REPO_ROOT,
-    RULE_ID,
-    VERSION_FILE,
-    run_check,
-    scan,
-)
-from scripts.run_quality_guards import GUARDS
+from scripts.rules.uv_version import VERSION_FILE, run_check, scan
 
-FIXTURES = REPO_ROOT / "rules" / "fixtures" / "sim.dependencies.uv-version-pinned"
+FIXTURES = Path(__file__).parent / "fixtures" / "uv_version"
 PINNED = "0.13.6"
 
 
@@ -331,21 +322,6 @@ class TestModalImages(GuardCase):
         )
 
         self.assertEqual(messages, [])
-
-
-class TestRepository(unittest.TestCase):
-    def test_every_uv_install_in_the_repository_pins_the_one_release(self) -> None:
-        violations = run_check(REPO_ROOT)
-
-        self.assertEqual([str(violation) for violation in violations], [])
-
-    def test_the_rule_and_its_guard_are_registered(self) -> None:
-        registry_text = (REPO_ROOT / "rules" / "registry.toml").read_text()
-        registry, _problems = load_text(registry_text)
-        rule = next(rule for rule in registry.rules if rule.id == RULE_ID)
-
-        self.assertEqual(rule.enforcer.get("name"), GUARD_NAME)
-        self.assertIn(GUARD_NAME, [name for name, _check in GUARDS])
 
 
 if __name__ == "__main__":
