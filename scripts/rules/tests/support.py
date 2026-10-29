@@ -43,6 +43,7 @@ title = "Quality"
 
 [discovery]
 guard_test_globs = ["tests/**/test_*boundar*.py"]
+ignore_jobs = [{ job = "ci-complete", reason = "Reports the other jobs as one check." }]
 
 [[rule]]
 id = "ex.layers.no-sql-in-routes"
@@ -171,6 +172,14 @@ jobs:
     steps:
       - name: Guards
         run: python scripts/run_quality_guards.py
+  # The main branch requires this job's check.
+  ci-complete:
+    name: CI complete
+    if: always()
+    needs: [test, lint, typecheck, quality-guards]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo checked
 """
 
 FILES = {

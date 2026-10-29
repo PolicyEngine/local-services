@@ -83,6 +83,28 @@ jobs:
         self.assertTrue(problems)
 
 
+class NeedsTest(unittest.TestCase):
+    def test_needs_are_read_in_each_form(self) -> None:
+        jobs, problems = parse_jobs(
+            "jobs:\n"
+            "  one:\n    needs: build\n    steps: []\n"
+            "  inline:\n    needs: [build, 'test']\n    steps: []\n"
+            '  block:\n    needs:\n      - build\n      - "test"\n    steps: []\n'
+            "  none:\n    steps:\n      - name: needs\n        run: echo needs\n"
+        )
+
+        self.assertEqual(problems, [])
+        self.assertEqual(
+            {job_id: job.needs for job_id, job in jobs.items()},
+            {
+                "one": ("build",),
+                "inline": ("build", "test"),
+                "block": ("build", "test"),
+                "none": (),
+            },
+        )
+
+
 SYNTHETIC_WORKFLOW = """
 name: Synthetic
 on: push
