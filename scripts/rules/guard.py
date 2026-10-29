@@ -25,6 +25,7 @@ from scripts.rules.render import (
     render_agents_block,
     render_rules_md,
 )
+from scripts.rules.required import check_required
 from scripts.rules.resolve import (
     clear_caches,
     resolve_ci,
@@ -95,6 +96,7 @@ def run_guard(
         result.violations += resolve_enforcer(rule, root, registry.repository)
         result.violations += resolve_ci(rule, root)
         result.violations += resolve_proof_ci(rule, root)
+    result.violations += check_required(registry, root)
     result.violations += discover_hidden(registry, root)
     if registry.agents is not None:
         result.violations += check_adapters(registry.agents, root)

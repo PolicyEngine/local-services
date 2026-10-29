@@ -6,9 +6,10 @@ dependencies, so this reads only the subset these repositories use: block-style
 block scalars), and ``strategy.matrix`` lists. Anything outside that subset is
 reported as unsupported rather than guessed at.
 
-It answers three questions: does job X exist, does its run text (or reusable
-workflow reference) contain a given invocation string, and does each step's
-``run:`` block hold more than one line of code (or chain several commands)?
+It answers four questions: does job X exist, does its run text (or reusable
+workflow reference) contain a given invocation string, does each step's
+``run:`` block hold more than one line of code (or chain several commands), and
+which jobs does a job need?
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ class JobBlock:
     step_uses: tuple[str, ...] = ()
     matrix: dict[str, tuple[str, ...]] = field(default_factory=dict)
     run_blocks: tuple[RunBlock, ...] = ()
+    # The ids of the jobs it needs, from its ``needs:``.
+    needs: tuple[str, ...] = ()
 
     def invokes(self, invocation: str) -> bool:
         """Whether the job's commands or actions mention ``invocation``."""
@@ -160,6 +163,7 @@ class _JobReader:
         self.runs: list[str] = []
         self.steps: list[str] = []
         self.matrix: dict[str, tuple[str, ...]] = {}
+        self.needs: tuple[str, ...] = ()
         self.body_indent: int | None = None
         # Step tracking, so each run: block can be attributed to its step.
         self.item_indent: int | None = None
@@ -189,6 +193,7 @@ class _JobReader:
             step_uses=tuple(self.step_uses),
             step_names=tuple(self.steps),
             matrix=self.matrix,
+            needs=self.needs,
             run_blocks=tuple(
                 RunBlock(
                     step=self.step_labels.get(number) or f"step {number}",
@@ -236,6 +241,8 @@ class _JobReader:
             self._read_block_scalar(entry)
         elif entry.key == "matrix" and not entry.value:
             self._read_matrix(entry.column)
+        elif entry.key == "needs" and entry.top_level:
+            self._read_needs(entry)
         else:
             self._record_scalar(entry)
             self.index += 1
@@ -281,6 +288,27 @@ class _JobReader:
             self.index += 1
         self.runs.append("\n".join(block))
         self.blocks.append((self.step_index, "\n".join(block), entry.value.strip()[:1]))
+
+    def _read_needs(self, entry: _KeyLine) -> None:
+        """Read ``needs:``: one job, an inline list, or a block list of jobs."""
+        self.index += 1
+        value = entry.value.strip()
+        if value.startswith("["):
+            self.needs = _inline_list(value)
+            return
+        if value:
+            self.needs = (_unquote(value),)
+            return
+        # Block list items may sit at the key's own column.
+        list_column = entry.column - 1
+        items = []
+        while self._still_inside(list_column):
+            item = _LIST_ITEM.match(self.lines[self.index])
+            if not item or _KEY.match(self.lines[self.index]):
+                break
+            items.append(_unquote(item.group(2)))
+            self.index += 1
+        self.needs = tuple(items)
 
     def _read_matrix(self, column: int) -> None:
         """Read the ``strategy.matrix`` entries nested under the key at ``column``."""
