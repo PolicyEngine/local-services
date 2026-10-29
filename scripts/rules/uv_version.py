@@ -22,7 +22,7 @@ pins another one:
 A workflow input can't be read from a file, and Modal imports its image
 definitions inside containers that don't hold the repository root, so each
 install writes the version itself and this guard keeps every copy equal to
-``.uv-version``. See docs/engineering/skills/dependencies.md.
+``.uv-version``. Violations name the rule that lists the ``uv-version`` guard.
 """
 
 from __future__ import annotations
@@ -32,15 +32,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from scripts.rules.load import load_registry
 from scripts.rules.locked_installs import file_kind, tracked_files
-from scripts.rules.model import Violation
+from scripts.rules.model import Kind, Violation
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_NAME = "uv-version"
-RULE_ID = "sim.dependencies.uv-version-pinned"
 VERSION_FILE = ".uv-version"
 
 # The kinds of uv install, each with how to pin it.
@@ -287,13 +287,18 @@ def scan(root: Path, files: Iterable[str] | None = None) -> list[UvInstall]:
     return installs
 
 
-def read_pinned_version(root: Path) -> tuple[str | None, list[Violation]]:
-    """Return the release in ``.uv-version``, or why it holds no single release."""
+def read_pinned_version(
+    root: Path, rule_id: str | None = None
+) -> tuple[str | None, list[Violation]]:
+    """Return the release in ``.uv-version``, or why it holds no single release.
+
+    The violations name ``rule_id``.
+    """
     source = root / VERSION_FILE
     if not source.is_file():
         return None, [
             Violation(
-                RULE_ID,
+                rule_id,
                 GUARD_NAME,
                 f"{VERSION_FILE} is missing",
                 f"create {VERSION_FILE} holding the one uv release, such as 0.13.6",
@@ -307,7 +312,7 @@ def read_pinned_version(root: Path) -> tuple[str | None, list[Violation]]:
     if len(values) != 1 or not _RELEASE.fullmatch(values[0]):
         return None, [
             Violation(
-                RULE_ID,
+                rule_id,
                 GUARD_NAME,
                 f"{VERSION_FILE} does not hold exactly one uv release number",
                 f"write one release such as 0.13.6 in {VERSION_FILE}, without "
@@ -331,21 +336,43 @@ def _problem(install: UvInstall, pinned: str | None) -> str | None:
     return f"{install.site} pins uv {version}, not {pinned}"
 
 
-def compare(installs: list[UvInstall], pinned: str | None) -> list[Violation]:
-    """Report each install that pins no release, or not the pinned one."""
+def compare(
+    installs: list[UvInstall], pinned: str | None, rule_id: str | None = None
+) -> list[Violation]:
+    """Report each install that pins no release, or not the pinned one.
+
+    The violations name ``rule_id``.
+    """
     violations = []
     for install in installs:
         problem = _problem(install, pinned)
         if problem is not None:
             fix = install.fix(pinned or "<version>")
-            violations.append(Violation(RULE_ID, GUARD_NAME, problem, fix))
+            violations.append(Violation(rule_id, GUARD_NAME, problem, fix))
     return violations
+
+
+def guard_rule_id(root: Path) -> str | None:
+    """Return the id of the registry's rule that lists this guard, if any."""
+    registry, _ = load_registry(root)
+    if registry is None:
+        return None
+    return next(
+        (
+            rule.id
+            for rule in registry.rules
+            if rule.enforcer.kind is Kind.QUALITY_GUARD
+            and rule.enforcer.get("name") == GUARD_NAME
+        ),
+        None,
+    )
 
 
 def run_check(root: Path = REPO_ROOT) -> list[Violation]:
     """Return every uv install under ``root`` that doesn't pin ``.uv-version``."""
-    pinned, violations = read_pinned_version(root)
-    return [*violations, *compare(scan(root), pinned)]
+    rule_id = guard_rule_id(root)
+    pinned, violations = read_pinned_version(root, rule_id)
+    return [*violations, *compare(scan(root), pinned, rule_id)]
 
 
 def check() -> list[str]:

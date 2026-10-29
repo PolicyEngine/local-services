@@ -2,14 +2,18 @@
 
 The guard reads every tracked file that can install Python packages or run
 tests: workflows, composite actions, shell scripts, Makefiles, Dockerfiles,
-Compose files and Python modules that define Modal images. It checks four rules
-(docs/engineering/skills/dependencies.md):
+Compose files and Python modules that define Modal images. It checks four rules,
+whose ids are the registry's ``rule_prefix`` followed by the names below:
 
-- every project directory commits a uv.lock, and PR CI runs ``uv lock --check``;
+- every project directory commits a uv.lock, and a job of the pull-request
+  workflow runs ``uv lock --check``;
 - every install comes from uv.lock (``uv sync --frozen``, ``uv run --frozen``,
   Modal ``uv_sync(frozen=True)``), unless a ``[[rule.exception]]`` names the site;
 - every test command runs through ``uv run --frozen``;
 - a scheduled workflow relocks every uv.lock with upgrades and opens a PR.
+
+Workflow commands are followed into the shell scripts they call in the
+registry's ``script_directories`` and into root Makefile targets.
 """
 
 from __future__ import annotations
@@ -29,16 +33,16 @@ from scripts.rules.workflows import parse_jobs
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from scripts.rules.model import Registry, RuleException
+    from scripts.rules.model import Registry, Repository, RuleException
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-LOCK_RULE = "sim.dependencies.lock-committed"
-INSTALL_RULE = "sim.dependencies.install-from-lock"
-TEST_RULE = "sim.dependencies.test-from-lock"
-RELOCK_RULE = "sim.dependencies.scheduled-relock"
+# Each rule's id is the registry's rule_prefix, a dot, and one of these names.
+LOCK_RULE = "dependencies.lock-committed"
+INSTALL_RULE = "dependencies.install-from-lock"
+TEST_RULE = "dependencies.test-from-lock"
+RELOCK_RULE = "dependencies.scheduled-relock"
 PINNED_TOOL = "pinned-tool"
-PR_WORKFLOW = ".github/workflows/pr.yml"
 
 _LOCKED_FLAG = re.compile(r"(?<![\w-])--(frozen|locked)(?![\w-])")
 _UNLOCKED_RUN_FLAG = re.compile(r"(?<![\w-])--(with|with-requirements|no-project)\b")
@@ -71,16 +75,13 @@ _TEXT_TOOL = re.compile(
     r"(?:(?:then|do|else|if|!)\s+)*(echo|printf|sed|grep|awk)\b"
 )
 _SEPARATORS = re.compile(r"&&|\|\||;|\||`")
-_SCRIPT_REFERENCE = re.compile(
-    r"(?<![\w/.-])(?:\./)?((?:\.github/)?scripts/[\w./-]+\.sh)"
-)
 _MAKE_TARGET = re.compile(r"(?<![\w-])make\s+([\w-]+)")
 _MAKE_HEADER = re.compile(r"^([\w.-]+)\s*:(?!=)")
 _RELOCK = re.compile(
     r"\buv\s+lock\b[^\n]*?(?<![\w-])(--upgrade|--upgrade-package|-U|-P)(?![\w-])"
 )
 _OPENS_PR = re.compile(r"\bgh\s+pr\s+(create|edit)\b|create-pull-request")
-_LOCK_CHECK = re.compile(r"\buv\s+lock\b[^\n]*--check\b|check-uv-locks\.sh")
+_LOCK_CHECK = re.compile(r"\buv\s+lock\b[^\n]*--check\b")
 _MODAL_INSTALLS = (
     "pip_install",
     "pip_install_from_requirements",
@@ -418,20 +419,39 @@ def _makefile_recipes(root: Path, makefile: str) -> dict[str, list[str]]:
     return recipes
 
 
-def executed_text(root: Path, text: str, seen: set[str] | None = None) -> str:
-    """Return ``text`` plus the scripts and root Make targets it runs."""
+def script_reference(script_directories: Iterable[str]) -> re.Pattern[str]:
+    """Match a call of a shell script in one of ``script_directories``."""
+    directories = "|".join(
+        re.escape(directory.strip("/")) for directory in sorted(script_directories)
+    )
+    return re.compile(rf"(?<![\w/.-])(?:\./)?((?:{directories})/[\w./-]+\.sh)")
+
+
+def executed_text(
+    root: Path,
+    text: str,
+    script_directories: Iterable[str],
+    seen: set[str] | None = None,
+) -> str:
+    """Return ``text`` plus the scripts and root Make targets it runs.
+
+    Only scripts in ``script_directories`` are followed.
+    """
     seen = set() if seen is None else seen
+    directories = tuple(script_directories)
     recipes = _makefile_recipes(root, "Makefile")
     pieces = [text]
-    for script in _SCRIPT_REFERENCE.findall(text):
+    calls = script_reference(directories).findall(text) if directories else []
+    for script in calls:
         if script not in seen and (root / script).is_file():
             seen.add(script)
             script_text = (root / script).read_text(encoding="utf-8")
-            pieces.append(executed_text(root, script_text, seen))
+            pieces.append(executed_text(root, script_text, directories, seen))
     for target in _MAKE_TARGET.findall(text):
         if f"make {target}" not in seen and target in recipes:
             seen.add(f"make {target}")
-            pieces.append(executed_text(root, "\n".join(recipes[target]), seen))
+            recipe = "\n".join(recipes[target])
+            pieces.append(executed_text(root, recipe, directories, seen))
     return "\n".join(pieces)
 
 
@@ -444,7 +464,9 @@ def _project_directories(files: list[str]) -> list[str]:
     )
 
 
-def _workflow_jobs(root: Path, files: list[str]) -> list[tuple[str, str, str]]:
+def _workflow_jobs(
+    root: Path, files: list[str], script_directories: Iterable[str]
+) -> list[tuple[str, str, str]]:
     """Return (workflow, job id, executed text) for every workflow job."""
     jobs = []
     for path in files:
@@ -455,16 +477,21 @@ def _workflow_jobs(root: Path, files: list[str]) -> list[tuple[str, str, str]]:
         for job_id, job in parsed.items():
             run_text = "\n".join(block.text for block in job.run_blocks)
             uses = "\n".join(job.step_uses)
-            jobs.append((path, job_id, executed_text(root, f"{run_text}\n{uses}")))
+            executed = executed_text(root, f"{run_text}\n{uses}", script_directories)
+            jobs.append((path, job_id, executed))
     return jobs
 
 
-def lock_violations(root: Path, files: list[str]) -> list[Violation]:
-    """Rule 1: each project commits a uv.lock and PR CI checks it."""
+def lock_violations(
+    root: Path, files: list[str], repository: Repository
+) -> list[Violation]:
+    """Rule 1: each project commits a uv.lock and the PR workflow checks it."""
+    rule_id = repository.rule_id(LOCK_RULE)
+    pr_workflow = repository.pr_workflow
     tracked = set(files)
     violations = [
         Violation(
-            LOCK_RULE,
+            rule_id,
             "locked-installs",
             f"{directory}/pyproject.toml has no committed uv.lock",
             f"run uv lock --project {directory} and commit uv.lock",
@@ -473,23 +500,28 @@ def lock_violations(root: Path, files: list[str]) -> list[Violation]:
         if f"{directory}/uv.lock".removeprefix("./") not in tracked
     ]
     checked = any(
-        workflow == PR_WORKFLOW and _LOCK_CHECK.search(text)
-        for workflow, _job, text in _workflow_jobs(root, files)
+        workflow == pr_workflow and _LOCK_CHECK.search(text)
+        for workflow, _job, text in _workflow_jobs(
+            root, files, repository.script_directories
+        )
     )
     if not checked:
         violations.append(
             Violation(
-                LOCK_RULE,
+                rule_id,
                 "locked-installs",
-                f"no {PR_WORKFLOW} job runs uv lock --check",
-                "run .github/scripts/check-uv-locks.sh in a PR CI job",
+                f"no {pr_workflow} job runs uv lock --check",
+                f"run uv lock --check in a job of {pr_workflow}",
             )
         )
     return violations
 
 
-def relock_violations(root: Path, files: list[str]) -> list[Violation]:
+def relock_violations(
+    root: Path, files: list[str], repository: Repository
+) -> list[Violation]:
     """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR."""
+    rule_id = repository.rule_id(RELOCK_RULE)
     projects = _project_directories(files)
     for path in files:
         if file_kind(path) != "workflow":
@@ -498,7 +530,9 @@ def relock_violations(root: Path, files: list[str]) -> list[Violation]:
             r"^\s+schedule:", (root / path).read_text(encoding="utf-8"), re.MULTILINE
         ):
             continue
-        for workflow, _job, text in _workflow_jobs(root, [path]):
+        for workflow, _job, text in _workflow_jobs(
+            root, [path], repository.script_directories
+        ):
             if not (_RELOCK.search(text) and _OPENS_PR.search(text)):
                 continue
             globs = re.findall(r"[\w./*-]*pyproject\.toml", text)
@@ -515,7 +549,7 @@ def relock_violations(root: Path, files: list[str]) -> list[Violation]:
                 return []
             return [
                 Violation(
-                    RELOCK_RULE,
+                    rule_id,
                     "locked-installs",
                     f"{workflow} does not relock {directory}/uv.lock",
                     "relock every project directory in the scheduled job",
@@ -524,7 +558,7 @@ def relock_violations(root: Path, files: list[str]) -> list[Violation]:
             ]
     return [
         Violation(
-            RELOCK_RULE,
+            rule_id,
             "locked-installs",
             "no scheduled workflow relocks uv.lock with upgrades and opens a PR",
             "add a schedule: workflow that runs uv lock --upgrade and gh pr create",
@@ -536,11 +570,12 @@ def find_violations(root: Path, registry: Registry) -> list[Violation]:
     """Run all four checks against the files under ``root``."""
     files = tracked_files(root)
     findings = scan(root, files)
+    repository = registry.repository
     return [
-        *lock_violations(root, files),
+        *lock_violations(root, files, repository),
         *_apply_exceptions(
             registry,
-            INSTALL_RULE,
+            repository.rule_id(INSTALL_RULE),
             findings.unlocked_installs,
             "unlocked install",
             "install from uv.lock (uv sync --frozen, uv run --frozen, "
@@ -548,12 +583,12 @@ def find_violations(root: Path, registry: Registry) -> list[Violation]:
         ),
         *_apply_exceptions(
             registry,
-            TEST_RULE,
+            repository.rule_id(TEST_RULE),
             findings.unlocked_tests,
             "test command outside uv.lock",
             "run it through uv run --frozen or register a [[rule.exception]]",
         ),
-        *relock_violations(root, files),
+        *relock_violations(root, files, repository),
     ]
 
 
