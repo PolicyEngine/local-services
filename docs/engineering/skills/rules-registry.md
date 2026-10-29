@@ -14,15 +14,19 @@ registry, the checkers and the rendered views disagree.
 ## Commands
 
 ```bash
-python -m scripts.rules validate                    # schema and file checks only
-python -m scripts.rules render                      # rewrite rules.md and the AGENTS.md block
-python -m scripts.rules guard --base-ref origin/<default-branch>   # everything CI checks
-python -m unittest discover -s scripts/rules/tests -t .            # the tool's own tests
+uv run --no-project python -m scripts.rules validate     # schema and file checks only
+uv run --no-project python -m scripts.rules render       # rewrite rules.md and the AGENTS.md block
+uv run --no-project python -m scripts.rules guard --base-ref origin/main   # everything CI checks
+uv run --no-project python -m unittest discover -s scripts/rules/tests -t .   # the tool's own tests
 ```
 
-All commands use only the standard library, so they run without installing the
-project. When a rule has a `[rule.downgrade]` section, `guard` also runs
-`gh api` to look up its tracking issue; see [Baselines](#baselines).
+All commands use only the standard library (Python 3.11 or later), so they run
+without installing the project; any `python3` works in place of
+`uv run --no-project python`. When a rule has a `[rule.downgrade]` section,
+`guard` also runs `gh api` to look up its tracking issue; see
+[Baselines](#baselines). CI runs the tool's tests and
+`scripts/run_quality_guards.py` in the "Rules registry" job of
+`.github/workflows/pr.yaml`.
 
 ## Adding or changing a rule
 
@@ -41,11 +45,28 @@ A PR that adds, tightens or relaxes a rule contains all of these:
 If a rule exists only in prose, register it with `status = "doc-only"` so the
 gap is visible, rather than leaving it out.
 
+## Repository settings
+
+The `[repository]` table says where this repository keeps what the checks
+read, so the tool assumes no repository's layout. Every key is required.
+
+| Key | Meaning |
+| --- | --- |
+| `rule_prefix` | One lowercase word that starts every rule id, followed by a dot (`emitter` here). The locked-installs check names its rules `<rule_prefix>.dependencies.<name>`. |
+| `pr_workflow` | The workflow that runs on every pull request. `[discovery].workflows` defaults to it, the locked-installs check looks for `uv lock --check` in it, and it holds the required check. |
+| `required_check` | The name of the `pr_workflow` job whose status check the main branch requires (see [Required check](#required-check)). |
+| `script_directories` | Directories whose shell scripts workflows call. The locked-installs check follows workflow commands into them, and the ci-scripts check tests and shellchecks them. |
+| `packages` | Globs of the package directories, each holding a `pyproject.toml`; `.` is the repository root. The Pyright coverage check requires a Pyright rule for each. |
+| `file_exception_directories` | Directory names under which a ruff per-file ignore may switch rules off (see [File-level exceptions](#file-level-exceptions)). |
+
+`[ci_scripts].workflows` is one glob or a list of them, so a repository whose
+workflows end in both `.yml` and `.yaml` lists both.
+
 ## Fields
 
 | Field | Meaning |
 | --- | --- |
-| `id` | Lowercase dotted id, e.g. `api.v2.services-no-sql`. Never reuse an id. |
+| `id` | Lowercase dotted id that starts with `rule_prefix`, e.g. `emitter.process.rules-registry`. Never reuse an id. |
 | `category` | One of the `[[category]]` ids; controls grouping in the rendered views. |
 | `statement` | One plain-English sentence an agent can follow. |
 | `rationale` | Path (optionally `#anchor`) to the doc that explains the rule. |
@@ -117,13 +138,13 @@ fail the guard yet.
 
 ## Baselines
 
-- **Ruff is never ratcheted.** `ruff.toml` selects `ALL`, so every ruff rule
-  applies except the four listed in `ignore` (two formatter conflicts and one
-  of each mutually exclusive docstring pair) and the registered
-  [file-level exceptions](#file-level-exceptions). When a ruff upgrade adds
-  rules, the upgrade PR fixes every new violation. Don't use `--add-noqa`.
-  Outside the files that allow file-level exceptions, a justified exception is
-  an inline `# noqa: CODE  # reason`.
+- **Ruff is never ratcheted.** Every rule family `pyproject.toml` selects is
+  described by a ruff lint rule, and every one applies except those listed in
+  `ignore` and the registered [file-level exceptions](#file-level-exceptions).
+  When a ruff upgrade or a wider selection adds rules, the same PR fixes every
+  new violation. Don't use `--add-noqa`. Outside the files that allow
+  file-level exceptions, a justified exception is an inline
+  `# noqa: CODE  # reason`.
 - Other enforcers (mypy, Pyright, Import Linter, custom guards) may start
   `ratcheted` with a baseline file of tolerated violations. A new rule that
   starts ratcheted with a count above 0 needs a `[rule.downgrade]` section,
@@ -134,8 +155,9 @@ fail the guard yet.
   `issue`.
 - A `[rule.downgrade]` section's `issue` is an open issue in
   `issue_repository`, set at the top of the registry, that tracks restoring
-  the rule. The guard looks up every section's issue on every run, with
-  `gh api` and the token in `GH_TOKEN` or `GITHUB_TOKEN`. On GitHub Actions, a
+  the rule. The guard looks up every section's issue on every run
+  (`scripts/rules/issues.py`), with `gh api` and the token in `GH_TOKEN` or
+  `GITHUB_TOKEN`. On GitHub Actions, a
   missing token or a failed lookup fails it, and so does an
   `issue_repository` other than the repository the workflow runs in
   (`GITHUB_REPOSITORY`), so a pull request can't name an issue elsewhere.
@@ -165,15 +187,26 @@ fail the guard yet.
   and reports them, with what it tried. Fixing violations and shrinking a
   baseline is fine.
 
+## Required check
+
+The main branch's ruleset requires one status check: the `pr_workflow` job
+named `required_check`, which passes only when the jobs it needs pass. A
+blocking rule can stop a merge only when one of its `[[rule.ci]]` jobs is
+that job, a job it needs (directly or through other jobs' needs), or a job of
+a reusable workflow of this repository (`uses: ./.github/workflows/...`) that
+one of those jobs calls. The guard reports a blocking rule none of whose jobs
+is among them, and a `required_check` that names no job. It does not read the
+ruleset itself, so keep `required_check` equal to the check the ruleset
+requires.
+
 ## File-level exceptions
 
 A ruff `per-file-ignores` entry switches rules off for whole files. It is
 allowed only where that's the norm rather than an exception to it:
 
-- **tests**: files under a `tests` or `authenticated_tests` directory;
-- **CI/CD scripts**: files under `.github`;
-- **command-line scripts**: files under a `scripts` directory, or modules that
-  run as a program through `if __name__ == "__main__":`.
+- files under a directory named in `[repository].file_exception_directories`
+  (here `tests`, `.github`, and the script directories `tools` and `scripts`);
+- modules that run as a program through `if __name__ == "__main__":`.
 
 Everywhere else, keep a finding only with an inline suppression and its reason.
 
@@ -204,6 +237,13 @@ with a reason.
 
 ## The tool in other repositories
 
-policyengine-api has its own copy of `scripts/rules/`; this one started from it.
-The copies may diverge: each repository owns its copy. Port a change by hand
-when it's useful in both.
+This copy of `scripts/rules/` started from the simulation API's
+(PolicyEngine/policyengine-sim-api at `4b09f76d`), which started from the
+Public API's. What that copy assumed about its own repository (script
+directories, the pull-request workflow's file name, package locations, the
+required check's name, the rule-id prefix, where file-level exceptions are
+allowed, and the PR description script its issue lookup came from) is now
+read from `[repository]`, so another repository, such as microcosm-collector,
+can copy this version and change only its registry. The copies may diverge:
+each repository owns its copy. Port a change by hand when it's useful in more
+than one.
