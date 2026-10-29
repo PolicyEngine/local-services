@@ -137,8 +137,9 @@ class UnreadableLoginError(OSError):
     this user may not read or one that is not text, and neither `HF_TOKEN`
     nor `HUGGINGFACE_TOKEN` is set.
 
-    ``error_type`` is the name of the error ``huggingface_hub`` raised. Its
-    text is not kept: it names the file, or quotes the file's bytes. An
+    ``error_type`` is the name of the error ``huggingface_hub`` raised. That
+    error is not kept, not even as the context of this one: its text names
+    the file, and a ``UnicodeDecodeError`` holds the file's bytes. An
     ``OSError``, as reading a file that fails is, so callers that handled the
     ``PermissionError`` before still handle it.
     """
@@ -150,12 +151,30 @@ class UnreadableLoginError(OSError):
         self.error_type = error_type
 
 
+def _saved_login_unreadable(error: OSError | UnicodeDecodeError) -> bool:
+    """Whether ``get_token()`` raised ``error`` reading the login files that
+    `hf auth login` saved: a ``PermissionError``, bytes that are not text, or
+    another ``OSError`` that names a file, such as ``IsADirectoryError``.
+
+    With ``HF_OIDC_RESOURCE`` set, huggingface_hub exchanges a CI OIDC token
+    instead of reading those files, so none of its errors count, such as the
+    ``HfHubHTTPError`` (an ``OSError`` that names no file) of a 503 from the
+    Hub, or an answer that is not text.
+    """
+    if os.environ.get("HF_OIDC_RESOURCE"):
+        return False
+    return isinstance(error, (PermissionError, UnicodeDecodeError)) or (
+        isinstance(error, OSError) and error.filename is not None
+    )
+
+
 def huggingface_token() -> str | None:
     """The build's Hugging Face token: `HF_TOKEN`, then `HUGGINGFACE_TOKEN`, then
     the token saved by `hf auth login`; `None` without one.
 
     Raises ``UnreadableLoginError`` when only the saved login is left and it
-    cannot be read.
+    cannot be read (``_saved_login_unreadable``); every other error of
+    ``get_token()`` propagates unchanged.
     """
     variable_token = (
         os.environ.get("HF_TOKEN", "").strip()
@@ -167,7 +186,11 @@ def huggingface_token() -> str | None:
         return get_token()
     except (OSError, UnicodeDecodeError) as error:
         # huggingface_hub catches only FileNotFoundError when it reads the file.
-        raise UnreadableLoginError(type(error).__name__) from None
+        if not _saved_login_unreadable(error):
+            raise
+        error_type = type(error).__name__
+    # Outside the except block, so the new error has no context to keep.
+    raise UnreadableLoginError(error_type)
 
 
 @dataclass(frozen=True)
