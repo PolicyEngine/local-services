@@ -28,10 +28,11 @@ from microcosm_emitter.core.constants import (
     NO_CREDENTIAL_MESSAGE,
     PENDING_GIVEN_TOKEN_EXPIRED,
     PENDING_GIVEN_TOKEN_REJECTED,
+    PENDING_HUGGINGFACE_LOGIN_UNREADABLE,
     REJECTED_CREDENTIAL_MESSAGE,
     RUN_EVENTS_PATH_TEMPLATE,
     RUN_REGISTRATION_PATH,
-    UNREADABLE_LOGIN_LOCAL_ONLY_MESSAGE,
+    UNREADABLE_LOGIN_WAITING_MESSAGE,
     UNSENDABLE_CREDENTIAL_MESSAGE,
 )
 from microcosm_emitter.telemetry.constants import (
@@ -87,8 +88,11 @@ class CollectorDelivery:
         )
         self._registered: set[str] = set()
         self._warned_no_token = False
-        #: Set once the given collector token can no longer be used: nothing
-        #: more can be delivered until an emitter with a credential runs.
+        self._warned_unreadable_login = False
+        #: True while nothing can be delivered from this emitter, so its
+        #: shutdown drain ends at once: the given collector token can no longer
+        #: be used, or the saved Hugging Face login could not be read at the
+        #: last attempt.
         self.waiting_for_credential = False
         self._recorded_waiting: set[str] = set()
         self._warned_denied: set[str] = set()
@@ -147,14 +151,16 @@ class CollectorDelivery:
         try:
             result, token = self.session.credential()
         except UnreadableLoginError as error:
-            # Like a missing login: this emitter has no credential to send.
-            self._local_only_without_credential(
-                registration,
-                UNREADABLE_LOGIN_LOCAL_ONLY_MESSAGE.format(error_type=error.error_type),
-            )
+            self._wait_for_readable_login(registration, error.error_type)
             return None
-        if result == "missing":
-            self._local_only_without_credential(registration, NO_CREDENTIAL_MESSAGE)
+        if result == "ok":
+            # Such as once the saved login can be read again.
+            self.waiting_for_credential = False
+        elif result == "missing":
+            if not self._warned_no_token:
+                print(NO_CREDENTIAL_MESSAGE, file=sys.stderr, flush=True)
+                self._warned_no_token = True
+            self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
         elif result == "rejected":
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_CREDENTIAL)
         elif result == "unsendable":
@@ -169,15 +175,32 @@ class CollectorDelivery:
             self._defer_retry()
         return token
 
-    def _local_only_without_credential(
-        self, registration: Mapping[str, Any], warning: str
+    def _wait_for_readable_login(
+        self, registration: Mapping[str, Any], error_type: str
     ) -> None:
-        """Keep the run's events local, warning once for this module."""
+        """Keep the run pending while the saved login cannot be read.
 
-        if not self._warned_no_token:
-            print(warning, file=sys.stderr, flush=True)
-            self._warned_no_token = True
-        self._make_local_only(registration, LOCAL_ONLY_MISSING_CREDENTIAL)
+        Pending, not local-only, which cannot be undone and would also apply
+        to every other pending run in the event queue file: the login exists
+        and can be repaired, and then this emitter or a later one delivers
+        the run. The login is read again after the backoff, as the exchange
+        is after an outage. The warning names only the error's type, once.
+        """
+
+        if not self._warned_unreadable_login:
+            print(
+                UNREADABLE_LOGIN_WAITING_MESSAGE.format(error_type=error_type),
+                file=sys.stderr,
+                flush=True,
+            )
+            self._warned_unreadable_login = True
+        self.waiting_for_credential = True
+        self.spool.record_pending_reason(
+            str(registration["run_id"]),
+            str(registration["producer_id"]),
+            PENDING_HUGGINGFACE_LOGIN_UNREADABLE,
+        )
+        self._defer_retry()
 
     def _keep_pending(self, registration: Mapping[str, Any], reason: str) -> None:
         """Leave the run for an emitter with a credential, saying why once."""
@@ -206,7 +229,8 @@ class CollectorDelivery:
         if status == HTTPStatus.CREATED:
             self._registered.add(registration_key)
             self._retry_seconds = INITIAL_RETRY_SECONDS
-            # A run left by an emitter whose given token became unusable.
+            # A run left by an emitter whose given token became unusable, or
+            # whose saved login could not be read.
             self.spool.record_pending_reason(
                 str(registration["run_id"]), str(registration["producer_id"]), None
             )
