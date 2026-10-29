@@ -33,7 +33,9 @@ DISTRIBUTION_NAME = "microcosm-emitter"
 
 #: Exit codes of `telemetry-token`, one per kind of failure; 2 is a usage
 #: error, as for every command, and 7 an unexpected error, which the others do
-#: not name.
+#: not name. A failed OIDC token exchange while HF_OIDC_RESOURCE is set is 7:
+#: it fails at the CI provider or the Hub before the collector is contacted,
+#: so it is not 5, and it is not a missing or unreadable login, so not 3.
 EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5

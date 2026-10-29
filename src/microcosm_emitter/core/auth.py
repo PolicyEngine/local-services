@@ -417,7 +417,9 @@ class CollectorSession:
 
     Without a given token, ``credential()`` raises the ``UnreadableLoginError``
     of ``huggingface_token`` when the saved login cannot be read; the
-    telemetry module handles it as a missing credential.
+    telemetry module keeps its runs pending with the reason
+    ``huggingface_login_unreadable`` and reads the login again after a
+    backoff.
     """
 
     def __init__(
