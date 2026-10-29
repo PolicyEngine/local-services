@@ -56,7 +56,7 @@ A build on Modal runs without the operator's Hugging Face credential, so its emi
   | 2 | A usage error, such as a lifetime below 1 or a `--development-collector-url` that is not a loopback address; nothing was sent |
   | 3 | No Hugging Face credential (`HF_TOKEN`, `HUGGINGFACE_TOKEN` or `hf auth login`), or a saved login this user cannot read; nothing was sent |
   | 4 | The collector refused the credential (401, or 403 for a user outside the PolicyEngine organization), or the credential contains characters other than visible ASCII, such as a space or a line break, which cannot be sent as a bearer token, and was not sent |
-  | 5 | The collector was unreachable, its answer was not valid HTTP, or its answer had no non-empty `access_token` and positive integer `expires_in` |
+  | 5 | The collector was unreachable, its answer was not valid HTTP, or its answer had no `access_token` of visible ASCII characters, without spaces or line breaks, and positive integer `expires_in` |
   | 6 | The collector answered 422: it does not accept `lifetime_seconds`, so it predates tokens for other machines |
   | 7 | An unexpected error; only the error's type is printed |
 

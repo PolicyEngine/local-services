@@ -229,9 +229,10 @@ ExchangeFailureResult = Literal[
 
 @dataclass(frozen=True)
 class ExchangedToken:
-    """A usable answer to an exchange: a 200 with a non-empty ``access_token``
-    and a positive whole number of seconds, ``expires_in``. Its repr leaves
-    the token out."""
+    """A usable answer to an exchange: a 200 with an ``access_token`` of
+    visible ASCII characters, which can be sent as a bearer token, and a
+    positive whole number of seconds, ``expires_in``. Its repr leaves the
+    token out."""
 
     access_token: str = field(repr=False)
     expires_in: int
@@ -274,8 +275,11 @@ def exchange_huggingface_credential(
     Without ``scope`` the body is ``{}``, which the collector answers with a
     ``telemetry:write`` token. ``lifetime_seconds`` asks for a token that
     lasts that long, for a build on a machine without the credential; the
-    collector may grant less. A usable answer is a 200 with a non-empty
-    ``access_token`` and a positive integer ``expires_in``.
+    collector may grant less. A usable answer is a 200 with an
+    ``access_token`` that ``_SENDABLE_CREDENTIAL`` accepts, as the Hugging
+    Face credential must be, and a positive integer ``expires_in``. Any other
+    token could not be sent as a bearer token, so it counts as no usable
+    token: ``unavailable``.
     """
 
     if not hugging_face_token:
@@ -308,7 +312,7 @@ def exchange_huggingface_credential(
     if (
         status != HTTPStatus.OK
         or not isinstance(access_token, str)
-        or not access_token
+        or not _SENDABLE_CREDENTIAL.fullmatch(access_token)
         or type(expires_in) is not int
         or expires_in <= 0
     ):
