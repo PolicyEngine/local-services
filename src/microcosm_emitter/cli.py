@@ -33,7 +33,9 @@ DISTRIBUTION_NAME = "microcosm-emitter"
 
 #: Exit codes of `telemetry-token`, one per kind of failure; 2 is a usage
 #: error, as for every command, and 7 an unexpected error, which the others do
-#: not name.
+#: not name. A failed OIDC token exchange while HF_OIDC_RESOURCE is set is 7:
+#: it fails at the CI provider or the Hub before the collector is contacted,
+#: so it is not 5, and it is not a missing or unreadable login, so not 3.
 EXIT_MISSING_CREDENTIAL: Final = 3
 EXIT_REJECTED_CREDENTIAL: Final = 4
 EXIT_COLLECTOR_UNAVAILABLE: Final = 5
@@ -71,7 +73,8 @@ TELEMETRY_TOKEN_FAILURES: Final[dict[ExchangeFailureResult, tuple[int, str]]] = 
     ),
 }
 #: `huggingface_hub` could not read the login `hf auth login` saved, such as a
-#: file this user may not read, and neither variable is set.
+#: file this user may not read, and neither variable is set
+#: (``UnreadableLoginError``).
 UNREADABLE_LOGIN_MESSAGE: Final = (
     "The Hugging Face login saved by `hf auth login` could not be read "
     "({error_type}), and neither HF_TOKEN nor HUGGINGFACE_TOKEN is set; nothing "
@@ -139,6 +142,7 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     """
     from microcosm_emitter.core.auth import (
         ExchangeFailure,
+        UnreadableLoginError,
         exchange_huggingface_credential,
         huggingface_token,
     )
@@ -147,9 +151,9 @@ def telemetry_token(arguments: argparse.Namespace) -> int:
     origin = arguments.collector_origin or _collector_origin(None)
     try:
         credential = huggingface_token()
-    except (OSError, UnicodeDecodeError) as error:
+    except UnreadableLoginError as error:
         print(
-            UNREADABLE_LOGIN_MESSAGE.format(error_type=type(error).__name__),
+            UNREADABLE_LOGIN_MESSAGE.format(error_type=error.error_type),
             file=sys.stderr,
         )
         return EXIT_MISSING_CREDENTIAL

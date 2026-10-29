@@ -1,9 +1,13 @@
+import errno
 import json
+import os
 import threading
+import time
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from alembic import command
 from given_token import (
@@ -12,6 +16,7 @@ from given_token import (
     given_token_variables,
     set_variables,
 )
+from huggingface_hub.errors import HfHubHTTPError
 from sqlalchemy.orm import Session
 
 from microcosm_emitter.core import auth as auth_module
@@ -31,6 +36,7 @@ from microcosm_emitter.core.models import (
     TelemetryRunRecord,
     serialized_json_length,
 )
+from microcosm_emitter.host.contracts import ModuleContext
 from microcosm_emitter.telemetry.client import (
     TelemetryRun,
 )
@@ -41,6 +47,7 @@ from microcosm_emitter.telemetry.service import collector as collector_module
 from microcosm_emitter.telemetry.service import resources as resources_module
 from microcosm_emitter.telemetry.service import spool as spool_module
 from microcosm_emitter.telemetry.service.collector import CollectorDelivery
+from microcosm_emitter.telemetry.service.module import TelemetryModule
 from microcosm_emitter.telemetry.service.sanitization import (
     sanitize_details,
     sanitize_json,
@@ -69,6 +76,40 @@ def _no_hugging_face_credential(monkeypatch) -> None:
     monkeypatch.setattr(collector_module, "huggingface_token", refuse)
     monkeypatch.setattr(auth_module, "huggingface_token", refuse)
     monkeypatch.setattr(auth_module, "get_token", refuse)
+
+
+#: Collector answers that are not valid HTTP. http.client raises an
+#: HTTPException for each, which is not an OSError.
+MALFORMED_ANSWERS = {
+    # Ends inside its first chunk: IncompleteRead.
+    "truncated chunked answer": (
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        b'Transfer-Encoding: chunked\r\n\r\n40\r\n{"accepted"'
+    ),
+    # BadStatusLine.
+    "answer that is not HTTP": b"not an HTTP answer\r\n",
+}
+
+
+def _telemetry_module(tmp_path, collector_url: str) -> TelemetryModule:
+    """A telemetry module for one run, started as the host starts it."""
+    module = TelemetryModule(
+        {
+            "registration": _registration(),
+            "spool_path": str(tmp_path / "events.sqlite3"),
+            "development_collector_url": collector_url,
+        },
+        ModuleContext(os.getpid()),
+    )
+    module.initialize()
+    return module
+
+
+def _run_state(spool: EventSpool, run_id: str = "run-a") -> tuple[str, str | None]:
+    """The run's upload state and the reason it records."""
+    with Session(spool._engine) as session:
+        record = session.get(TelemetryRunRecord, (run_id, "producer-a"))
+        return record.upload_state, record.local_only_reason
 
 
 def _event(stage_id: str = "compile_targets") -> dict[str, object]:
@@ -499,6 +540,311 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
     assert reopened.pending_runs() == []
 
 
+@pytest.mark.parametrize(
+    "unreadable_login",
+    [
+        PermissionError(13, "Permission denied", "/synthetic/hf/token"),
+        UnicodeDecodeError("utf-8", b"\xffsynthetic", 0, 1, "invalid start byte"),
+    ],
+    ids=["not readable by this user", "not text"],
+)
+def test_an_unreadable_saved_login_keeps_runs_pending_until_it_can_be_read(
+    tmp_path, monkeypatch, capsys, unreadable_login
+) -> None:
+    # An earlier build's run, still pending in the event queue file.
+    spool_path = tmp_path / "events.sqlite3"
+    earlier = _registration("run-earlier")
+    earlier_queue = EventSpool(spool_path)
+    earlier_queue.register(earlier)
+    earlier_queue.append(earlier, _event())
+    earlier_queue.close()
+    # Neither HF_TOKEN nor HUGGINGFACE_TOKEN is set, so the emitter reads the
+    # login saved by `hf auth login`.
+    login_reads: list[str] = []
+
+    def read_saved_login() -> str:
+        login_reads.append("read")
+        raise unreadable_login
+
+    def refuse_request(*arguments, **options):
+        raise AssertionError("sent a request without a credential")
+
+    monkeypatch.setattr(auth_module, "get_token", read_saved_login)
+    monkeypatch.setattr(auth_module, "_http_post", refuse_request)
+    monkeypatch.setattr(collector_module, "_http_post", refuse_request)
+    real_monotonic = time.monotonic
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    module = _telemetry_module(tmp_path, DEVELOPMENT_COLLECTOR_URL)
+    try:
+        # The host stops a module whose tick raises.
+        module.tick(clock[0])
+
+        # Both runs stay pending, saying why; neither becomes local-only.
+        assert len(module.spool.pending_runs()) == 2
+        for run_id in ("run-a", "run-earlier"):
+            assert _run_state(module.spool, run_id) == (
+                "pending",
+                "huggingface_login_unreadable",
+            )
+
+        # The login is read again only after the backoff.
+        reads = len(login_reads)
+        module.tick(clock[0])
+        assert len(login_reads) == reads
+        clock[0] += 100.0
+        module.tick(clock[0])
+        assert len(login_reads) > reads
+    finally:
+        monkeypatch.setattr(collector_module.time, "monotonic", real_monotonic)
+        started = time.monotonic()
+        module.close(started + 5)
+    # Nothing can be delivered from here, so the shutdown drain ends at once.
+    assert time.monotonic() - started < 1
+    warning = capsys.readouterr().err
+    assert warning.count("Microcosm telemetry is waiting") == 1
+    # Only the error's type: its text names the path or quotes the file.
+    assert f"could not be read ({type(unreadable_login).__name__})" in warning
+    assert "synthetic" not in warning and "0xff" not in warning
+
+    # Once the login can be read, the next emitter delivers both runs.
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic-session", "expires_in": 3600}
+        assert token == "synthetic-session"
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(auth_module, "get_token", lambda: "hf_synthetic_member")
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    reopened = EventSpool(spool_path)
+    try:
+        assert CollectorDelivery(
+            reopened, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+        ).flush_once()
+        assert not reopened.has_pending()
+        for run_id in ("run-a", "run-earlier"):
+            assert _run_state(reopened, run_id) == ("pending", None)
+    finally:
+        reopened.close()
+
+
+def test_delivery_resumes_once_the_saved_login_can_be_read(
+    tmp_path, monkeypatch
+) -> None:
+    spool = EventSpool(tmp_path / "events.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    saved_login: list[str | Exception] = [
+        PermissionError(13, "Permission denied", "/synthetic/hf/token")
+    ]
+
+    def read_saved_login() -> str:
+        if isinstance(saved_login[0], Exception):
+            raise saved_login[0]
+        return saved_login[0]
+
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic-session", "expires_in": 3600}
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(auth_module, "get_token", read_saved_login)
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    delivery = CollectorDelivery(
+        spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    try:
+        assert not delivery.flush_once()
+        assert delivery.waiting_for_credential
+
+        # The user repairs the file, and the next attempt delivers the run.
+        saved_login[0] = "hf_synthetic_member"
+        clock[0] += 100.0
+        assert delivery.flush_once()
+        assert not spool.has_pending()
+        assert _run_state(spool) == ("pending", None)
+        # So the shutdown drain waits for deliveries again.
+        assert not delivery.waiting_for_credential
+    finally:
+        spool.close()
+
+
+def test_a_registered_run_loses_the_unreadable_login_reason_once_it_can_be_read(
+    tmp_path, monkeypatch
+) -> None:
+    spool = EventSpool(tmp_path / "events.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    saved_login: list[str | Exception] = ["hf_synthetic_member"]
+
+    def read_saved_login() -> str:
+        if isinstance(saved_login[0], Exception):
+            raise saved_login[0]
+        return saved_login[0]
+
+    def collector(url, payload, token, *, timeout=5.0):
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic-session", "expires_in": 3600}
+        return (201, {}) if url.endswith("/v1/runs") else (202, {})
+
+    monkeypatch.setattr(auth_module, "get_token", read_saved_login)
+    monkeypatch.setattr(collector_module, "_http_post", collector)
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    delivery = CollectorDelivery(
+        spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    try:
+        # This emitter registers the run and delivers its first event.
+        assert delivery.flush_once()
+        spool.append(registration, _event("load_inputs"))
+
+        # When the exchanged token is renewed, the login cannot be read.
+        saved_login[0] = PermissionError(13, "Permission denied", "/synthetic/hf/token")
+        clock[0] += 3600.0
+        assert not delivery.flush_once()
+        assert _run_state(spool) == ("pending", "huggingface_login_unreadable")
+
+        # Once it can be read, the reason goes with the delivery.
+        saved_login[0] = "hf_synthetic_member"
+        clock[0] += 100.0
+        assert delivery.flush_once()
+        assert not spool.has_pending()
+        assert _run_state(spool) == ("pending", None)
+    finally:
+        spool.close()
+
+
+def test_a_collector_outage_after_the_login_can_be_read_is_retried_at_shutdown(
+    tmp_path, monkeypatch
+) -> None:
+    spool = EventSpool(tmp_path / "events.sqlite3")
+    registration = _registration()
+    spool.register(registration)
+    spool.append(registration, _event())
+    saved_login: list[str | Exception] = [
+        PermissionError(13, "Permission denied", "/synthetic/hf/token")
+    ]
+
+    def read_saved_login() -> str:
+        if isinstance(saved_login[0], Exception):
+            raise saved_login[0]
+        return saved_login[0]
+
+    monkeypatch.setattr(auth_module, "get_token", read_saved_login)
+    monkeypatch.setattr(
+        collector_module,
+        "_http_post",
+        lambda *arguments, **options: (503, {"detail": "temporarily unavailable"}),
+    )
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    delivery = CollectorDelivery(
+        spool, development_collector_url=DEVELOPMENT_COLLECTOR_URL
+    )
+    try:
+        assert not delivery.flush_once()
+        assert delivery.waiting_for_credential
+
+        # The login can be read again, but the collector does not answer.
+        saved_login[0] = "hf_synthetic_member"
+        clock[0] += 100.0
+        assert not delivery.flush_once()
+
+        # So the shutdown drain retries, as for any outage, and the run no
+        # longer says it waits for the login.
+        assert not delivery.waiting_for_credential
+        assert _run_state(spool) == ("pending", None)
+        assert spool.pending_runs() == [registration]
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError(errno.EACCES, "Permission denied", "/synthetic/hf/token"),
+        IsADirectoryError(errno.EISDIR, "Is a directory", "/synthetic/hf/token"),
+        OSError(
+            errno.ELOOP, "Too many levels of symbolic links", "/synthetic/hf/token"
+        ),
+        UnicodeDecodeError("utf-8", b"\xffsynthetic", 0, 1, "invalid start byte"),
+    ],
+    ids=[
+        "not readable by this user",
+        "a directory",
+        "a symbolic link loop",
+        "not text",
+    ],
+)
+def test_a_saved_login_that_cannot_be_read_raises_an_error_without_its_details(
+    monkeypatch, error
+) -> None:
+    def get_token() -> str:
+        raise error
+
+    monkeypatch.setattr(auth_module, "get_token", get_token)
+
+    with pytest.raises(auth_module.UnreadableLoginError) as raised:
+        auth_module.huggingface_token()
+
+    unreadable = raised.value
+    assert unreadable.error_type == type(error).__name__
+    # Nothing keeps the original error, not even as context: its text names
+    # the file, and a UnicodeDecodeError holds the file's bytes.
+    assert unreadable.__context__ is None and unreadable.__cause__ is None
+    assert "synthetic" not in str(unreadable)
+
+
+def _hub_outage() -> HfHubHTTPError:
+    """What huggingface_hub raises for a 503 from the Hub: an OSError."""
+    request = httpx.Request("POST", "https://huggingface.co/oauth/token")
+    return HfHubHTTPError(
+        "503 Server Error: Service Unavailable",
+        response=httpx.Response(503, request=request),
+    )
+
+
+@pytest.mark.parametrize(
+    ("oidc_resource", "error"),
+    [
+        ("datasets/policyengine/synthetic", _hub_outage()),
+        (
+            "datasets/policyengine/synthetic",
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        ),
+        (None, _hub_outage()),
+    ],
+    ids=[
+        "Hub outage during the OIDC exchange",
+        "OIDC answer that is not text",
+        "Hub outage without OIDC",
+    ],
+)
+def test_only_a_saved_login_that_cannot_be_read_counts_as_unreadable(
+    monkeypatch, oidc_resource, error
+) -> None:
+    # With HF_OIDC_RESOURCE set, huggingface_hub exchanges a CI OIDC token
+    # instead of reading the saved login. Its errors, and any OSError that
+    # does not come from reading a file, propagate as before.
+    if oidc_resource is not None:
+        monkeypatch.setenv("HF_OIDC_RESOURCE", oidc_resource)
+
+    def get_token() -> str:
+        raise error
+
+    monkeypatch.setattr(auth_module, "get_token", get_token)
+
+    with pytest.raises(type(error)) as raised:
+        auth_module.huggingface_token()
+
+    assert raised.value is error
+
+
 @pytest.mark.parametrize("endpoint", ["registration", "events"])
 @pytest.mark.parametrize("status", [400, 404, 413, 422])
 def test_permanent_collector_rejection_retains_only_rejected_producer(
@@ -607,6 +953,120 @@ def test_transient_collector_rejection_remains_retryable(
         assert len(attempts) == 2 and not spool.has_pending()
     finally:
         spool.close()
+
+
+@pytest.mark.parametrize("malformed_answer", sorted(MALFORMED_ANSWERS))
+@pytest.mark.parametrize("endpoint", ["registration", "events"])
+def test_a_malformed_collector_answer_is_retried_like_a_network_failure(
+    tmp_path, monkeypatch, endpoint, malformed_answer
+) -> None:
+    malformed_path = (
+        "/v1/runs" if endpoint == "registration" else "/v1/runs/run-a/events"
+    )
+    paths: list[str] = []
+
+    class Collector(BaseHTTPRequestHandler):
+        """Answers the first request to ``malformed_path`` with broken HTTP."""
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            paths.append(self.path)
+            if self.path.endswith("/exchange"):
+                return self._json(
+                    200, {"access_token": "synthetic-session", "expires_in": 3600}
+                )
+            if self.path == malformed_path and paths.count(self.path) == 1:
+                self.wfile.write(MALFORMED_ANSWERS[malformed_answer])
+                return
+            self._json(201 if self.path == "/v1/runs" else 202, {})
+
+        def _json(self, status: int, document: dict[str, object]) -> None:
+            body = json.dumps(document).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("HF_TOKEN", "hf_synthetic_member")
+    module = _telemetry_module(tmp_path, f"http://127.0.0.1:{server.server_port}")
+    try:
+        # The host stops a module whose tick raises.
+        module.tick(clock[0])
+        assert paths.count(malformed_path) == 1
+
+        # The run and its queued event stay as they were.
+        assert module.spool.pending_runs() == [module.registration]
+        assert _run_state(module.spool) == ("pending", None)
+        assert len(module.spool.batch("run-a", "producer-a")) == 1
+
+        # Retried after the backoff, as for any network failure.
+        module.tick(clock[0])
+        assert paths.count(malformed_path) == 1
+        clock[0] += 100.0
+        module.tick(clock[0])
+        assert paths.count(malformed_path) == 2
+        assert not module.spool.has_pending()
+    finally:
+        module.close(clock[0])
+        server.shutdown()
+        server_thread.join(timeout=2)
+        server.server_close()
+
+
+def test_a_collector_token_that_cannot_be_sent_is_retried_like_an_outage(
+    tmp_path, monkeypatch
+) -> None:
+    exchanges: list[str] = []
+    sent: list[str] = []
+
+    def collector_issuing_a_token_with_a_space(url, payload, token, *, timeout=5.0):
+        exchanges.append(url)
+        return 200, {"access_token": "session token", "expires_in": 3600}
+
+    # The real request, which refuses a token it cannot send with ValueError.
+    real_post = collector_module._http_post
+
+    def send(url, payload, token, *, timeout=5.0):
+        sent.append(url)
+        return real_post(url, payload, token, timeout=timeout)
+
+    monkeypatch.setattr(
+        auth_module, "_http_post", collector_issuing_a_token_with_a_space
+    )
+    monkeypatch.setattr(collector_module, "_http_post", send)
+    monkeypatch.setenv("HF_TOKEN", "hf_synthetic_member")
+    clock = [100.0]
+    monkeypatch.setattr(collector_module.time, "monotonic", lambda: clock[0])
+    module = _telemetry_module(tmp_path, DEVELOPMENT_COLLECTOR_URL)
+    try:
+        # The host stops a module whose tick raises.
+        module.tick(clock[0])
+
+        # The session does not keep the token, so nothing is sent with it,
+        # and the run and its queued event stay as they were.
+        assert sent == []
+        assert module.spool.pending_runs() == [module.registration]
+        assert _run_state(module.spool) == ("pending", None)
+        assert len(module.spool.batch("run-a", "producer-a")) == 1
+
+        # The exchange is tried again after the backoff, as after an outage.
+        module.tick(clock[0])
+        assert len(exchanges) == 1
+        clock[0] += 100.0
+        module.tick(clock[0])
+        assert len(exchanges) == 2
+        assert sent == []
+    finally:
+        module.close(clock[0])
 
 
 def test_resource_sampler_keeps_reaped_child_cpu_monotonic(monkeypatch) -> None:

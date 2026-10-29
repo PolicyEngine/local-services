@@ -9,8 +9,10 @@ from http import HTTPStatus
 from typing import Any
 
 from microcosm_emitter.core.auth import (
+    NETWORK_FAILURES,
     CollectorSession,
     SessionResult,
+    UnreadableLoginError,
     _http_post,
     huggingface_token,
 )
@@ -26,9 +28,11 @@ from microcosm_emitter.core.constants import (
     NO_CREDENTIAL_MESSAGE,
     PENDING_GIVEN_TOKEN_EXPIRED,
     PENDING_GIVEN_TOKEN_REJECTED,
+    PENDING_HUGGINGFACE_LOGIN_UNREADABLE,
     REJECTED_CREDENTIAL_MESSAGE,
     RUN_EVENTS_PATH_TEMPLATE,
     RUN_REGISTRATION_PATH,
+    UNREADABLE_LOGIN_WAITING_MESSAGE,
     UNSENDABLE_CREDENTIAL_MESSAGE,
 )
 from microcosm_emitter.telemetry.constants import (
@@ -79,13 +83,24 @@ class CollectorDelivery:
         )
         self._registered: set[str] = set()
         self._warned_no_token = False
-        #: Set once the given collector token can no longer be used: nothing
-        #: more can be delivered until an emitter with a credential runs.
-        self.waiting_for_credential = False
+        self._warned_unreadable_login = False
+        #: Set once the given collector token can no longer be used.
+        self._given_token_unusable = False
+        #: The runs, as (run ID, producer ID), recorded as waiting for the
+        #: saved Hugging Face login to be readable; empty while it can be read.
+        self._waiting_for_login: set[tuple[str, str]] = set()
         self._recorded_waiting: set[str] = set()
         self._warned_denied: set[str] = set()
         self._next_attempt_at = 0.0
         self._retry_seconds = INITIAL_RETRY_SECONDS
+
+    @property
+    def waiting_for_credential(self) -> bool:
+        """Whether nothing can be delivered from this emitter, so its shutdown
+        drain ends at once: the given collector token can no longer be used,
+        or the saved Hugging Face login could not be read at the last attempt.
+        """
+        return self._given_token_unusable or bool(self._waiting_for_login)
 
     def flush_once(self) -> bool:
         """Attempt one delivery pass without waiting for retry deadlines."""
@@ -111,7 +126,7 @@ class CollectorDelivery:
                     {"events": events},
                     token,
                 )
-            except (OSError, TimeoutError):
+            except NETWORK_FAILURES:
                 self._defer_retry()
                 continue
             if status == HTTPStatus.ACCEPTED:
@@ -136,7 +151,15 @@ class CollectorDelivery:
         return made_progress
 
     def _collector_token(self, registration: Mapping[str, Any]) -> str | None:
-        result, token = self.session.credential()
+        try:
+            result, token = self.session.credential()
+        except UnreadableLoginError as error:
+            self._wait_for_readable_login(registration, error.error_type)
+            return None
+        if self._waiting_for_login:
+            # The session raised until it could read the login, so it can now,
+            # whatever the exchange answered.
+            self._end_wait_for_readable_login()
         if result == "missing":
             if not self._warned_no_token:
                 print(NO_CREDENTIAL_MESSAGE, file=sys.stderr, flush=True)
@@ -156,12 +179,45 @@ class CollectorDelivery:
             self._defer_retry()
         return token
 
+    def _wait_for_readable_login(
+        self, registration: Mapping[str, Any], error_type: str
+    ) -> None:
+        """Keep the run pending while the saved login cannot be read.
+
+        Pending, not local-only, which cannot be undone and would also apply
+        to every other pending run in the event queue file: the login exists
+        and can be repaired, and then this emitter or a later one delivers
+        the run. The login is read again after the backoff, as the exchange
+        is after an outage. The warning names only the error's type, once.
+        """
+
+        if not self._warned_unreadable_login:
+            print(
+                UNREADABLE_LOGIN_WAITING_MESSAGE.format(error_type=error_type),
+                file=sys.stderr,
+                flush=True,
+            )
+            self._warned_unreadable_login = True
+        run = (str(registration["run_id"]), str(registration["producer_id"]))
+        if run not in self._waiting_for_login:
+            self.spool.record_pending_reason(*run, PENDING_HUGGINGFACE_LOGIN_UNREADABLE)
+            self._waiting_for_login.add(run)
+        self._defer_retry()
+
+    def _end_wait_for_readable_login(self) -> None:
+        """Clear the reason of every run that waited for the saved login,
+        registered or not, so that the shutdown drain retries as usual."""
+
+        for run_id, producer_id in self._waiting_for_login:
+            self.spool.record_pending_reason(run_id, producer_id, None)
+        self._waiting_for_login.clear()
+
     def _keep_pending(self, registration: Mapping[str, Any], reason: str) -> None:
         """Leave the run for an emitter with a credential, saying why once."""
 
-        if not self.waiting_for_credential:
+        if not self._given_token_unusable:
             print(GIVEN_TOKEN_UNUSABLE_MESSAGE, file=sys.stderr, flush=True)
-            self.waiting_for_credential = True
+            self._given_token_unusable = True
         registration_key = _registration_key(registration)
         if registration_key not in self._recorded_waiting:
             self.spool.record_pending_reason(
@@ -177,13 +233,14 @@ class CollectorDelivery:
                 registration,
                 token,
             )
-        except (OSError, TimeoutError):
+        except NETWORK_FAILURES:
             self._defer_retry()
             return False
         if status == HTTPStatus.CREATED:
             self._registered.add(registration_key)
             self._retry_seconds = INITIAL_RETRY_SECONDS
-            # A run left by an emitter whose given token became unusable.
+            # A run left by an emitter whose given token became unusable, or
+            # that could not read its saved login.
             self.spool.record_pending_reason(
                 str(registration["run_id"]), str(registration["producer_id"]), None
             )

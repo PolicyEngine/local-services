@@ -56,6 +56,12 @@ from microcosm_emitter.core.constants import (
 #: http.client raises for a line break with an error that quotes the whole
 #: header value, and for a character outside Latin-1 with one that holds it.
 _SENDABLE_CREDENTIAL = re.compile(r"[!-~]+")
+#: What ``_http_post`` raises when it gets no usable answer, which every caller
+#: handles as a network failure: no answer or a timeout (``OSError``,
+#: ``TimeoutError``), or an answer that is not valid HTTP or ends early, such
+#: as a truncated chunked answer (http.client's ``HTTPException``, which is not
+#: an ``OSError``).
+NETWORK_FAILURES = (OSError, TimeoutError, HTTPException)
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -132,14 +138,65 @@ def _http_post(
         return error.code, _decode_response(body)
 
 
+class UnreadableLoginError(OSError):
+    """The login saved by `hf auth login` could not be read, such as a file
+    this user may not read or one that is not text, and neither `HF_TOKEN`
+    nor `HUGGINGFACE_TOKEN` is set.
+
+    ``error_type`` is the name of the error ``huggingface_hub`` raised. That
+    error is not kept, not even as the context of this one: its text names
+    the file, and a ``UnicodeDecodeError`` holds the file's bytes. An
+    ``OSError``, as reading a file that fails is, so callers that handled the
+    ``PermissionError`` before still handle it.
+    """
+
+    def __init__(self, error_type: str) -> None:
+        super().__init__(
+            f"the saved Hugging Face login could not be read ({error_type})"
+        )
+        self.error_type = error_type
+
+
+def _saved_login_unreadable(error: OSError | UnicodeDecodeError) -> bool:
+    """Whether ``get_token()`` raised ``error`` reading the login files that
+    `hf auth login` saved: a ``PermissionError``, bytes that are not text, or
+    another ``OSError`` that names a file, such as ``IsADirectoryError``.
+
+    With ``HF_OIDC_RESOURCE`` set, huggingface_hub exchanges a CI OIDC token
+    instead of reading those files, so none of its errors count, such as the
+    ``HfHubHTTPError`` (an ``OSError`` that names no file) of a 503 from the
+    Hub, or an answer that is not text.
+    """
+    if os.environ.get("HF_OIDC_RESOURCE"):
+        return False
+    return isinstance(error, (PermissionError, UnicodeDecodeError)) or (
+        isinstance(error, OSError) and error.filename is not None
+    )
+
+
 def huggingface_token() -> str | None:
     """The build's Hugging Face token: `HF_TOKEN`, then `HUGGINGFACE_TOKEN`, then
-    the token saved by `hf auth login`; `None` without one."""
-    return (
+    the token saved by `hf auth login`; `None` without one.
+
+    Raises ``UnreadableLoginError`` when only the saved login is left and it
+    cannot be read (``_saved_login_unreadable``); every other error of
+    ``get_token()`` propagates unchanged.
+    """
+    variable_token = (
         os.environ.get("HF_TOKEN", "").strip()
         or os.environ.get("HUGGINGFACE_TOKEN", "").strip()
-        or get_token()
     )
+    if variable_token:
+        return variable_token
+    try:
+        return get_token()
+    except (OSError, UnicodeDecodeError) as error:
+        # huggingface_hub catches only FileNotFoundError when it reads the file.
+        if not _saved_login_unreadable(error):
+            raise
+        error_type = type(error).__name__
+    # Outside the except block, so the new error has no context to keep.
+    raise UnreadableLoginError(error_type)
 
 
 @dataclass(frozen=True)
@@ -201,9 +258,10 @@ ExchangeFailureResult = Literal[
 
 @dataclass(frozen=True)
 class ExchangedToken:
-    """A usable answer to an exchange: a 200 with a non-empty ``access_token``
-    and a positive whole number of seconds, ``expires_in``. Its repr leaves
-    the token out."""
+    """A usable answer to an exchange: a 200 with an ``access_token`` of
+    visible ASCII characters, which can be sent as a bearer token, and a
+    positive whole number of seconds, ``expires_in``. Its repr leaves the
+    token out."""
 
     access_token: str = field(repr=False)
     expires_in: int
@@ -246,8 +304,11 @@ def exchange_huggingface_credential(
     Without ``scope`` the body is ``{}``, which the collector answers with a
     ``telemetry:write`` token. ``lifetime_seconds`` asks for a token that
     lasts that long, for a build on a machine without the credential; the
-    collector may grant less. A usable answer is a 200 with a non-empty
-    ``access_token`` and a positive integer ``expires_in``.
+    collector may grant less. A usable answer is a 200 with an
+    ``access_token`` that ``_SENDABLE_CREDENTIAL`` accepts, as the Hugging
+    Face credential must be, and a positive integer ``expires_in``. Any other
+    token could not be sent as a bearer token, so it counts as no usable
+    token: ``unavailable``.
     """
 
     if not hugging_face_token:
@@ -261,8 +322,7 @@ def exchange_huggingface_credential(
         status, answer = (post or _http_post)(
             origin + TOKEN_EXCHANGE_PATH, body, hugging_face_token
         )
-    except (OSError, TimeoutError, HTTPException):
-        # HTTPException: an answer that is not valid HTTP, or is truncated.
+    except NETWORK_FAILURES:
         return ExchangeFailure("unavailable")
     if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         return ExchangeFailure("rejected", status)
@@ -280,7 +340,7 @@ def exchange_huggingface_credential(
     if (
         status != HTTPStatus.OK
         or not isinstance(access_token, str)
-        or not access_token
+        or not _SENDABLE_CREDENTIAL.fullmatch(access_token)
         or type(expires_in) is not int
         or expires_in <= 0
     ):
@@ -354,6 +414,12 @@ class CollectorSession:
     ``token_expired`` or ``token_rejected``. A given token obtained from
     another origin than ``origin`` raises ``GivenCollectorTokenError``: its
     origin is only compared, and never chooses where anything is sent.
+
+    Without a given token, ``credential()`` raises the ``UnreadableLoginError``
+    of ``huggingface_token`` when the saved login cannot be read; the
+    telemetry module keeps its runs pending with the reason
+    ``huggingface_login_unreadable`` and reads the login again after a
+    backoff.
     """
 
     def __init__(

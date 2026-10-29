@@ -68,10 +68,22 @@ LOCAL_ONLY_PRE_ELIGIBILITY: Final = "created_before_upload_eligibility"
 # already has; a successful registration clears it.
 PENDING_GIVEN_TOKEN_EXPIRED: Final = "collector_token_expired"
 PENDING_GIVEN_TOKEN_REJECTED: Final = "collector_token_rejected"
+# Why a pending run waits: the login saved by `hf auth login` could not be read,
+# such as a file this user may not read, and neither HF_TOKEN nor
+# HUGGINGFACE_TOKEN is set. The login exists and can be repaired, so the run
+# stays pending for this emitter, or a later one, to deliver once it can be read.
+PENDING_HUGGINGFACE_LOGIN_UNREADABLE: Final = "huggingface_login_unreadable"
 
 NO_CREDENTIAL_MESSAGE: Final = (
     "Microcosm telemetry is local-only: no ambient Hugging Face credential was "
     "found. The dataset build will continue."
+)
+# Only the error's type, since its text names the file, or quotes its bytes.
+UNREADABLE_LOGIN_WAITING_MESSAGE: Final = (
+    "Microcosm telemetry is waiting: the Hugging Face login saved by `hf auth "
+    "login` could not be read ({error_type}), and neither HF_TOKEN nor "
+    "HUGGINGFACE_TOKEN is set. Queued events stay pending, and are delivered once "
+    "the login can be read. The dataset build will continue."
 )
 REJECTED_CREDENTIAL_MESSAGE: Final = (
     "Microcosm telemetry is local-only for this run: the ambient Hugging Face "
