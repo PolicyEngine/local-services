@@ -9,7 +9,6 @@ from pathlib import Path
 
 from scripts.rules.load import load_text
 from scripts.rules.locked_installs import (
-    INSTALL_RULE,
     REPO_ROOT,
     find_violations,
     lock_violations,
@@ -17,9 +16,19 @@ from scripts.rules.locked_installs import (
     scan,
     tracked_files,
 )
+from scripts.rules.model import Repository
 from scripts.rules.tests.support import REPOSITORY_TABLE
 
 FIXTURES = Path(__file__).parent / "fixtures" / "locked_installs"
+# The example repository's rule ids, from its rule_prefix "ex".
+INSTALL_RULE = "ex.dependencies.install-from-lock"
+LOCK_RULE = "ex.dependencies.lock-committed"
+# The layout of the proof fixtures: scripts under .github/scripts.
+FIXTURE_REPOSITORY = Repository(
+    rule_prefix="ex",
+    pr_workflow=".github/workflows/pr.yml",
+    script_directories=(".github/scripts",),
+)
 REGISTRY_HEADER = (
     """
 schema_version = 1
@@ -97,14 +106,19 @@ class TestLockedInstallsProof(unittest.TestCase):
         self.assertEqual(
             [
                 violation.message
-                for violation in lock_violations(bad_root, tracked_files(bad_root))
+                for violation in lock_violations(
+                    bad_root, tracked_files(bad_root), FIXTURE_REPOSITORY
+                )
             ],
             [
                 "app/pyproject.toml has no committed uv.lock",
                 "no .github/workflows/pr.yml job runs uv lock --check",
             ],
         )
-        self.assertEqual(lock_violations(good_root, tracked_files(good_root)), [])
+        self.assertEqual(
+            lock_violations(good_root, tracked_files(good_root), FIXTURE_REPOSITORY),
+            [],
+        )
 
     def test_rule_proof_scheduled_relock(self) -> None:
         bad_root = FIXTURES / "relock_bad"
@@ -113,11 +127,16 @@ class TestLockedInstallsProof(unittest.TestCase):
         self.assertEqual(
             [
                 violation.message
-                for violation in relock_violations(bad_root, tracked_files(bad_root))
+                for violation in relock_violations(
+                    bad_root, tracked_files(bad_root), FIXTURE_REPOSITORY
+                )
             ],
             [".github/workflows/update.yml does not relock projects/two/uv.lock"],
         )
-        self.assertEqual(relock_violations(good_root, tracked_files(good_root)), [])
+        self.assertEqual(
+            relock_violations(good_root, tracked_files(good_root), FIXTURE_REPOSITORY),
+            [],
+        )
 
 
 class TestCommandClassification(unittest.TestCase):
@@ -336,6 +355,93 @@ removal = "never"
                 "matches no site"
             ],
         )
+
+
+class TestRepositoryLayout(unittest.TestCase):
+    """The checks read rule ids, the PR workflow and script directories from
+    the registry's [repository] table."""
+
+    def lock_messages(self, files: dict[str, str], repository: Repository) -> list:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for path, text in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(text, encoding="utf-8")
+        return [
+            str(violation)
+            for violation in lock_violations(root, tracked_files(root), repository)
+        ]
+
+    def test_rule_ids_start_with_the_registry_prefix(self) -> None:
+        registry = load_text(
+            (REGISTRY_HEADER + RULE_TEMPLATE.format(rule_id=INSTALL_RULE))
+            .replace('rule_prefix = "ex"', 'rule_prefix = "emitter"')
+            .replace('id = "ex.', 'id = "emitter.')
+        )[0]
+
+        violations = find_violations(FIXTURES / "lock_bad", registry)
+
+        self.assertEqual(
+            sorted({violation.rule_id for violation in violations}),
+            [
+                "emitter.dependencies.lock-committed",
+                "emitter.dependencies.scheduled-relock",
+            ],
+        )
+
+    def test_the_lock_check_must_run_in_the_named_pr_workflow(self) -> None:
+        files = {
+            ".github/workflows/pr.yaml": (
+                "on: pull_request\njobs:\n  locks:\n    steps:\n"
+                "      - run: uv lock --check\n"
+            ),
+        }
+        named = Repository(rule_prefix="ex", pr_workflow=".github/workflows/pr.yaml")
+        other = Repository(rule_prefix="ex", pr_workflow=".github/workflows/pr.yml")
+
+        self.assertEqual(self.lock_messages(files, named), [])
+        self.assertEqual(
+            self.lock_messages(files, other),
+            [
+                f"[{LOCK_RULE}] locked-installs: no .github/workflows/pr.yml job "
+                "runs uv lock --check. Fix: run uv lock --check in a job of "
+                ".github/workflows/pr.yml."
+            ],
+        )
+
+    def test_workflow_commands_are_followed_into_the_script_directories(
+        self,
+    ) -> None:
+        files = {
+            ".github/workflows/pr.yaml": (
+                "on: pull_request\njobs:\n  locks:\n    steps:\n"
+                "      - run: bash tools/check-locks.sh\n"
+            ),
+            "tools/check-locks.sh": "uv lock --check\n",
+        }
+        tools = Repository(
+            rule_prefix="ex",
+            pr_workflow=".github/workflows/pr.yaml",
+            script_directories=("tools",),
+        )
+        elsewhere = Repository(
+            rule_prefix="ex",
+            pr_workflow=".github/workflows/pr.yaml",
+            script_directories=("scripts",),
+        )
+
+        self.assertEqual(self.lock_messages(files, tools), [])
+        self.assertEqual(len(self.lock_messages(files, elsewhere)), 1)
+
+    def test_a_script_is_no_lock_check_by_its_name(self) -> None:
+        files = {
+            ".github/workflows/pr.yml": (
+                "on: pull_request\njobs:\n  locks:\n    steps:\n"
+                "      - run: .github/scripts/check-uv-locks.sh\n"
+            ),
+            ".github/scripts/check-uv-locks.sh": "echo checked\n",
+        }
+
+        self.assertEqual(len(self.lock_messages(files, FIXTURE_REPOSITORY)), 1)
 
 
 class TestRepository(unittest.TestCase):

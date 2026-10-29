@@ -6,10 +6,36 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.rules.tests.support import REPOSITORY_TABLE
 from scripts.rules.uv_version import VERSION_FILE, run_check, scan
 
 FIXTURES = Path(__file__).parent / "fixtures" / "uv_version"
 PINNED = "0.13.6"
+UV_VERSION_REGISTRY = (
+    """
+schema_version = 1
+repo = "example"
+"""
+    + REPOSITORY_TABLE.replace('rule_prefix = "ex"', 'rule_prefix = "emitter"')
+    + """
+[[category]]
+id = "dependencies"
+title = "Dependencies"
+
+[[rule]]
+id = "emitter.dependencies.uv-version-pinned"
+category = "dependencies"
+statement = "Every uv install pins the release in .uv-version."
+rationale = "README.md"
+scope = ["**"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "uv-version"
+"""
+)
 
 
 def write_files(root: Path, files: dict[str, str], pinned: str | None = PINNED) -> None:
@@ -59,6 +85,31 @@ class TestUvVersionProof(unittest.TestCase):
             ],
         )
         self.assertEqual(good, [])
+
+
+class TestRuleId(unittest.TestCase):
+    def test_violations_name_the_rule_that_lists_the_guard(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        write_files(
+            root,
+            {
+                "rules/registry.toml": UV_VERSION_REGISTRY,
+                "Dockerfile": "COPY --from=ghcr.io/astral-sh/uv /uv /bin/\n",
+            },
+        )
+
+        self.assertEqual(
+            [violation.rule_id for violation in run_check(root)],
+            ["emitter.dependencies.uv-version-pinned"],
+        )
+
+    def test_without_a_registry_violations_name_no_rule(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        write_files(
+            root, {"Dockerfile": "COPY --from=ghcr.io/astral-sh/uv /uv /bin/\n"}
+        )
+
+        self.assertEqual([violation.rule_id for violation in run_check(root)], [None])
 
 
 class TestVersionFile(GuardCase):
