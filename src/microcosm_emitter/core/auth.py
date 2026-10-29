@@ -56,6 +56,12 @@ from microcosm_emitter.core.constants import (
 #: http.client raises for a line break with an error that quotes the whole
 #: header value, and for a character outside Latin-1 with one that holds it.
 _SENDABLE_CREDENTIAL = re.compile(r"[!-~]+")
+#: What ``_http_post`` raises when it gets no usable answer, which every caller
+#: handles as a network failure: no answer or a timeout (``OSError``,
+#: ``TimeoutError``), or an answer that is not valid HTTP or ends early, such
+#: as a truncated chunked answer (http.client's ``HTTPException``, which is not
+#: an ``OSError``).
+NETWORK_FAILURES = (OSError, TimeoutError, HTTPException)
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -316,8 +322,7 @@ def exchange_huggingface_credential(
         status, answer = (post or _http_post)(
             origin + TOKEN_EXCHANGE_PATH, body, hugging_face_token
         )
-    except (OSError, TimeoutError, HTTPException):
-        # HTTPException: an answer that is not valid HTTP, or is truncated.
+    except NETWORK_FAILURES:
         return ExchangeFailure("unavailable")
     if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}:
         return ExchangeFailure("rejected", status)

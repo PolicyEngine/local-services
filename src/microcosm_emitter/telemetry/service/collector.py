@@ -6,10 +6,10 @@ import sys
 import time
 from collections.abc import Mapping
 from http import HTTPStatus
-from http.client import HTTPException
 from typing import Any
 
 from microcosm_emitter.core.auth import (
+    NETWORK_FAILURES,
     CollectorSession,
     SessionResult,
     UnreadableLoginError,
@@ -44,11 +44,6 @@ from microcosm_emitter.telemetry.service.spool import EventSpool
 _RETRYABLE_CLIENT_ERRORS = frozenset(
     {HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS}
 )
-#: What a request to the collector raises when it gets no usable answer, all
-#: retried with backoff: no answer or a timeout (OSError), or an answer that is
-#: not valid HTTP or ends early, such as a truncated chunked answer
-#: (http.client's HTTPException, which is not an OSError).
-_NETWORK_FAILURES = (OSError, TimeoutError, HTTPException)
 #: Session answers for a given token that can no longer be used, and the
 #: reason each pending run records.
 _UNUSABLE_GIVEN_TOKEN_REASONS: dict[SessionResult, str] = {
@@ -123,7 +118,7 @@ class CollectorDelivery:
                     {"events": events},
                     token,
                 )
-            except _NETWORK_FAILURES:
+            except NETWORK_FAILURES:
                 self._defer_retry()
                 continue
             if status == HTTPStatus.ACCEPTED:
@@ -223,7 +218,7 @@ class CollectorDelivery:
                 registration,
                 token,
             )
-        except _NETWORK_FAILURES:
+        except NETWORK_FAILURES:
             self._defer_retry()
             return False
         if status == HTTPStatus.CREATED:
