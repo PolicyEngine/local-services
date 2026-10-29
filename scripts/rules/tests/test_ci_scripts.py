@@ -22,8 +22,8 @@ from scripts.rules.workflows import chains_commands, code_lines, parse_jobs
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ci_scripts"
 CONFIG = CiScripts(
-    workflows=".github/workflows/*.yml",
-    scripts_dir=".github/scripts",
+    workflows=(".github/workflows/*.yml",),
+    script_directories=(".github/scripts",),
     test_globs=("tests/**/test_*.py",),
     multiline_baseline="rules/baselines/ci-multiline-run.txt",
     untested_baseline="rules/baselines/ci-untested-scripts.txt",
@@ -68,6 +68,139 @@ class TestCiScriptsProof(unittest.TestCase):
                 shutil.copy(FIXTURES / "shellcheck" / name, scripts / name)
                 failures = shellcheck_failures(CONFIG, Path(tmp))
                 self.assertEqual(bool(failures), expected, name)
+
+
+# Two workflow globs, for a repository whose workflows end in .yml and .yaml,
+# and two script directories.
+LAYOUT_CONFIG = CiScripts(
+    workflows=(".github/workflows/*.yml", ".github/workflows/*.yaml"),
+    script_directories=("tools", "scripts"),
+    test_globs=("tests/**/test_*.py",),
+    multiline_baseline="rules/baselines/ci-multiline-run.txt",
+    untested_baseline="rules/baselines/ci-untested-scripts.txt",
+    shellcheck_baseline="rules/baselines/ci-shellcheck.txt",
+)
+MULTILINE_WORKFLOW = (
+    "jobs:\n  build:\n    steps:\n      - name: Build\n        run: |\n"
+    "          make deps\n          make build\n"
+)
+
+
+class TestRepositoryLayout(unittest.TestCase):
+    """The checks read every workflow glob and every script directory."""
+
+    def tree(self, files: dict[str, str]) -> Path:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for path, text in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(text)
+        return root
+
+    def test_every_workflow_glob_is_read(self) -> None:
+        root = self.tree(
+            {
+                ".github/workflows/ci.yml": MULTILINE_WORKFLOW,
+                ".github/workflows/pr.yaml": MULTILINE_WORKFLOW,
+            }
+        )
+
+        self.assertEqual(
+            multiline_runs(LAYOUT_CONFIG, root),
+            {
+                ".github/workflows/ci.yml :: build :: Build",
+                ".github/workflows/pr.yaml :: build :: Build",
+            },
+        )
+
+    def test_scripts_in_every_script_directory_need_a_test(self) -> None:
+        root = self.tree(
+            {
+                ".github/workflows/pr.yaml": (
+                    "jobs:\n  build:\n    steps:\n"
+                    "      - run: bash tools/build.sh\n"
+                    "      - run: bash scripts/deploy.sh\n"
+                ),
+                "tools/build.sh": "echo build\n",
+                "scripts/deploy.sh": "echo deploy\n",
+                "tests/test_build.py": "# Runs build.sh.\n",
+            }
+        )
+
+        self.assertEqual(untested_scripts(LAYOUT_CONFIG, root), {"scripts/deploy.sh"})
+
+    def test_shellcheck_reads_every_script_directory(self) -> None:
+        require_shellcheck(self)
+        bad_script = (FIXTURES / "shellcheck" / "bad_script.sh").read_text()
+        root = self.tree({"tools/a.sh": bad_script, "scripts/b.sh": bad_script})
+
+        self.assertEqual(
+            shellcheck_failures(LAYOUT_CONFIG, root), {"tools/a.sh", "scripts/b.sh"}
+        )
+
+    def test_the_workflows_are_one_glob_or_a_list_of_globs(self) -> None:
+        listed = REGISTRY.replace(
+            'workflows = ".github/workflows/*.yml"',
+            'workflows = [".github/workflows/*.yml", ".github/workflows/*.yaml"]',
+        )
+        for text, expected in (
+            (REGISTRY, (".github/workflows/*.yml",)),
+            (listed, (".github/workflows/*.yml", ".github/workflows/*.yaml")),
+        ):
+            registry, problems = load_text(text)
+            self.assertEqual(problems, [])
+            assert registry is not None and registry.ci_scripts is not None
+            self.assertEqual(registry.ci_scripts.workflows, expected)
+
+    def test_workflows_that_are_no_globs_are_reported(self) -> None:
+        _, problems = load_text(
+            REGISTRY.replace('workflows = ".github/workflows/*.yml"', "workflows = [1]")
+        )
+
+        self.assertEqual(
+            [str(problem) for problem in problems],
+            [
+                "[registry] schema: ci_scripts.workflows must be a glob or a "
+                'non-empty list of globs. Fix: set workflows = [".github/workflows/'
+                '*.yml", ".github/workflows/*.yaml"].'
+            ],
+        )
+
+    def test_the_script_directories_are_the_repository_tables(self) -> None:
+        registry, _ = load_text(REGISTRY)
+
+        assert registry is not None and registry.ci_scripts is not None
+        self.assertEqual(registry.ci_scripts.script_directories, ("scripts",))
+
+    def test_the_fixes_name_the_script_directories_and_no_other_document(
+        self,
+    ) -> None:
+        registry, _ = load_text(
+            REGISTRY.replace(
+                'script_directories = ["scripts"]',
+                'script_directories = ["tools", "scripts"]',
+            )
+        )
+        assert registry is not None
+        root = self.tree(
+            {"rules/baselines/ci-multiline-run.txt": "old :: job :: step\n"}
+        )
+        findings = Findings(
+            multiline={"old :: job :: step", "wf.yml :: job :: step"},
+            untested={"tools/x.sh"},
+            shellcheck=set(),
+        )
+
+        self.assertEqual(
+            [str(violation) for violation in compare(registry, findings, root)],
+            [
+                "[ex.ci.multiline] ci-scripts: multi-line run: block wf.yml :: job "
+                ":: step. Fix: move the commands into a tested script under tools "
+                "or scripts and call it from a single-line run:.",
+                "[registry] ci-scripts: untested workflow script tools/x.sh. Fix: "
+                "add a "
+                "test that runs the script.",
+            ],
+        )
 
 
 class CodeLinesTest(unittest.TestCase):
@@ -137,7 +270,6 @@ title = "CI"
 
 [ci_scripts]
 workflows = ".github/workflows/*.yml"
-scripts_dir = ".github/scripts"
 test_globs = ["tests/**/test_*.py"]
 multiline_baseline = "rules/baselines/ci-multiline-run.txt"
 untested_baseline = "rules/baselines/ci-untested-scripts.txt"

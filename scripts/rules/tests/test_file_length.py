@@ -97,6 +97,21 @@ class TestFileLengthProof(unittest.TestCase):
         self.assertEqual(found, [])
 
 
+class TestViolations(unittest.TestCase):
+    def test_a_long_file_is_reported_with_how_to_split_it(self) -> None:
+        found = [LongFile("pkg/module.py", SOURCE_LINE_LIMIT + 1, SOURCE_LINE_LIMIT)]
+
+        self.assertEqual(
+            [str(violation) for violation in compare(found, set(), None)],
+            [
+                "[registry] file-length: pkg/module.py has 801 lines, over the "
+                "800-line limit for source code. Fix: split it into modules that "
+                "each hold one responsibility and stay under the limit, keeping "
+                "its public names importable from the original module."
+            ],
+        )
+
+
 class TestLineLimit(unittest.TestCase):
     def test_files_under_tests_and_fixtures_directories_are_test_code(self) -> None:
         for path in (

@@ -26,7 +26,6 @@ DUPLICATE_CATEGORY = (
 CI_SCRIPTS_TABLE = """
 [ci_scripts]
 workflows = ".github/workflows/*.yml"
-scripts_dir = ".github/scripts"
 test_globs = ["tests/**/test_*.py"]
 multiline_baseline = "rules/baselines/ci-multiline-run.txt"
 untested_baseline = "rules/baselines/ci-untested-scripts.txt"

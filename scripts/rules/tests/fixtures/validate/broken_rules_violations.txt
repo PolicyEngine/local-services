@@ -1,5 +1,4 @@
 [registry] schema: agents file MISSING.md does not exist. Fix: fix [agents] or create the file.
-[registry] schema: ci_scripts.scripts_dir .github/scripts does not exist. Fix: fix [ci_scripts].
 [registry] schema: ci_scripts baseline rules/baselines/missing-untested.txt does not exist. Fix: create it (it may be empty).
 [registry] schema: ci_scripts baseline rules/baselines/missing-shellcheck.txt does not exist. Fix: create it (it may be empty).
 [registry] schema: duplicate category 'layers'. Fix: give each category a unique id.
