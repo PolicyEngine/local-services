@@ -169,10 +169,23 @@ def test_an_exchanged_token_leaves_the_token_out_of_its_repr(collector) -> None:
         {"access_token": "session-token"},
         {"access_token": "session-token", "expires_in": 0},
         {"access_token": "session-token", "expires_in": "3600"},
+        # Not sendable as a bearer token, like an unsendable Hugging Face
+        # credential: the emitter given it would refuse it at start.
+        {"access_token": "session token", "expires_in": 3600},
+        {"access_token": "session-token\nsecond-part", "expires_in": 3600},
+        {"access_token": "session-t\u00f6ken", "expires_in": 3600},
     ],
-    ids=["empty token", "no lifetime", "zero lifetime", "lifetime as text"],
+    ids=[
+        "empty token",
+        "no lifetime",
+        "zero lifetime",
+        "lifetime as text",
+        "token with a space",
+        "token with a line break",
+        "token with a non-ASCII character",
+    ],
 )
-def test_a_token_answer_without_a_token_and_a_lifetime_is_unusable(
+def test_a_token_answer_without_a_usable_token_and_a_lifetime_is_unusable(
     collector, operator_login, capsys, answer
 ) -> None:
     collector.exchange_answer = answer
