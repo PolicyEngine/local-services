@@ -1,3 +1,10 @@
+## [0.11.0] - 2026-10-29
+
+### Added
+
+- `microcosm-emitter telemetry-token --lifetime-seconds N` exchanges this machine's Hugging Face credential for a telemetry-only collector token and prints it, its expiry and the collector origin as JSON on standard output, with its own exit code for each failure; it never prints the Hugging Face credential, nor the token anywhere else. An emitter given such a token in `MICROCOSM_COLLECTOR_TOKEN`, `MICROCOSM_COLLECTOR_TOKEN_EXPIRES_AT` and `MICROCOSM_COLLECTOR_ORIGIN` uses it instead of a Hugging Face credential and sends it only to that collector, so the Orrery module's jobs wait with `credential_withheld_from_destination`. The origin variable is only checked, and an unusable value in any of the three stops an emitter with the telemetry or Orrery module at start, before it accepts any request from the build; one with only the Hugging Face module starts, with collector submissions off. From 30 seconds before that token expires, or after a 401, runs stay pending for a later emitter with a Hugging Face login instead of becoming local-only. A Hugging Face credential with characters other than visible ASCII, such as a pasted space or a line break, cannot be sent as a bearer token: it is never sent, counts as refused, gets its own telemetry warning, and makes the Orrery module's jobs wait with `credential_unsendable`. `microcosm-emitter version` also prints the collector origin.
+
+
 ## [0.10.0] - 2026-10-28
 
 ### Added
