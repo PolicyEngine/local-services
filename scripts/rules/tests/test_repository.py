@@ -93,8 +93,8 @@ class LoadTest(unittest.TestCase):
             [
                 "[registry] schema: unknown key 'scripts_dir' in repository. Fix: "
                 "remove it or use one of ['file_exception_directories', 'packages', "
-                "'pr_workflow', 'required_check', 'rule_prefix', "
-                "'script_directories'].",
+                "'pr_workflow', 'pull_request_conditions', 'required_check', "
+                "'rule_prefix', 'script_directories'].",
             ],
         )
 
@@ -129,6 +129,43 @@ class LoadTest(unittest.TestCase):
         registry, _ = load_text(named)
         assert registry is not None
         self.assertEqual(registry.discovery.workflows, (".github/workflows/x.yml",))
+
+    def test_pull_request_conditions_are_optional(self) -> None:
+        registry, _ = load_text(REGISTRY)
+        assert registry is not None
+        self.assertEqual(registry.repository.pull_request_conditions, ())
+
+        listed = REGISTRY.replace(
+            REPOSITORY_TABLE,
+            REPOSITORY_TABLE
+            + "pull_request_conditions = [\"${{ github.event_name == 'pull_request' }}\"]\n",
+        )
+        registry, problems = load_text(listed)
+        self.assertEqual(problems, [])
+        assert registry is not None
+        self.assertEqual(
+            registry.repository.pull_request_conditions,
+            ("github.event_name == 'pull_request'",),
+        )
+
+    def test_a_condition_that_also_holds_after_a_failure_is_refused(self) -> None:
+        for condition in ("always()", "failure() || success()", "!cancelled()"):
+            with self.subTest(condition=condition):
+                text = REGISTRY.replace(
+                    REPOSITORY_TABLE,
+                    REPOSITORY_TABLE + f'pull_request_conditions = ["{condition}"]\n',
+                )
+
+                self.assertEqual(
+                    schema_problems(text),
+                    [
+                        "[registry] schema: repository.pull_request_conditions lists "
+                        f"{condition!r}, which also holds after a job it needs, or "
+                        "an earlier step, failed. Fix: list only conditions that "
+                        "hold on every pull-request run, without always(), "
+                        "failure() or cancelled().",
+                    ],
+                )
 
     def test_a_rule_id_is_the_prefix_and_a_name(self) -> None:
         repository = Repository(rule_prefix="emitter")

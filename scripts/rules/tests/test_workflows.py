@@ -105,6 +105,46 @@ class NeedsTest(unittest.TestCase):
         )
 
 
+class ConditionsTest(unittest.TestCase):
+    def test_job_and_step_conditions_and_continue_on_error_are_read(self) -> None:
+        jobs, problems = parse_jobs(
+            "jobs:\n"
+            "  build:\n"
+            "    if: ${{ github.event_name == 'push' }}\n"
+            "    continue-on-error: true\n"
+            "    steps:\n"
+            "      - name: Build\n"
+            '        if: "success()"\n'
+            "        continue-on-error: ${{ matrix.experimental }}\n"
+            "        run: make build\n"
+            "      - uses: actions/checkout@v4\n"
+            "        with:\n"
+            "          if: not a step setting\n"
+            "      - run: |\n"
+            "          make test\n"
+            "  plain:\n"
+            "    steps:\n"
+            "      - run: make\n"
+        )
+
+        self.assertEqual(problems, [])
+        build, plain = jobs["build"], jobs["plain"]
+        self.assertEqual(build.condition, "${{ github.event_name == 'push' }}")
+        self.assertEqual(build.continue_on_error, "true")
+        self.assertEqual(
+            [
+                (step.label, step.text, step.condition, step.continue_on_error)
+                for step in build.steps
+            ],
+            [
+                ("Build", "make build", "success()", "${{ matrix.experimental }}"),
+                ("step 2", "actions/checkout@v4", "", ""),
+                ("step 3", "make test", "", ""),
+            ],
+        )
+        self.assertEqual((plain.condition, plain.continue_on_error), ("", ""))
+
+
 SYNTHETIC_WORKFLOW = """
 name: Synthetic
 on: push
