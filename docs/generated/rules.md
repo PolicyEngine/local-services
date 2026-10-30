@@ -8,11 +8,11 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 37 | 0 | 0 | 7 | 44 |
+| mechanical | 38 | 0 | 0 | 7 | 45 |
 | metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 38 of 45 rules.
+**Blocking:** 39 of 46 rules.
 
 ## Gaps
 
@@ -40,6 +40,7 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 - `emitter.boundaries.telemetry-client-imports-no-service-code`
 - `emitter.ci.pull-request-workflow-structure`
 - `emitter.ci.run-steps-are-one-line`
+- `emitter.ci.uv-cache-only-where-uv-runs`
 - `emitter.dependencies.dependabot-relock`
 - `emitter.distributions.exactly-two-at-one-version`
 - `emitter.distributions.lock-only-merges-release-nothing`
@@ -314,6 +315,7 @@ flowchart LR
 | `emitter.ci.run-steps-are-one-line` | No workflow run: step spans more than one line of text. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.shell-logic-in-tools-scripts` | Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command. | mechanical | doc-only | no | nothing | — | — |
 | `emitter.ci.shell-scripts-parse` | Every shell script under tools/ parses (bash -n). | mechanical | enforced | yes | CI job `quality` | `ci.yml:quality` | — |
+| `emitter.ci.uv-cache-only-where-uv-runs` | Every astral-sh/setup-uv step in a workflow sets enable-cache: false unless a later step of its job, with no if: condition, runs a command that starts with uv or uvx, or runs bash tools/<script>.sh where the script's unindented lines reach such a command before any if, case, for, while or until, function definition or line containing exit; setup-uv's post-job step fails a job whose uv cache directory no uv command created. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.workflows-pass-actionlint` | Every workflow passes actionlint 1.7.12, which also runs shellcheck on each run: step. | mechanical | enforced | yes | CI job `lint-workflows` | `pr.yaml:lint-workflows` | — |
 
 ```mermaid
@@ -331,6 +333,7 @@ flowchart LR
   r_emitter_ci_shell_scripts_parse("emitter.ci.shell-scripts-parse (enforced)")
   e_CI_job_quality["CI job quality"]
   j_CI_ci_yml_quality["CI ci.yml:quality"]
+  r_emitter_ci_uv_cache_only_where_uv_runs("emitter.ci.uv-cache-only-where-uv-runs (enforced)")
   r_emitter_ci_workflows_pass_actionlint("emitter.ci.workflows-pass-actionlint (enforced)")
   e_CI_job_lint_workflows["CI job lint-workflows"]
   j_CI_pr_yaml_lint_workflows["CI pr.yaml:lint-workflows"]
@@ -343,6 +346,7 @@ flowchart LR
   r_emitter_ci_shell_logic_in_tools_scripts -.-> gap_unenforced
   r_emitter_ci_shell_scripts_parse --> e_CI_job_quality
   e_CI_job_quality --> j_CI_ci_yml_quality
+  r_emitter_ci_uv_cache_only_where_uv_runs --> e_pytest_tests_test_workflows_py
   r_emitter_ci_workflows_pass_actionlint --> e_CI_job_lint_workflows
   e_CI_job_lint_workflows --> j_CI_pr_yaml_lint_workflows
 ```

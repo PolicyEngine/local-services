@@ -75,6 +75,7 @@ To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 - `emitter.ci.run-steps-are-one-line`: No workflow run: step spans more than one line of text. (blocking: pytest `tests/test_workflows.py`)
 - `emitter.ci.shell-logic-in-tools-scripts`: Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command. (doc-only, not checked: follow it yourself)
 - `emitter.ci.shell-scripts-parse`: Every shell script under tools/ parses (bash -n). (blocking: CI job `quality`)
+- `emitter.ci.uv-cache-only-where-uv-runs`: Every astral-sh/setup-uv step in a workflow sets enable-cache: false unless a later step of its job, with no if: condition, runs a command that starts with uv or uvx, or runs bash tools/<script>.sh where the script's unindented lines reach such a command before any if, case, for, while or until, function definition or line containing exit; setup-uv's post-job step fails a job whose uv cache directory no uv command created. (blocking: pytest `tests/test_workflows.py`)
 - `emitter.ci.workflows-pass-actionlint`: Every workflow passes actionlint 1.7.12, which also runs shellcheck on each run: step. (blocking: CI job `lint-workflows`)
 
 ### Process and repository hygiene

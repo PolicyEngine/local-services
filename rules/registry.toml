@@ -975,6 +975,23 @@ workflow = ".github/workflows/pr.yaml"
 job = "required"
 invocation = 'test "$RESULTS"'
 
+[[rule]]
+id = "emitter.ci.uv-cache-only-where-uv-runs"
+category = "ci"
+statement = "Every astral-sh/setup-uv step in a workflow sets enable-cache: false unless a later step of its job, with no if: condition, runs a command that starts with uv or uvx, or runs bash tools/<script>.sh where the script's unindented lines reach such a command before any if, case, for, while or until, function definition or line containing exit; setup-uv's post-job step fails a job whose uv cache directory no uv command created."
+rationale = "README.md#development"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_workflows.py::test_setup_uv_caches_only_in_jobs_that_always_run_uv"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
 # --- Process and repository hygiene --------------------------------------------
 
 [[rule]]
