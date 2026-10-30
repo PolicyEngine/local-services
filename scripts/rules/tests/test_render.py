@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from scripts.rules.load import load_text
 from scripts.rules.model import (
     Category,
     CiRef,
@@ -15,7 +16,8 @@ from scripts.rules.model import (
     Status,
     Tier,
 )
-from scripts.rules.render import render_rules_md
+from scripts.rules.render import render_agents_block, render_rules_md
+from scripts.rules.tests.support import REGISTRY
 
 PR_WORKFLOW = ".github/workflows/pr.yml"
 
@@ -65,6 +67,38 @@ def mermaid_blocks(rules: tuple[Rule, ...]) -> list[list[str]]:
 def rule_node(number: int) -> str:
     """Return the mermaid declaration of the numbered rule in the chunking test."""
     return f'  r_ex_many_rule_{number:02d}("ex.many.rule-{number:02d} (enforced)")'
+
+
+class ClaimsTest(unittest.TestCase):
+    """The views say they list the registered rules, not every rule there is.
+
+    A repository may still have rules written only in prose, outside the
+    registry, until each is registered.
+    """
+
+    def setUp(self) -> None:
+        registry, problems = load_text(REGISTRY)
+        assert registry is not None, problems
+        self.registry = registry
+
+    def test_the_agents_block_lists_the_registered_rules(self) -> None:
+        block = render_agents_block(self.registry)
+
+        self.assertIn(
+            "The rules registered in `rules/registry.toml` are listed below, and",
+            block,
+        )
+        self.assertNotIn("Every rule", block)
+
+    def test_rules_md_lists_the_registered_rules(self) -> None:
+        rules_md = render_rules_md(self.registry)
+
+        self.assertIn(
+            "Every rule registered for `example` in `rules/registry.toml` is "
+            "listed here with how it is enforced.",
+            rules_md,
+        )
+        self.assertNotIn("Every rule that governs", rules_md)
 
 
 class EnforcerDescriptionTest(unittest.TestCase):
