@@ -919,6 +919,50 @@ def test_permanent_collector_rejection_retains_only_rejected_producer(
         spool.close()
 
 
+def test_a_refused_events_request_makes_only_that_run_local(tmp_path, monkeypatch):
+    """A 403 to the events request records the authorization refusal for the run.
+
+    The run keeps its events, the collector is not asked again, and an
+    unrelated producer still uploads.
+    """
+    spool = EventSpool(tmp_path / "refused.sqlite3")
+    refused = _registration()
+    unrelated = {**refused, "producer_id": "producer-unrelated"}
+    spool.register(refused)
+    spool.register(unrelated)
+    kept = spool.append(refused, _event())
+    spool.append(unrelated, _event())
+    requests = []
+    monkeypatch.setattr(collector_module, "huggingface_token", lambda: "hf_test_member")
+
+    def post(url, payload, token):
+        requests.append(url)
+        if url.endswith("/exchange"):
+            return 200, {"access_token": "synthetic", "expires_in": 3600}
+        if url.endswith("/v1/runs"):
+            return 201, {}
+        if payload["events"][0]["producer_id"] == refused["producer_id"]:
+            return 403, {}
+        return 202, {}
+
+    monkeypatch.setattr(collector_module, "_http_post", post)
+    delivery = CollectorDelivery(spool, development_collector_url="http://127.0.0.1:1")
+    try:
+        assert delivery.flush_once()
+        assert spool.batch(refused["run_id"], refused["producer_id"]) == [kept]
+        with Session(spool._engine) as session:
+            record = session.get(
+                TelemetryRunRecord, (refused["run_id"], refused["producer_id"])
+            )
+            assert record.upload_state == "local_only"
+            assert record.local_only_reason == "collector_authorization_rejected"
+        request_count = len(requests)
+        assert not delivery.flush_once()
+        assert len(requests) == request_count
+    finally:
+        spool.close()
+
+
 @pytest.mark.parametrize("endpoint", ["registration", "events"])
 @pytest.mark.parametrize("status", [408, 429, 503, None])
 def test_transient_collector_rejection_remains_retryable(
