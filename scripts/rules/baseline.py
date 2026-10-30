@@ -124,6 +124,55 @@ def check_baselines(
     return violations, notes
 
 
+def _entries(text: str) -> int:
+    """Count a baseline's entries: lines that are neither blank nor comments."""
+    return sum(
+        1
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
+def check_ci_scripts_baselines(
+    current: Registry, root: Path, ref: str
+) -> list[Violation]:
+    """Fail each ``[ci_scripts]`` baseline that lists more entries than on ``ref``.
+
+    Those files belong to the ci-scripts guard's rules, which may be enforced
+    and so have no ``[rule.baseline]`` count for ``check_baselines`` to
+    compare. A file the base ref lacks counts as empty there.
+    """
+    config = current.ci_scripts
+    if config is None:
+        return []
+    violations = []
+    for path in (
+        config.multiline_baseline,
+        config.untested_baseline,
+        config.shellcheck_baseline,
+    ):
+        file = root / path
+        count = _entries(file.read_text()) if file.is_file() else 0
+        shown = subprocess.run(
+            ["git", "show", f"{ref}:{path}"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        base_count = _entries(shown.stdout) if shown.returncode == 0 else 0
+        if count > base_count:
+            violations.append(
+                Violation(
+                    None,
+                    "baseline",
+                    f"{path} grew from {base_count} to {count} entries",
+                    "fix what the check reports instead of listing it",
+                )
+            )
+    return violations
+
+
 def _check_new_rule(rule: Rule | None) -> tuple[list[Violation], list[str]]:
     """Check a rule the base branch doesn't have; return (violations, notes).
 
