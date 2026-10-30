@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from scripts.rules import ruff_ignores
 from scripts.rules.adapters import check_adapters
 from scripts.rules.baseline import (
     BaseUnavailableError,
@@ -150,6 +151,7 @@ def _compare_with_base(
         result.violations += violations
         result.notes += notes
     result.violations += check_ci_scripts_baselines(registry, root, ref)
+    result.violations += ruff_ignores.compare_with_base(registry, base, root, ref)
 
 
 def check(root: Path = REPO_ROOT) -> list[str]:

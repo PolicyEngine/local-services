@@ -124,13 +124,19 @@ def check_baselines(
     return violations, notes
 
 
-def _entries(text: str) -> int:
-    """Count a baseline's entries: lines that are neither blank nor comments."""
-    return sum(
-        1
+def baseline_lines(text: str) -> list[str]:
+    """Return a baseline file's entries: its lines that are neither blank nor
+    comments, stripped."""
+    return [
+        line.strip()
         for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    )
+    ]
+
+
+def _entries(text: str) -> int:
+    """Count a baseline's entries."""
+    return len(baseline_lines(text))
 
 
 def check_ci_scripts_baselines(

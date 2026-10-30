@@ -6,6 +6,7 @@ import re
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
+from scripts.rules.baseline import PERSON_DOWNGRADE, baseline_lines
 from scripts.rules.model import (
     Kind,
     Registry,
@@ -64,11 +65,7 @@ PROOF_FILE_FIELDS = (
 
 def baseline_entries(path: Path) -> int:
     """Count the entries in a baseline file, skipping blank and ``#`` comment lines."""
-    return sum(
-        1
-        for line in path.read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
+    return len(baseline_lines(path.read_text()))
 
 
 def _check_fields(
@@ -569,6 +566,19 @@ def _validate_downgrades(registry: Registry) -> list[Violation]:
         for rule in registry.rules
         if rule.downgrade is not None and rule.status is Status.ENFORCED
     ]
+    violations.extend(
+        _schema_violation(
+            rule,
+            f"a ratcheted rule that tolerates {rule.baseline.count} entries has no "
+            "[rule.downgrade]",
+            PERSON_DOWNGRADE,
+        )
+        for rule in registry.rules
+        if rule.status is Status.RATCHETED
+        and rule.baseline is not None
+        and rule.baseline.count > 0
+        and rule.downgrade is None
+    )
     if not registry.issue_repository and any(
         rule.downgrade is not None for rule in registry.rules
     ):
