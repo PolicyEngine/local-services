@@ -22,6 +22,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -476,17 +477,80 @@ def executed_text(
     return "\n".join(pieces)
 
 
+def _glob_matches(path: str, pattern: str) -> bool:
+    """Whether the relative ``path`` matches ``pattern`` as a uv workspace glob.
+
+    ``*`` and ``?`` stay within one directory, and ``**`` spans any number.
+    """
+    parts = PurePosixPath(path).parts
+    pieces = PurePosixPath(pattern).parts
+    if not pieces:
+        return not parts
+    if pieces[0] == "**":
+        rest = "/".join(pieces[1:])
+        return any(
+            _glob_matches("/".join(parts[start:]), rest)
+            for start in range(len(parts) + 1)
+        )
+    return (
+        bool(parts)
+        and fnmatch.fnmatchcase(parts[0], pieces[0])
+        and _glob_matches("/".join(parts[1:]), "/".join(pieces[1:]))
+    )
+
+
+def _workspace_members(root: Path, workspace: str, projects: Iterable[str]) -> set[str]:
+    """Return the ``projects`` that are members of the uv workspace at ``workspace``.
+
+    The members are those its ``[tool.uv.workspace]`` ``members`` globs match
+    and its ``exclude`` globs do not; they share its uv.lock.
+    """
+    pyproject = root / workspace / "pyproject.toml"
+    try:
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    table = config.get("tool", {}).get("uv", {}).get("workspace", {})
+    members = [glob for glob in table.get("members", []) if isinstance(glob, str)]
+    excluded = [glob for glob in table.get("exclude", []) if isinstance(glob, str)]
+    found = set()
+    for project in projects:
+        if project == workspace:
+            continue
+        project_path = PurePosixPath(project)
+        if workspace != "." and not project_path.is_relative_to(workspace):
+            continue
+        relative = (
+            project if workspace == "." else str(project_path.relative_to(workspace))
+        )
+        if any(_glob_matches(relative, glob) for glob in members) and not any(
+            _glob_matches(relative, glob) for glob in excluded
+        ):
+            found.add(project)
+    return found
+
+
 def _project_directories(
-    files: list[str], test_directories: Iterable[str]
+    root: Path, files: list[str], test_directories: Iterable[str]
 ) -> list[str]:
-    """Return the directories of the projects, leaving out fixtures and tests."""
+    """Return the directories that need a uv.lock of their own.
+
+    Those are the projects', leaving out fixtures, tests, and the members of a
+    uv workspace, which the workspace's own uv.lock locks.
+    """
     directories = tuple(test_directories)
-    return sorted(
+    projects = sorted(
         str(PurePosixPath(path).parent)
         for path in files
         if PurePosixPath(path).name == "pyproject.toml"
         and not _is_fixture_or_test(path, directories)
     )
+    members = {
+        member
+        for workspace in projects
+        for member in _workspace_members(root, workspace, projects)
+    }
+    return [project for project in projects if project not in members]
 
 
 def _workflow_jobs(
@@ -543,7 +607,7 @@ def lock_violations(
             f"{directory}/pyproject.toml has no committed uv.lock",
             f"run uv lock --project {directory} and commit uv.lock",
         )
-        for directory in _project_directories(files, repository.test_directories)
+        for directory in _project_directories(root, files, repository.test_directories)
         if f"{directory}/uv.lock".removeprefix("./") not in tracked
     ]
     pull_request = pull_request_workflows(root, pr_workflow)
@@ -570,7 +634,7 @@ def relock_violations(
 ) -> list[Violation]:
     """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR."""
     rule_id = repository.rule_id(RELOCK_RULE)
-    projects = _project_directories(files, repository.test_directories)
+    projects = _project_directories(root, files, repository.test_directories)
     for path in files:
         if file_kind(path) != "workflow":
             continue
