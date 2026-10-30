@@ -905,9 +905,9 @@ invocation = "unittest discover -s scripts/rules/tests"
 [[rule]]
 id = "emitter.dependencies.uv-version-pinned"
 category = "dependencies"
-statement = "Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, any uv container image, install script, release download or package install of uv names the release, and the root pyproject.toml's [tool.uv] required-version is ==<release>, so a developer's uv refuses another."
+statement = "The one uv release is written once, as the root pyproject.toml's [tool.uv] required-version (==X.Y.Z), so a developer's uv refuses another; each astral-sh/setup-uv step reads it with version-file: pyproject.toml and writes no version:, and any uv container image, install script, release download or package install of uv names that release."
 rationale = "scripts/rules/uv_version.py"
-scope = [".uv-version", "pyproject.toml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+scope = ["pyproject.toml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
