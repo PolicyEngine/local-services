@@ -6,7 +6,8 @@ Compose files and Python modules that define Modal images. It checks four rules,
 whose ids are the registry's ``rule_prefix`` followed by the names below:
 
 - every project directory commits a uv.lock, and a job of the pull-request
-  workflow runs ``uv lock --check``;
+  workflow, or of a reusable workflow of this repository that it calls, runs
+  ``uv lock --check``;
 - every install comes from uv.lock (``uv sync --frozen``, ``uv run --frozen``,
   Modal ``uv_sync(frozen=True)``), unless a ``[[rule.exception]]`` names the site;
 - every test command runs through ``uv run --frozen``;
@@ -27,8 +28,8 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from scripts.rules.load import load_registry
-from scripts.rules.model import Violation
-from scripts.rules.workflows import parse_jobs
+from scripts.rules.model import Violation, normalized_package
+from scripts.rules.workflows import called_workflow, parse_jobs
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -482,6 +483,28 @@ def _workflow_jobs(
     return jobs
 
 
+def pull_request_workflows(root: Path, pr_workflow: str) -> set[str]:
+    """Return the pull-request workflow and the local workflows it calls.
+
+    Reusable workflows called with ``uses: ./...`` are followed, through
+    further calls, as long as the called file exists.
+    """
+    found: set[str] = set()
+    pending = [normalized_package(pr_workflow)]
+    while pending:
+        workflow = pending.pop()
+        if workflow in found or not (root / workflow).is_file():
+            continue
+        found.add(workflow)
+        jobs, _problems = parse_jobs((root / workflow).read_text(encoding="utf-8"))
+        pending.extend(
+            called
+            for job in jobs.values()
+            if (called := called_workflow(job.uses)) is not None
+        )
+    return found
+
+
 def lock_violations(
     root: Path, files: list[str], repository: Repository
 ) -> list[Violation]:
@@ -499,8 +522,9 @@ def lock_violations(
         for directory in _project_directories(files)
         if f"{directory}/uv.lock".removeprefix("./") not in tracked
     ]
+    pull_request = pull_request_workflows(root, pr_workflow)
     checked = any(
-        workflow == pr_workflow and _LOCK_CHECK.search(text)
+        normalized_package(workflow) in pull_request and _LOCK_CHECK.search(text)
         for workflow, _job, text in _workflow_jobs(
             root, files, repository.script_directories
         )
