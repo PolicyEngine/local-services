@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import socket
 import socketserver
 import ssl
@@ -313,8 +312,8 @@ class FakeCollector:
         """Add the TLS upload server on a new Unix socket, and its client context."""
         # A short path: Unix socket paths are limited to about 100 bytes.
         self._socket_directory = tempfile.mkdtemp(prefix="fake-storage-", dir="/tmp")
-        # A str, not a Path: httpx's uds option takes the socket path as a str.
-        self.upload_socket_path = os.path.join(self._socket_directory, "tls.sock")  # noqa: PTH118
+        # A str: httpx's uds option takes the socket path as a str.
+        self.upload_socket_path = str(Path(self._socket_directory) / "tls.sock")
         self._servers.append(
             _UnixTlsServer(
                 self.upload_socket_path,

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from microcosm_emitter.huggingface.service.queue import ClaimedJob, HandoverQueue
 
-# Each print in this module, marked `# noqa: T201`, writes one of its
+# Each print in this module that suppresses Ruff's T201 writes one of its
 # messages to standard error on purpose; none is leftover debugging output.
 
 #: How long a repository or job lease lasts without renewal. While a delivery
@@ -386,17 +386,18 @@ class HuggingFaceDelivery:
                 return 0
             held.hold_job(job)
             return int(self._deliver_job(hub, held))
-        if not self._run_files_to_commit(repository, work.run_files, work.at_shutdown):
+        if not self._run_files_to_commit(
+            repository, run_files=work.run_files, at_shutdown=work.at_shutdown
+        ):
             return 0
         return int(self._deliver_run_files(hub))
 
     def _run_files_to_commit(
         self,
         repository: str,
-        # Both calls in this class pass these two flags positionally; making them
-        # keyword-only would change the method's call signature.
-        run_files: bool,  # noqa: FBT001
-        at_shutdown: bool,  # noqa: FBT001
+        *,
+        run_files: bool,
+        at_shutdown: bool,
     ) -> bool:
         return run_files and (
             at_shutdown or self.queue.run_files_due(repository, self.clock())
@@ -555,7 +556,9 @@ class HuggingFaceDelivery:
                 _JobResult(status="pending", error_code=CREDENTIAL_MISSING, retry=True),
             )
             return
-        if not self._run_files_to_commit(repository, work.run_files, work.at_shutdown):
+        if not self._run_files_to_commit(
+            repository, run_files=work.run_files, at_shutdown=work.at_shutdown
+        ):
             return
         entries = self.queue.pending_run_files(repository)
         index_entries = self.queue.pending_run_index_entries(repository)
