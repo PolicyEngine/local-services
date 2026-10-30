@@ -77,6 +77,7 @@ guard_test_globs = [
   "tests/test_source_archives.py",
   "tests/interface/test_protocol_fixtures.py",
   "tests/test_dependabot.py",
+  "tests/test_runtime_evaluated_annotations.py",
 ]
 # Structure tests in files that otherwise test behaviour.
 extra_guard_tests = [
@@ -579,7 +580,7 @@ invocation = "tools/check-quality.sh"
 [[rule]]
 id = "emitter.quality.tests-ruff-exemptions"
 category = "quality"
-statement = "Test files may use pytest's bare assert, need no docstrings, annotations or named constants for magic numbers, and may reach into private members, import inside a test, and use fake credentials, temporary paths, naive datetimes, string-built SQL, prints and subprocess calls to repository scripts (ANN, D1, S101, PLR2004, SLF001, PLC0415, TID253, S105, S106, S108, S608, DTZ001, DTZ011, T201, S603, S607, INP001), may name a fake's methods after the interface it replaces (N802), and may leave a stand-in's arguments unused (ARG001, ARG002, ARG005), as in the Public API and the simulation API; every other Ruff rule applies to tests."
+statement = "Test files may use pytest's bare assert, need no docstrings, annotations or named constants for magic numbers, and may reach into private members, live in directories that aren't packages, import inside a test, import the lazily loaded modules at module level, and use fake credentials, temporary paths, naive datetimes, string-built SQL, prints and subprocess calls to repository scripts (ANN, D1, S101, PLR2004, SLF001, INP001, PLC0415, TID253, S105, S106, S108, S608, DTZ001, DTZ011, T201, S603, S607), may name a fake's methods after the interface it replaces (N802), and may leave a stand-in's arguments unused (ARG001, ARG002, ARG005), as in the Public API and the simulation API; every other Ruff rule applies to tests."
 rationale = "docs/engineering/skills/rules-registry.md#file-level-exceptions"
 scope = ["tests/**/*.py", "scripts/rules/tests/**/*.py"]
 tier = "mechanical"
@@ -671,6 +672,28 @@ workflow = ".github/workflows/ci.yml"
 job = "quality"
 invocation = "tools/check-quality.sh"
 
+[[rule]]
+id = "emitter.quality.runtime-evaluated-models-resolve"
+category = "quality"
+statement = "Every SQLAlchemy model in microcosm_emitter is one Ruff treats as runtime-evaluated (a base resolves, through the import in its own module, to a name in runtime-evaluated-base-classes, or is a same-module class that does), and every mapper configures once the package is imported, as in the simulation API and the Public API."
+rationale = "README.md#development"
+scope = ["src/microcosm_emitter/**/*.py", "pyproject.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_runtime_evaluated_annotations.py::test_every_model_base_is_listed_for_ruff",
+  "tests/test_runtime_evaluated_annotations.py::test_base_resolution_matches_ruff",
+  "tests/test_runtime_evaluated_annotations.py::test_every_sqlalchemy_mapper_configures",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# tools/check-quality.sh runs ruff format --check, so discovery cannot see it.
 [[rule]]
 id = "emitter.quality.ruff-format"
 category = "quality"

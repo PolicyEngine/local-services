@@ -116,11 +116,13 @@ ignore = [
 # (docs/engineering/skills/rules-registry.md#file-level-exceptions).
 # Tests may use pytest's bare assert, and need no docstrings, annotations or
 # named constants for magic numbers. They may also reach into private members,
-# import inside a test (often after patching the environment), and use fake
-# credentials, temporary paths, naive datetimes and subprocess calls to the
-# repository's scripts, may name a fake's methods after the interface it
-# replaces, and may leave a stand-in's arguments unused, as in the Public API and the
-# simulation API. Every other rule applies to tests.
+# live in directories that aren't packages, import inside a test (often after
+# patching the environment), and use fake credentials, temporary paths, naive
+# datetimes, SQL built from strings, prints and subprocess calls to the
+# repository's scripts, may import the lazily loaded modules at module level,
+# may name a fake's methods after the interface it replaces, and may leave a
+# stand-in's arguments unused, as in the Public API and the simulation API.
+# Every other rule applies to tests.
 "**/tests/**" = [
     "ANN", "ARG001", "ARG002", "ARG005", "D1", "DTZ001", "DTZ011", "INP001",
     "N802", "PLC0415", "PLR2004", "S101", "S105", "S106", "S108", "S603",
@@ -141,6 +143,31 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["microcosm_emitter", "microcosm_emitter_interface"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Modules imported only inside the function that needs them, never at module
+# level (TID253 enforces it; TYPE_CHECKING imports are fine), as in the
+# simulation API and the Public API. The telemetry and Hugging Face entry
+# points (the service packages) import their module's implementation only when
+# create_module runs, and the Hub client's HfApi and CommitOperationAdd are
+# imported only by the functions in huggingface/service/hub.py that build them.
+# Ruff's PLC0415 accepts in-function imports of these without a suppression. A
+# module belongs here only if no application module imports it at module level.
+banned-module-level-imports = [
+    "huggingface_hub.CommitOperationAdd",
+    "huggingface_hub.HfApi",
+    "microcosm_emitter.huggingface.service.module",
+    "microcosm_emitter.telemetry.service.module",
+]
+
+[tool.ruff.lint.flake8-type-checking]
+# Classes whose annotations SQLAlchemy evaluates at runtime, when it configures
+# the mappers, so their imports must stay at runtime. Ruff checks a class's
+# bases through the imports of its own module and follows inheritance only
+# through classes in that module, so the declarative bases' own base is listed;
+# tests/test_runtime_evaluated_annotations.py checks every model
+# (emitter.quality.runtime-evaluated-models-resolve).
+runtime-evaluated-base-classes = ["sqlalchemy.orm.DeclarativeBase"]
 
 [tool.towncrier]
 directory = "changelog.d"
