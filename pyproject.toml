@@ -70,8 +70,19 @@ line-length = 88
 target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP", "B"]
-ignore = ["E501"]
+select = ["ALL"]
+# Each rule ignored here is listed by emitter.quality.ruff-families-not-yet-fixed:
+# as an exception, a rule that stays off, or in its baseline, a family not fixed yet.
+ignore = [
+    # They conflict with ruff format.
+    "COM812",
+    "ISC001",
+    # They conflict with D211 and D212, which stay on.
+    "D203",
+    "D213",
+    # ruff format settles line length.
+    "E501",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["microcosm_emitter", "microcosm_emitter_interface"]

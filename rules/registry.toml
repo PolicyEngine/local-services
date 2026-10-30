@@ -560,8 +560,8 @@ kind = "none"
 [[rule]]
 id = "emitter.quality.ruff-lint"
 category = "quality"
-statement = "All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles."
-rationale = "AGENTS.md"
+statement = "All Python passes ruff check with every Ruff rule selected (ALL), except the rules emitter.quality.ruff-families-not-yet-fixed lists: the families not fixed yet, and the rules that stay off (COM812 and ISC001, which conflict with ruff format, D203 and D213, which conflict with D211 and D212, and E501, which ruff format settles)."
+rationale = "README.md#development"
 scope = ["**/*.py"]
 tier = "mechanical"
 status = "enforced"
@@ -569,7 +569,7 @@ autofix = true
 [rule.enforcer]
 kind = "ruff"
 mode = "lint"
-codes = ["B", "E", "F", "I", "N", "UP", "W"]
+codes = ["ALL"]
 [[rule.ci]]
 workflow = ".github/workflows/ci.yml"
 job = "quality"

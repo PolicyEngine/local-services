@@ -54,7 +54,7 @@ To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 
 - `emitter.quality.python-file-length`: No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under tests/ or under the rules tool's tests and fixtures, scripts/rules/tests/. (blocking: quality guard `file-length`)
 - `emitter.quality.ruff-format`: All Python is formatted with ruff format. (blocking: ruff format)
-- `emitter.quality.ruff-lint`: All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles. (blocking: ruff check (B, E, F, I, N, UP, W))
+- `emitter.quality.ruff-lint`: All Python passes ruff check with every Ruff rule selected (ALL), except the rules emitter.quality.ruff-families-not-yet-fixed lists: the families not fixed yet, and the rules that stay off (COM812 and ISC001, which conflict with ruff format, D203 and D213, which conflict with D211 and D212, and E501, which ruff format settles). (blocking: ruff check (ALL))
 - `emitter.quality.rules-tool-tests-pass`: The rules tool's own tests, the unittest tests under scripts/rules/tests, pass in pr.yaml's rules job, on Ubuntu with Python 3.13 and only the standard library. (blocking: CI job `rules`)
 - `emitter.quality.tests-pass`: Every pytest test under tests/ except the collector contract test passes in ci.yml's tests job, on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs. (blocking: CI job `tests`)
 - `emitter.quality.toolchain`: Use uv, Python 3.13 or later, pytest and Ruff. (doc-only, not checked: follow it yourself)

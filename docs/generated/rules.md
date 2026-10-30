@@ -229,7 +229,7 @@ flowchart LR
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.quality.python-file-length` | No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under tests/ or under the rules tool's tests and fixtures, scripts/rules/tests/. | metric | enforced | yes | quality guard `file-length` | `pr.yaml:rules` | yes |
 | `emitter.quality.ruff-format` | All Python is formatted with ruff format. | mechanical | enforced | yes | ruff format | `ci.yml:quality` | — |
-| `emitter.quality.ruff-lint` | All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles. | mechanical | enforced | yes | ruff check (B, E, F, I, N, UP, W) | `ci.yml:quality` | — |
+| `emitter.quality.ruff-lint` | All Python passes ruff check with every Ruff rule selected (ALL), except the rules emitter.quality.ruff-families-not-yet-fixed lists: the families not fixed yet, and the rules that stay off (COM812 and ISC001, which conflict with ruff format, D203 and D213, which conflict with D211 and D212, and E501, which ruff format settles). | mechanical | enforced | yes | ruff check (ALL) | `ci.yml:quality` | — |
 | `emitter.quality.rules-tool-tests-pass` | The rules tool's own tests, the unittest tests under scripts/rules/tests, pass in pr.yaml's rules job, on Ubuntu with Python 3.13 and only the standard library. | mechanical | enforced | yes | CI job `rules` | `pr.yaml:rules` | — |
 | `emitter.quality.tests-pass` | Every pytest test under tests/ except the collector contract test passes in ci.yml's tests job, on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs. | mechanical | enforced | yes | CI job `tests` | `ci.yml:tests` | — |
 | `emitter.quality.toolchain` | Use uv, Python 3.13 or later, pytest and Ruff. | mechanical | doc-only | no | nothing | — | — |
@@ -243,7 +243,7 @@ flowchart LR
   e_ruff_format["ruff format"]
   j_CI_ci_yml_quality["CI ci.yml:quality"]
   r_emitter_quality_ruff_lint("emitter.quality.ruff-lint (enforced)")
-  e_ruff_check__B__E__F__I__N__UP__W_["ruff check (B, E, F, I, N, UP, W)"]
+  e_ruff_check__ALL_["ruff check (ALL)"]
   r_emitter_quality_rules_tool_tests_pass("emitter.quality.rules-tool-tests-pass (enforced)")
   e_CI_job_rules["CI job rules"]
   r_emitter_quality_tests_pass("emitter.quality.tests-pass (enforced)")
@@ -255,8 +255,8 @@ flowchart LR
   e_quality_guard_file_length --> j_CI_pr_yaml_rules
   r_emitter_quality_ruff_format --> e_ruff_format
   e_ruff_format --> j_CI_ci_yml_quality
-  r_emitter_quality_ruff_lint --> e_ruff_check__B__E__F__I__N__UP__W_
-  e_ruff_check__B__E__F__I__N__UP__W_ --> j_CI_ci_yml_quality
+  r_emitter_quality_ruff_lint --> e_ruff_check__ALL_
+  e_ruff_check__ALL_ --> j_CI_ci_yml_quality
   r_emitter_quality_rules_tool_tests_pass --> e_CI_job_rules
   e_CI_job_rules --> j_CI_pr_yaml_rules
   r_emitter_quality_tests_pass --> e_CI_job_tests
