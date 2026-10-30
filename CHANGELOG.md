@@ -1,3 +1,10 @@
+## [0.11.3] - 2026-10-30
+
+### Changed
+
+- The rules registry now lists every rule of the repository: each check pull requests already run (Ruff, `ruff format`, `bash -n` on `tools/*.sh`, actionlint, the changelog check, the tests, the package and installed-artifact checks, the collector contract test, and the structure tests for import boundaries, handwritten SQL, workflows, distributions and protocol fixtures), and the eight rules once written by hand in `AGENTS.md`. `AGENTS.md`'s Rules section and `docs/generated/rules.md` are generated from it, and the registry guard reads both `pr.yaml` and `ci.yml`, so a job in either workflow, or a test in one of the structure-test files the registry names, that no rule describes fails it. The wheels are unchanged.
+
+
 ## [0.11.2] - 2026-10-30
 
 ### Changed
