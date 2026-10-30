@@ -166,7 +166,7 @@ The collector's artifact intake (PolicyEngine/microcosm-collector, `docs/artifac
 
 ## Development
 
-Use Python 3.13 or 3.14 on Linux or macOS, and uv 0.13.6, the release `.uv-version` names: the project's `required-version` makes other uv releases refuse to run it (rule `emitter.dependencies.uv-version-pinned`).
+Use Python 3.13 or 3.14 on Linux or macOS, and uv 0.13.6, the release `pyproject.toml`'s `[tool.uv] required-version` names: other uv releases refuse to run the project, and every CI job's `setup-uv` step reads the release from there (rule `emitter.dependencies.uv-version-pinned`).
 
 ```bash
 uv sync --locked
