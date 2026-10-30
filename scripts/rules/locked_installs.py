@@ -12,7 +12,8 @@ whose ids are the registry's ``rule_prefix`` followed by the names below:
   Modal ``uv_sync(frozen=True)``; ``--frozen`` is accepted too), unless a
   ``[[rule.exception]]`` names the site;
 - every test command runs through ``uv run --locked`` (or ``--frozen``);
-- a scheduled workflow relocks every uv.lock with upgrades and opens a PR.
+- a scheduled workflow relocks every uv.lock with upgrades and opens a PR,
+  checked only when the registry has that rule.
 
 Workflow commands are followed into the shell scripts they call in the
 registry's ``script_directories`` and into root Makefile targets. Python
@@ -760,7 +761,13 @@ def find_violations(root: Path, registry: Registry) -> list[Violation]:
             "test command outside uv.lock",
             "run it through uv run --locked or register a [[rule.exception]]",
         ),
-        *relock_violations(root, files, repository),
+        # A repository that relocks another way, such as with Dependabot,
+        # registers no scheduled-relock rule.
+        *(
+            relock_violations(root, files, repository)
+            if registry.rule(repository.rule_id(RELOCK_RULE)) is not None
+            else []
+        ),
     ]
 
 
