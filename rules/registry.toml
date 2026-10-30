@@ -87,6 +87,15 @@ extra_guard_tests = [
 instructions = "AGENTS.md"
 adapters = ["CLAUDE.md"]
 
+# What the ci-scripts guard reads: every workflow, the tests that may name a
+# script, and each check's tolerated violations. All three lists are empty.
+[ci_scripts]
+workflows = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+test_globs = ["tests/**/test_*.py"]
+multiline_baseline = "rules/baselines/ci-multiline-run.txt"
+untested_baseline = "rules/baselines/ci-untested-scripts.txt"
+shellcheck_baseline = "rules/baselines/ci-shellcheck.txt"
+
 # --- Runtime and package boundaries ------------------------------------------
 
 [[rule]]
@@ -874,7 +883,7 @@ invocation = 'pytest -m "not collector"'
 [[rule]]
 id = "emitter.ci.shell-logic-in-tools-scripts"
 category = "ci"
-statement = "Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command."
+statement = "Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command, and a test runs that script, with fake commands in place of anything it would change or reach outside the test."
 rationale = "README.md#development"
 scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
 tier = "mechanical"
@@ -882,6 +891,79 @@ status = "doc-only"
 autofix = false
 [rule.enforcer]
 kind = "none"
+
+# The ci-scripts guard names these three rules by their ids.
+[[rule]]
+id = "emitter.ci.multiline-run-is-script"
+category = "ci"
+statement = "Every workflow run: step holds one command: one line of code, with no commands chained by &&, || or ;."
+rationale = "README.md#development"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "ci-scripts"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/ci_scripts/multiline_bad"
+good_fixture = "scripts/rules/tests/fixtures/ci_scripts/multiline_good"
+test = "scripts/rules/tests/test_ci_scripts.py::TestCiScriptsProof::test_rule_proof_multiline_run"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.ci.workflow-scripts-tested"
+category = "ci"
+statement = "Every shell script under tools/ that a workflow calls is named in a test file under tests/."
+rationale = "README.md#development"
+scope = ["tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "ci-scripts"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/ci_scripts/untested_bad"
+good_fixture = "scripts/rules/tests/fixtures/ci_scripts/untested_good"
+test = "scripts/rules/tests/test_ci_scripts.py::TestCiScriptsProof::test_rule_proof_untested_script"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.ci.shell-scripts-pass-shellcheck"
+category = "ci"
+statement = "Every shell script under tools/ passes shellcheck, which the Rules registry job installs as shellcheck-py 0.11.0.1."
+rationale = "README.md#development"
+scope = ["tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "ci-scripts"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/ci_scripts/shellcheck/bad_script.sh"
+good_fixture = "scripts/rules/tests/fixtures/ci_scripts/shellcheck/good_script.sh"
+test = "scripts/rules/tests/test_ci_scripts.py::TestCiScriptsProof::test_rule_proof_shellcheck"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
 
 # tools/check-quality.sh runs bash -n, so discovery cannot see it.
 [[rule]]
