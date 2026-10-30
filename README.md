@@ -176,6 +176,8 @@ bash tools/check-artifacts.sh
 bash tools/check-changelog.sh
 ```
 
+Ruff selects every rule (`ALL`, rule `emitter.quality.ruff-lint`). The rule families whose findings are not fixed yet are ignored until a pull request fixes them, and listed in `rules/baselines/ruff-families-not-yet-fixed.txt`, which may only shrink (`emitter.quality.ruff-families-not-yet-fixed`); a few rules that conflict with `ruff format` or with each other stay off.
+
 A Python module has at most 800 lines, and a file under `tests/` at most 1,500 (rule `emitter.quality.python-file-length`); split a module that grows past its limit into modules with one responsibility each.
 
 Each workflow `run:` step is one command, with no commands chained by `&&`, `||` or `;` (rule `emitter.ci.multiline-run-is-script`): shell logic of several commands lives in a Bash script under `tools/`, which a test under `tests/` names and runs with fake commands (`emitter.ci.workflow-scripts-tested`), so CI changes can be tested without running CI. Every script under `tools/` passes shellcheck (`emitter.ci.shell-scripts-pass-shellcheck`), which catches quoting and error-handling mistakes `bash -n` does not; the Rules registry job runs shellcheck-py 0.11.0.1, and `shellcheck tools/*.sh` runs the same check locally.

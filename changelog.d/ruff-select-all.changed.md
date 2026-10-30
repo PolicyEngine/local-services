@@ -1,0 +1,1 @@
+Ruff now selects every rule (`ALL`). The 28 rule families with findings not fixed yet are ignored and listed in `rules/baselines/ruff-families-not-yet-fixed.txt`, a ratcheted rule's baseline that may only shrink, and a new registry check refuses an ignored rule the registry does not list. Fixing the families is tracked in #54. The wheels are unchanged.
