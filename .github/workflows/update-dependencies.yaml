@@ -1,0 +1,60 @@
+name: Update dependencies
+
+# Relocks uv.lock with upgrades once a week and opens or updates a pull
+# request with the result, whose CI tests the upgraded versions (rule
+# emitter.dependencies.scheduled-relock).
+on:
+  schedule:
+    # Mondays at 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: update-dependencies
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  relock:
+    name: Relock uv.lock
+    if: github.repository == 'PolicyEngine/microcosm-emitter'
+    runs-on: ubuntu-latest
+    steps:
+      # The PolicyEngine GitHub App's token pushes the branch and opens the
+      # pull request: unlike GITHUB_TOKEN, its pull request starts CI.
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.13.6"
+          python-version: "3.13"
+      # Rebuilds update-dependencies from main on every run, and records the
+      # commit the remote branch points at for the push step's lease.
+      - id: branch
+        name: Rebuild the update branch from main
+        run: bash tools/relock-prepare-branch.sh
+      - name: Relock with upgrades
+        run: uv lock --upgrade
+      - id: push
+        name: Commit and push the relock
+        env:
+          REMOTE_HEAD: ${{ steps.branch.outputs.remote_head }}
+        run: bash tools/relock-commit-and-push.sh
+      # Opens the pull request, or replaces the open one's description, whose
+      # first line names the tracking issue. It runs whenever the relock
+      # changed files on main, including when the branch already held them.
+      - name: Open or update the pull request
+        if: steps.push.outputs.changes_detected == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash tools/relock-open-pull-request.sh
