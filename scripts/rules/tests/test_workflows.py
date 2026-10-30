@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from scripts.rules.workflows import JobBlock, RunBlock, parse_jobs
+from scripts.rules.workflows import JobBlock, RunBlock, StepBlock, parse_jobs
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -241,6 +241,15 @@ class JobParsingTest(unittest.TestCase):
                         text='echo "a; b"\n\necho ${{ x || y }}',
                     ),
                 ),
+                steps=(
+                    StepBlock(1, "First", "folded one\nfolded two"),
+                    StepBlock(2, "step 2", "actions/checkout@v4"),
+                    StepBlock(3, "step 3", "echo a && echo b"),
+                    # The bare string is a step with no run: or uses:.
+                    StepBlock(4, "step 4", ""),
+                    StepBlock(5, "Third", 'echo "a; b"\n\necho ${{ x || y }}'),
+                    StepBlock(6, "Fourth", "org/action@v1"),
+                ),
             ),
         )
 
@@ -278,6 +287,10 @@ class JobParsingTest(unittest.TestCase):
                         chained=False,
                         text="multi\nline",
                     ),
+                ),
+                steps=(
+                    StepBlock(1, "Unindented list", "make test"),
+                    StepBlock(2, "Named after run", "multi\nline"),
                 ),
             ),
         )
