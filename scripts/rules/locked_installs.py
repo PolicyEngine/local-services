@@ -8,20 +8,27 @@ whose ids are the registry's ``rule_prefix`` followed by the names below:
 - every project directory commits a uv.lock, and a job of the pull-request
   workflow, or of a reusable workflow of this repository that it calls, runs
   ``uv lock --check``;
-- every install comes from uv.lock (``uv sync --frozen``, ``uv run --frozen``,
-  Modal ``uv_sync(frozen=True)``), unless a ``[[rule.exception]]`` names the site;
-- every test command runs through ``uv run --frozen``;
-- a scheduled workflow relocks every uv.lock with upgrades and opens a PR.
+- every install comes from uv.lock (``uv sync --locked``, ``uv run --locked``,
+  Modal ``uv_sync(frozen=True)``; ``--frozen`` is accepted too), unless a
+  ``[[rule.exception]]`` names the site;
+- every test command runs through ``uv run --locked`` (or ``--frozen``);
+- a scheduled workflow relocks every uv.lock with upgrades and opens a PR,
+  checked only when the registry has that rule.
 
 Workflow commands are followed into the shell scripts they call in the
-registry's ``script_directories`` and into root Makefile targets.
+registry's ``script_directories`` and into root Makefile targets. Python
+scripts in those directories are read for the commands they run as
+subprocesses: a call whose leading arguments, or the list or tuple it is
+given first, are string literals, such as ``run("uv", "pip", "install", ...)``.
 """
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import re
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -99,6 +106,8 @@ _MODAL_CALL = re.compile(
     r"\.(" + "|".join((*_MODAL_INSTALLS, "uv_sync", "run_commands")) + r")\("
 )
 _MODAL_FROZEN = re.compile(r"\bfrozen\s*=\s*True\b")
+# A subprocess command is at least a program and one argument.
+_COMMAND_WORDS = 2
 
 
 @dataclass(frozen=True)
@@ -310,17 +319,66 @@ def _scan_python(path: str, text: str, findings: Findings) -> None:
             findings.unlocked_tests.append(Site(path, number, call))
 
 
+def _subprocess_command(call: ast.Call) -> str | None:
+    """Return the command a subprocess-style call runs, or None.
+
+    The command is the call's leading string-literal arguments, or those of
+    the list or tuple it is given first, joined with spaces: at least two
+    words, none holding whitespace, as an argument vector has.
+    """
+    arguments = call.args
+    if arguments and isinstance(arguments[0], (ast.List, ast.Tuple)):
+        arguments = arguments[0].elts
+    words = []
+    for argument in arguments:
+        if not (isinstance(argument, ast.Constant) and isinstance(argument.value, str)):
+            break
+        words.append(argument.value)
+    if len(words) < _COMMAND_WORDS or any(word.split() != [word] for word in words):
+        return None
+    return " ".join(words)
+
+
+def _scan_python_commands(path: str, text: str, findings: Findings) -> None:
+    """Record the installs and test runs a Python script runs as subprocesses."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        command = _subprocess_command(node)
+        if command is None:
+            continue
+        if _unlocked_install(command):
+            findings.unlocked_installs.append(Site(path, node.lineno, command))
+        if _unlocked_test(command):
+            findings.unlocked_tests.append(Site(path, node.lineno, command))
+
+
+def _in_directories(path: str, directories: Iterable[str]) -> bool:
+    """Whether the repository-relative ``path`` is under one of ``directories``."""
+    pure = PurePosixPath(path)
+    return any(
+        pure.is_relative_to(normalized_package(directory)) for directory in directories
+    )
+
+
 def scan(
     root: Path,
     files: Iterable[str] | None = None,
     test_directories: Iterable[str] = (),
+    script_directories: Iterable[str] = (),
 ) -> Findings:
     """Scan every install-capable file under ``root``.
 
-    Python modules under ``test_directories`` are not scanned.
+    Python modules under ``test_directories`` are not scanned. Python modules
+    under ``script_directories`` are also read for the commands they run.
     """
     findings = Findings()
     directories = tuple(test_directories)
+    scripts = tuple(script_directories)
     for path in sorted(tracked_files(root) if files is None else files):
         kind = file_kind(path, directories)
         if kind is None:
@@ -329,6 +387,8 @@ def scan(
         text = (root / path).read_text(encoding="utf-8", errors="replace")
         if kind == "python":
             _scan_python(path, text, findings)
+            if _in_directories(path, scripts):
+                _scan_python_commands(path, text, findings)
             continue
         for number, command in _shell_text(kind, text):
             if _unlocked_install(command):
@@ -476,17 +536,80 @@ def executed_text(
     return "\n".join(pieces)
 
 
+def _glob_matches(path: str, pattern: str) -> bool:
+    """Whether the relative ``path`` matches ``pattern`` as a uv workspace glob.
+
+    ``*`` and ``?`` stay within one directory, and ``**`` spans any number.
+    """
+    parts = PurePosixPath(path).parts
+    pieces = PurePosixPath(pattern).parts
+    if not pieces:
+        return not parts
+    if pieces[0] == "**":
+        rest = "/".join(pieces[1:])
+        return any(
+            _glob_matches("/".join(parts[start:]), rest)
+            for start in range(len(parts) + 1)
+        )
+    return (
+        bool(parts)
+        and fnmatch.fnmatchcase(parts[0], pieces[0])
+        and _glob_matches("/".join(parts[1:]), "/".join(pieces[1:]))
+    )
+
+
+def _workspace_members(root: Path, workspace: str, projects: Iterable[str]) -> set[str]:
+    """Return the ``projects`` that are members of the uv workspace at ``workspace``.
+
+    The members are those its ``[tool.uv.workspace]`` ``members`` globs match
+    and its ``exclude`` globs do not; they share its uv.lock.
+    """
+    pyproject = root / workspace / "pyproject.toml"
+    try:
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return set()
+    table = config.get("tool", {}).get("uv", {}).get("workspace", {})
+    members = [glob for glob in table.get("members", []) if isinstance(glob, str)]
+    excluded = [glob for glob in table.get("exclude", []) if isinstance(glob, str)]
+    found = set()
+    for project in projects:
+        if project == workspace:
+            continue
+        project_path = PurePosixPath(project)
+        if workspace != "." and not project_path.is_relative_to(workspace):
+            continue
+        relative = (
+            project if workspace == "." else str(project_path.relative_to(workspace))
+        )
+        if any(_glob_matches(relative, glob) for glob in members) and not any(
+            _glob_matches(relative, glob) for glob in excluded
+        ):
+            found.add(project)
+    return found
+
+
 def _project_directories(
-    files: list[str], test_directories: Iterable[str]
+    root: Path, files: list[str], test_directories: Iterable[str]
 ) -> list[str]:
-    """Return the directories of the projects, leaving out fixtures and tests."""
+    """Return the directories that need a uv.lock of their own.
+
+    Those are the projects', leaving out fixtures, tests, and the members of a
+    uv workspace, which the workspace's own uv.lock locks.
+    """
     directories = tuple(test_directories)
-    return sorted(
+    projects = sorted(
         str(PurePosixPath(path).parent)
         for path in files
         if PurePosixPath(path).name == "pyproject.toml"
         and not _is_fixture_or_test(path, directories)
     )
+    members = {
+        member
+        for workspace in projects
+        for member in _workspace_members(root, workspace, projects)
+    }
+    return [project for project in projects if project not in members]
 
 
 def _workflow_jobs(
@@ -543,7 +666,7 @@ def lock_violations(
             f"{directory}/pyproject.toml has no committed uv.lock",
             f"run uv lock --project {directory} and commit uv.lock",
         )
-        for directory in _project_directories(files, repository.test_directories)
+        for directory in _project_directories(root, files, repository.test_directories)
         if f"{directory}/uv.lock".removeprefix("./") not in tracked
     ]
     pull_request = pull_request_workflows(root, pr_workflow)
@@ -568,9 +691,13 @@ def lock_violations(
 def relock_violations(
     root: Path, files: list[str], repository: Repository
 ) -> list[Violation]:
-    """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR."""
+    """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR.
+
+    Its jobs may share the work, so one that holds no token can relock and a
+    later one open the pull request.
+    """
     rule_id = repository.rule_id(RELOCK_RULE)
-    projects = _project_directories(files, repository.test_directories)
+    projects = _project_directories(root, files, repository.test_directories)
     for path in files:
         if file_kind(path) != "workflow":
             continue
@@ -578,32 +705,28 @@ def relock_violations(
             r"^\s+schedule:", (root / path).read_text(encoding="utf-8"), re.MULTILINE
         ):
             continue
-        for workflow, _job, text in _workflow_jobs(
-            root, [path], repository.script_directories
-        ):
-            if not (_RELOCK.search(text) and _OPENS_PR.search(text)):
-                continue
-            globs = re.findall(r"[\w./*-]*pyproject\.toml", text)
-            uncovered = [
-                directory
-                for directory in projects
-                if directory != "."
-                and not any(
-                    fnmatch.fnmatch(f"{directory}/pyproject.toml", glob)
-                    for glob in globs
-                )
-            ]
-            if not uncovered:
-                return []
-            return [
-                Violation(
-                    rule_id,
-                    "locked-installs",
-                    f"{workflow} does not relock {directory}/uv.lock",
-                    "relock every project directory in the scheduled job",
-                )
-                for directory in uncovered
-            ]
+        text = "\n".join(
+            job_text
+            for _workflow, _job, job_text in _workflow_jobs(
+                root, [path], repository.script_directories
+            )
+        )
+        if not (_RELOCK.search(text) and _OPENS_PR.search(text)):
+            continue
+        globs = re.findall(r"[\w./*-]*pyproject\.toml", text)
+        return [
+            Violation(
+                rule_id,
+                "locked-installs",
+                f"{path} does not relock {directory}/uv.lock",
+                "relock every project directory in the scheduled workflow",
+            )
+            for directory in projects
+            if directory != "."
+            and not any(
+                fnmatch.fnmatch(f"{directory}/pyproject.toml", glob) for glob in globs
+            )
+        ]
     return [
         Violation(
             rule_id,
@@ -618,7 +741,9 @@ def find_violations(root: Path, registry: Registry) -> list[Violation]:
     """Run all four checks against the files under ``root``."""
     files = tracked_files(root)
     repository = registry.repository
-    findings = scan(root, files, repository.test_directories)
+    findings = scan(
+        root, files, repository.test_directories, repository.script_directories
+    )
     return [
         *lock_violations(root, files, repository),
         *_apply_exceptions(
@@ -626,7 +751,7 @@ def find_violations(root: Path, registry: Registry) -> list[Violation]:
             repository.rule_id(INSTALL_RULE),
             findings.unlocked_installs,
             "unlocked install",
-            "install from uv.lock (uv sync --frozen, uv run --frozen, "
+            "install from uv.lock (uv sync --locked, uv run --locked, "
             "uv_sync(frozen=True)) or register a [[rule.exception]] for the site",
         ),
         *_apply_exceptions(
@@ -634,9 +759,15 @@ def find_violations(root: Path, registry: Registry) -> list[Violation]:
             repository.rule_id(TEST_RULE),
             findings.unlocked_tests,
             "test command outside uv.lock",
-            "run it through uv run --frozen or register a [[rule.exception]]",
+            "run it through uv run --locked or register a [[rule.exception]]",
         ),
-        *relock_violations(root, files, repository),
+        # A repository that relocks another way, such as with Dependabot,
+        # registers no scheduled-relock rule.
+        *(
+            relock_violations(root, files, repository)
+            if registry.rule(repository.rule_id(RELOCK_RULE)) is not None
+            else []
+        ),
     ]
 
 

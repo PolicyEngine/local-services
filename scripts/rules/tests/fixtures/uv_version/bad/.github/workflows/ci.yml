@@ -26,7 +26,8 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
-    # A pinned step, but on another uv release than .uv-version.
+    # A step that writes the release itself, and another one than
+    # .github/uv-version.txt's release.
     - uses: astral-sh/setup-uv@v8.1.0
       with:
         version: "0.13.4"

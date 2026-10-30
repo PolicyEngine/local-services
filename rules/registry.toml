@@ -72,6 +72,7 @@ guard_test_globs = [
   "tests/test_package_names.py",
   "tests/test_source_archives.py",
   "tests/interface/test_protocol_fixtures.py",
+  "tests/test_dependabot.py",
 ]
 # Structure tests in files that otherwise test behaviour.
 extra_guard_tests = [
@@ -653,6 +654,222 @@ autofix = false
 [rule.enforcer]
 kind = "none"
 
+# --- Dependency locking --------------------------------------------------------
+
+# The locked-installs guard names these four rules by their ids.
+[[rule]]
+id = "emitter.dependencies.lock-committed"
+category = "dependencies"
+statement = "Every project directory with a pyproject.toml commits a uv.lock that matches it, or is a member of the uv workspace whose uv.lock locks it, and a pull-request job checks the lock with uv lock --check."
+rationale = "scripts/rules/locked_installs.py"
+scope = ["pyproject.toml", "uv.lock", "packages/*/pyproject.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "uv lock --check"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/lock_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/lock_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_lock_committed"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.dependencies.install-from-lock"
+category = "dependencies"
+statement = "Every install of the project's Python dependencies, in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site."
+rationale = "scripts/rules/locked_installs.py"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh", "tools/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/install_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/install_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_install_from_lock"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "uv tool install shellcheck-py==0.11.0.1"
+category = "pinned-tool"
+reason = "shellcheck is a binary the ci-scripts tests run; the rules job has no project environment, so it installs the exact shellcheck-py release."
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "uv run --no-project python -m unittest discover -s scripts/rules/tests"
+reason = "The rules tool uses only the standard library, so its tests run without installing the project."
+removal = "scripts/rules needs a package beyond the standard library"
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "uv run --no-project python scripts/run_quality_guards.py"
+reason = "The quality guards are the rules tool, which uses only the standard library, so they run without installing the project."
+removal = "scripts/rules needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/check-changelog.sh"
+match = "uv run --no-project python tools/bump-version.py --check"
+reason = "tools/bump-version.py uses only the standard library, so the changelog job checks fragments without installing the project."
+removal = "tools/bump-version.py needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/update-version.sh"
+match = "uv run --no-project python tools/bump-version.py"
+reason = "tools/bump-version.py uses only the standard library, so the release bumps the version before uv lock records it, without installing the project."
+removal = "tools/bump-version.py needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/update-version.sh"
+match = "uvx --from towncrier==26.9.0"
+category = "pinned-tool"
+reason = "towncrier builds the changelog at release time and is no dependency of either distribution, so the release runs the exact towncrier release."
+
+[[rule.exception]]
+path = "tools/check-installed.py"
+match = "uv pip install --python"
+reason = "The installed-artifact check installs the built wheels into two clean environments as uv tool install microcosm-emitter does for a user, so it resolves their runtime dependencies from PyPI afresh: it tests what a user installing this release gets today, not the locked versions."
+removal = "the check no longer reproduces a user's install"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv pip install -e .collector/telemetry-service"
+reason = "The collector contract test runs against calibration-diagnostics' telemetry-service at the commit the script pins, which is no part of this workspace or its uv.lock."
+removal = "the contract test no longer installs the pinned collector from its source"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv pip install --reinstall --no-deps dist/*.whl"
+reason = "The contract test tests the wheels build-packages built, so they replace the workspace's editable installs; their dependencies come from the locked environment uv sync --locked installed first."
+removal = "the contract test no longer tests the built wheels"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv run --no-sync pytest tests/test_collector_contract.py"
+reason = "Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again."
+removal = "the contract test no longer tests the built wheels"
+
+[[rule]]
+id = "emitter.dependencies.test-from-lock"
+category = "dependencies"
+statement = "Every test command (pytest, python -m unittest) in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site."
+rationale = "scripts/rules/locked_installs.py"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh", "tools/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/test_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/test_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_test_from_lock"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "python -m unittest discover -s scripts/rules/tests"
+reason = "The rules tool uses only the standard library and is no part of either distribution, so its tests run without the project's locked environment."
+removal = "scripts/rules needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv run --no-sync pytest tests/test_collector_contract.py"
+reason = "Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again."
+removal = "the contract test no longer tests the built wheels"
+
+[[rule]]
+id = "emitter.dependencies.dependabot-relock"
+category = "dependencies"
+statement = "Dependabot proposes uv.lock updates every week, for the uv ecosystem at the repository root, as one grouped pull request that changes only uv.lock (versioning-strategy lockfile-only); it runs on GitHub's side with its own credentials, so no secret of this repository reaches the code resolving runs."
+rationale = ".github/dependabot.yml"
+scope = [".github/dependabot.yml", "uv.lock"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_dependabot.py::test_dependabot_proposes_uv_lock_updates_weekly"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.distributions.lock-only-merges-release-nothing"
+category = "distributions"
+statement = "A Dependabot pull request that changes only uv.lock needs no changelog fragment, since it changes no published package's requirements, and a merge without fragments releases nothing: tools/update-version.sh changes no file and push.yaml makes no version commit, so nothing is tagged or published."
+rationale = "README.md#publication"
+scope = ["tools/check-changelog.sh", "tools/update-version.sh", ".github/workflows/pr.yaml", ".github/workflows/push.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_dependabot.py::test_a_dependabot_lock_update_needs_no_fragment",
+  "tests/test_dependabot.py::test_other_pull_requests_need_a_fragment",
+  "tests/test_dependabot.py::test_the_changelog_job_tells_the_script_who_opened_the_pull_request",
+  "tests/test_dependabot.py::test_a_merge_without_a_fragment_releases_nothing",
+  "tests/test_dependabot.py::test_a_merge_with_a_fragment_is_released",
+  "tests/test_dependabot.py::test_versioning_commits_only_a_release",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.dependencies.uv-version-pinned"
+category = "dependencies"
+statement = "The one uv release is written once, as the line uv==X.Y.Z in .github/uv-version.txt: each astral-sh/setup-uv step reads it with version-file and writes no version:, any uv container image, install script, release download or package install of uv names it, and the root pyproject.toml's [tool.uv] required-version is a lower bound (>=X.Y) it meets, so an older uv refuses the project while Dependabot's uv still runs."
+rationale = "scripts/rules/uv_version.py"
+scope = [".github/uv-version.txt", "pyproject.toml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "uv-version"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/uv_version/bad"
+good_fixture = "scripts/rules/tests/fixtures/uv_version/good"
+test = "scripts/rules/tests/test_uv_version.py::TestUvVersionProof::test_rule_proof_uv_version_pinned"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
 # --- CI workflows and scripts --------------------------------------------------
 
 [[rule]]
@@ -804,7 +1021,7 @@ invocation = "unittest discover -s scripts/rules/tests"
 [[rule]]
 id = "emitter.process.changelog-fragment"
 category = "process"
-statement = "Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released."
+statement = "Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released; a Dependabot pull request that changes only uv.lock is the exception."
 rationale = "README.md#publication"
 scope = ["changelog.d/.gitkeep", "tools/check-changelog.sh", "tools/bump-version.py"]
 tier = "mechanical"

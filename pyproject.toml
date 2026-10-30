@@ -44,6 +44,12 @@ exclude = [
     "/docs/engineering/skills/rules-registry.md",
 ]
 
+# A lower bound, so an older uv refuses this project while Dependabot, which
+# runs its own uv release, still can. CI installs the one release in
+# .github/uv-version.txt (rule emitter.dependencies.uv-version-pinned).
+[tool.uv]
+required-version = ">=0.13"
+
 [tool.uv.workspace]
 members = ["packages/microcosm-emitter-interface"]
 

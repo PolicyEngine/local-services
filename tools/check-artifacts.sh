@@ -10,5 +10,5 @@ cd "$root"
 # could delete the other's artifacts.
 rm -rf dist
 uv build --all-packages --out-dir dist
-uv run --no-sync twine check --strict dist/*
-uv run --no-sync python tools/check-installed.py
+uv run --locked twine check --strict dist/*
+uv run --locked python tools/check-installed.py
