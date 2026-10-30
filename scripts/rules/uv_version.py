@@ -1,15 +1,13 @@
-"""Check that every uv install pins the one uv release of the root project.
+"""Check that every uv install pins the one uv release.
 
-The repository's uv release is written once, as the root ``pyproject.toml``'s
-``[tool.uv] required-version``, which must be one release written
-``==X.Y.Z``: uv itself refuses to run the project with another release. The
-guard reads every tracked file that can install uv (workflows, composite
-actions, shell scripts, Makefiles, Dockerfiles, Compose files and Python
-modules that define Modal images) and fails when an install pins no version or
-another one:
+The repository's uv release is written once, as the line ``uv==X.Y.Z`` in
+``.github/uv-version.txt``. The guard reads every tracked file that can
+install uv (workflows, composite actions, shell scripts, Makefiles,
+Dockerfiles, Compose files and Python modules that define Modal images) and
+fails when an install pins no version or another one:
 
-- an ``astral-sh/setup-uv`` step must read the release from the root project,
-  with ``with: version-file: pyproject.toml`` and no ``version:``. Without
+- an ``astral-sh/setup-uv`` step must read the release from that file, with
+  ``with: version-file: .github/uv-version.txt`` and no ``version:``. Without
   either it may install the newest uv release, and a ``version:`` would be a
   second place the release is written, even when it names the same one;
 - a reference to the uv container image (``ghcr.io/astral-sh/uv`` or
@@ -23,9 +21,14 @@ another one:
 - ``pip``, ``pipx`` or ``uv tool`` installs of the ``uv`` package must pin
   ``uv==<version>``, and ``uv self update`` must name the version.
 
-Images, downloads, package installs and Modal calls can't read a file, so
-each writes the version itself and this guard keeps every copy equal to the
-root project's. Violations name the rule that lists the ``uv-version`` guard.
+When the repository root has a ``pyproject.toml``, its ``[tool.uv]
+required-version`` must be a lower bound written ``>=X.Y`` that the release
+meets: uv then refuses to run the project with an older release, while
+Dependabot, which runs ``uv lock`` with its own uv release and stops when
+``required-version`` excludes it, still can. An exact ``==`` release there
+would stop Dependabot whenever its uv differs.
+
+Violations name the rule that lists the ``uv-version`` guard.
 """
 
 from __future__ import annotations
@@ -47,12 +50,14 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_NAME = "uv-version"
-# The project at the repository root, whose [tool.uv] required-version holds
-# the release; uv itself reads it.
+# The file that holds the release, as setup-uv's version-file reads it.
+VERSION_FILE = ".github/uv-version.txt"
+# What a setup-uv step that reads the release from that file pins.
+FROM_VERSION_FILE = f"version-file: {VERSION_FILE}"
+_RELEASE_LINE = re.compile(r"uv==(?P<version>\d+\.\d+\.\d+)")
+# The project at the repository root, whose [tool.uv] uv itself reads.
 ROOT_PROJECT = "pyproject.toml"
-# What a setup-uv step that reads the release from the root project pins.
-FROM_ROOT_PROJECT = f"version-file: {ROOT_PROJECT}"
-_REQUIRED_RELEASE = re.compile(r"==(?P<version>\d+\.\d+\.\d+)")
+_FLOOR = re.compile(r">=(?P<floor>\d+\.\d+(?:\.\d+)?)")
 
 # The kinds of uv install, each with how to pin it.
 SETUP_UV_STEP = "astral-sh/setup-uv step"
@@ -63,7 +68,7 @@ PACKAGE_INSTALL = "install of the uv package"
 SELF_UPDATE = "uv self update"
 
 _HOW_TO_PIN = {
-    SETUP_UV_STEP: f"set with: version-file: {ROOT_PROJECT} on the step, and no version:",
+    SETUP_UV_STEP: f"set with: version-file: {VERSION_FILE} on the step, and no version:",
     UV_IMAGE: "use the tag ghcr.io/astral-sh/uv:{version}",
     MODAL_UV: 'pass uv_version="{version}"',
     DOWNLOAD_URL: "name {version} in the URL (https://astral.sh/uv/{version}/install.sh)",
@@ -134,7 +139,7 @@ class UvInstall:
     def fix(self, pinned: str) -> str:
         """Say how to make this install pin ``pinned``."""
         how = _HOW_TO_PIN[self.kind].format(version=pinned)
-        return f"{how}, the release in {ROOT_PROJECT}'s [tool.uv] required-version"
+        return f"{how}, the release in {VERSION_FILE}"
 
 
 def _unquote(value: str) -> str:
@@ -206,9 +211,9 @@ def setup_uv_steps(path: str, text: str) -> list[UvInstall]:
         step = _step_lines(lines, index, key_column)
         version = _with_input(step, key_column, "version")
         if version is None and (
-            _with_input(step, key_column, "version-file") == ROOT_PROJECT
+            _with_input(step, key_column, "version-file") == VERSION_FILE
         ):
-            version = FROM_ROOT_PROJECT
+            version = FROM_VERSION_FILE
         installs.append(UvInstall(path, index + 1, SETUP_UV_STEP, version))
     return installs
 
@@ -312,36 +317,68 @@ def scan(
 def read_pinned_version(
     root: Path, rule_id: str | None = None
 ) -> tuple[str | None, list[Violation]]:
-    """Return the root project's uv release, or why it names no single release.
+    """Return the release in the version file, or why it holds no single release.
 
     The violations name ``rule_id``.
     """
-    fix = 'set required-version = "==<release>", such as "==0.13.6", under [tool.uv]'
+    source = root / VERSION_FILE
+    fix = f"write one line uv==<release>, such as uv==0.13.6, in {VERSION_FILE}"
+    if not source.is_file():
+        message = f"{VERSION_FILE}, which holds the uv release, is missing"
+        return None, [Violation(rule_id, GUARD_NAME, message, f"create it and {fix}")]
+    values = [
+        line.strip()
+        for line in source.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    match = _RELEASE_LINE.fullmatch(values[0]) if len(values) == 1 else None
+    if match is None:
+        message = f"{VERSION_FILE} does not hold one line uv==X.Y.Z"
+        return None, [Violation(rule_id, GUARD_NAME, message, fix)]
+    return match["version"], []
+
+
+def _release(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def required_version_problems(
+    root: Path, pinned: str, rule_id: str | None = None
+) -> list[Violation]:
+    """Report a root required-version that is no floor, or refuses ``pinned``.
+
+    A repository without a root pyproject.toml has nowhere to set it.
+    """
     source = root / ROOT_PROJECT
     if not source.is_file():
-        message = (
-            f"{ROOT_PROJECT}, whose [tool.uv] required-version holds the uv "
-            "release, is missing"
-        )
-        return None, [Violation(rule_id, GUARD_NAME, message, f"create it and {fix}")]
+        return []
+    fix = (
+        'set required-version = ">=<minor release>", such as ">=0.13", under '
+        f"[tool.uv] in {ROOT_PROJECT}"
+    )
     try:
         config = tomllib.loads(source.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError:
-        return None, [
-            Violation(rule_id, GUARD_NAME, f"{ROOT_PROJECT} is not TOML", fix)
-        ]
+        return [Violation(rule_id, GUARD_NAME, f"{ROOT_PROJECT} is not TOML", fix)]
     required = config.get("tool", {}).get("uv", {}).get("required-version")
     if required is None:
         message = f"{ROOT_PROJECT} sets no [tool.uv] required-version"
-        return None, [Violation(rule_id, GUARD_NAME, message, fix)]
-    match = _REQUIRED_RELEASE.fullmatch(str(required))
+        return [Violation(rule_id, GUARD_NAME, message, fix)]
+    match = _FLOOR.fullmatch(str(required))
     if match is None:
         message = (
-            f"{ROOT_PROJECT}'s [tool.uv] required-version is {required!r}, not one "
-            "release written ==X.Y.Z"
+            f"{ROOT_PROJECT}'s [tool.uv] required-version is {required!r}, not a "
+            "lower bound written >=X.Y"
         )
-        return None, [Violation(rule_id, GUARD_NAME, message, fix)]
-    return match["version"], []
+        return [Violation(rule_id, GUARD_NAME, message, fix)]
+    floor = _release(match["floor"])
+    if _release(pinned)[: len(floor)] < floor:
+        message = (
+            f"{ROOT_PROJECT}'s [tool.uv] required-version {required!r} refuses uv "
+            f"{pinned}, the release in {VERSION_FILE}"
+        )
+        return [Violation(rule_id, GUARD_NAME, message, fix)]
+    return []
 
 
 def _problem(install: UvInstall, pinned: str | None) -> str | None:
@@ -349,14 +386,14 @@ def _problem(install: UvInstall, pinned: str | None) -> str | None:
     version = install.version
     if version is None:
         return f"{install.site} does not pin a uv release"
-    if install.kind == SETUP_UV_STEP and version == FROM_ROOT_PROJECT:
+    if install.kind == SETUP_UV_STEP and version == FROM_VERSION_FILE:
         return None
     if not _RELEASE.match(version):
         return f"{install.site} does not pin a uv release (it names {version})"
     if install.kind == SETUP_UV_STEP:
         return (
             f"{install.site} writes uv {version} itself instead of reading "
-            f"{ROOT_PROJECT}"
+            f"{VERSION_FILE}"
         )
     # An image tag may add a variant to the release, as in 0.13.6-python3.13-bookworm.
     image_variant = install.kind == UV_IMAGE and version.startswith(f"{pinned}-")
@@ -397,7 +434,7 @@ def guard_rule_id(registry: Registry | None) -> str | None:
 
 
 def run_check(root: Path = REPO_ROOT) -> list[Violation]:
-    """Return every uv install under ``root`` that doesn't pin the root project's."""
+    """Return every uv install under ``root`` that doesn't pin the one release."""
     registry, _ = load_registry(root)
     rule_id = guard_rule_id(registry)
     test_directories = registry.repository.test_directories if registry else ()
@@ -405,6 +442,7 @@ def run_check(root: Path = REPO_ROOT) -> list[Violation]:
     return [
         *violations,
         *compare(scan(root, test_directories=test_directories), pinned, rule_id),
+        *(required_version_problems(root, pinned, rule_id) if pinned else []),
     ]
 
 

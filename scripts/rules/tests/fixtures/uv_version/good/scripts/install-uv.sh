@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the uv release in pyproject.toml with its install script and as a
+# Install the uv release in .github/uv-version.txt with its install script and as a
 # Python package.
 set -euo pipefail
 

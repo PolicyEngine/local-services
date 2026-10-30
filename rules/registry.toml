@@ -72,6 +72,7 @@ guard_test_globs = [
   "tests/test_package_names.py",
   "tests/test_source_archives.py",
   "tests/interface/test_protocol_fixtures.py",
+  "tests/test_dependabot.py",
 ]
 # Structure tests in files that otherwise test behaviour.
 extra_guard_tests = [
@@ -814,35 +815,52 @@ reason = "Syncing would replace the installed wheels with the workspace sources,
 removal = "the contract test no longer tests the built wheels"
 
 [[rule]]
-id = "emitter.dependencies.scheduled-relock"
+id = "emitter.dependencies.dependabot-relock"
 category = "dependencies"
-statement = "A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade, or --upgrade-package for named packages) and opens or updates a pull request with the result; its jobs may share the work."
-rationale = "scripts/rules/locked_installs.py"
-scope = [".github/workflows/update-dependencies.yaml", "tools/relock-*.sh", "uv.lock"]
+statement = "Dependabot proposes uv.lock updates every week, for the uv ecosystem at the repository root, as one grouped pull request that changes only uv.lock (versioning-strategy lockfile-only); it runs on GitHub's side with its own credentials, so no secret of this repository reaches the code resolving runs."
+rationale = ".github/dependabot.yml"
+scope = [".github/dependabot.yml", "uv.lock"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
 [rule.enforcer]
-kind = "quality-guard"
-name = "locked-installs"
+kind = "pytest"
+nodes = ["tests/test_dependabot.py::test_dependabot_proposes_uv_lock_updates_weekly"]
 [[rule.ci]]
-workflow = ".github/workflows/pr.yaml"
-job = "rules"
-invocation = "run_quality_guards.py"
-[rule.proof]
-bad_fixture = "scripts/rules/tests/fixtures/locked_installs/relock_bad"
-good_fixture = "scripts/rules/tests/fixtures/locked_installs/relock_good"
-test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_scheduled_relock"
-workflow = ".github/workflows/pr.yaml"
-job = "rules"
-invocation = "unittest discover -s scripts/rules/tests"
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.distributions.lock-only-merges-release-nothing"
+category = "distributions"
+statement = "A Dependabot pull request that changes only uv.lock needs no changelog fragment, since it changes no published package's requirements, and a merge without fragments releases nothing: tools/update-version.sh changes no file and push.yaml makes no version commit, so nothing is tagged or published."
+rationale = "README.md#publication"
+scope = ["tools/check-changelog.sh", "tools/update-version.sh", ".github/workflows/pr.yaml", ".github/workflows/push.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_dependabot.py::test_a_dependabot_lock_update_needs_no_fragment",
+  "tests/test_dependabot.py::test_other_pull_requests_need_a_fragment",
+  "tests/test_dependabot.py::test_the_changelog_job_tells_the_script_who_opened_the_pull_request",
+  "tests/test_dependabot.py::test_a_merge_without_a_fragment_releases_nothing",
+  "tests/test_dependabot.py::test_a_merge_with_a_fragment_is_released",
+  "tests/test_dependabot.py::test_versioning_commits_only_a_release",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
 
 [[rule]]
 id = "emitter.dependencies.uv-version-pinned"
 category = "dependencies"
-statement = "The one uv release is written once, as the root pyproject.toml's [tool.uv] required-version (==X.Y.Z), so a developer's uv refuses another; each astral-sh/setup-uv step reads it with version-file: pyproject.toml and writes no version:, and any uv container image, install script, release download or package install of uv names that release."
+statement = "The one uv release is written once, as the line uv==X.Y.Z in .github/uv-version.txt: each astral-sh/setup-uv step reads it with version-file and writes no version:, any uv container image, install script, release download or package install of uv names it, and the root pyproject.toml's [tool.uv] required-version is a lower bound (>=X.Y) it meets, so an older uv refuses the project while Dependabot's uv still runs."
 rationale = "scripts/rules/uv_version.py"
-scope = ["pyproject.toml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+scope = [".github/uv-version.txt", "pyproject.toml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
@@ -1068,7 +1086,7 @@ invocation = "unittest discover -s scripts/rules/tests"
 [[rule]]
 id = "emitter.process.changelog-fragment"
 category = "process"
-statement = "Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released."
+statement = "Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released; a Dependabot pull request that changes only uv.lock is the exception."
 rationale = "README.md#publication"
 scope = ["changelog.d/.gitkeep", "tools/check-changelog.sh", "tools/bump-version.py"]
 tier = "mechanical"

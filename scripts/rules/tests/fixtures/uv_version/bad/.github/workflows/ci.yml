@@ -27,7 +27,7 @@ jobs:
     - uses: actions/checkout@v6
 
     # A step that writes the release itself, and another one than
-    # pyproject.toml's required-version.
+    # .github/uv-version.txt's release.
     - uses: astral-sh/setup-uv@v8.1.0
       with:
         version: "0.13.4"

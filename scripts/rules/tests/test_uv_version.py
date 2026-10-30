@@ -1,7 +1,10 @@
-"""Tests for the uv-version guard: every uv install pins the root project's release.
+"""Tests for the uv-version guard: every uv install pins the one uv release.
 
-The release is written once, in the root pyproject.toml's [tool.uv]
-required-version, which setup-uv steps read with version-file.
+The release is written once, as the line uv==X.Y.Z in .github/uv-version.txt,
+which setup-uv steps read with version-file. The root pyproject.toml's
+[tool.uv] required-version is a lower bound that release meets, so a
+developer's older uv refuses the project and Dependabot's uv, another
+release, still runs.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import unittest
 from pathlib import Path
 
 from scripts.rules.tests.support import REPOSITORY_TABLE
-from scripts.rules.uv_version import ROOT_PROJECT, run_check, scan
+from scripts.rules.uv_version import ROOT_PROJECT, VERSION_FILE, run_check, scan
 
 FIXTURES = Path(__file__).parent / "fixtures" / "uv_version"
 PINNED = "0.13.6"
@@ -29,7 +32,7 @@ title = "Dependencies"
 [[rule]]
 id = "emitter.dependencies.uv-version-pinned"
 category = "dependencies"
-statement = "Every uv install pins the root project's uv release."
+statement = "Every uv install pins the one uv release."
 rationale = "README.md"
 scope = ["**"]
 tier = "mechanical"
@@ -42,10 +45,21 @@ name = "uv-version"
 )
 
 
+RELEASE_LINE = f"uv=={PINNED}"
+FLOOR = ">=0.13"
+
+
 def write_files(
-    root: Path, files: dict[str, str], required: str | None = f"=={PINNED}"
+    root: Path,
+    files: dict[str, str],
+    release: str | None = RELEASE_LINE,
+    required: str | None = FLOOR,
 ) -> None:
-    """Write each file under ``root``, plus a root project requiring ``required``."""
+    """Write each file under ``root``, plus the version file holding ``release``
+    and a root project whose required-version is ``required``."""
+    if release is not None:
+        (root / VERSION_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (root / VERSION_FILE).write_text(f"{release}\n", encoding="utf-8")
     if required is not None:
         (root / ROOT_PROJECT).write_text(
             f'[tool.uv]\nrequired-version = "{required}"\n', encoding="utf-8"
@@ -60,11 +74,14 @@ class GuardCase(unittest.TestCase):
     """Runs the guard on files written to a temporary directory."""
 
     def messages(
-        self, files: dict[str, str], required: str | None = f"=={PINNED}"
+        self,
+        files: dict[str, str],
+        release: str | None = RELEASE_LINE,
+        required: str | None = FLOOR,
     ) -> list[str]:
         """Return the guard's violation messages for ``files``."""
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        write_files(root, files, required)
+        write_files(root, files, release, required)
         return [violation.message for violation in run_check(root)]
 
     def versions(self, files: dict[str, str]) -> list[tuple[str, str | None]]:
@@ -85,7 +102,7 @@ class TestUvVersionProof(unittest.TestCase):
                 ".github/workflows/ci.yml:16: astral-sh/setup-uv step does not pin "
                 "a uv release",
                 ".github/workflows/ci.yml:31: astral-sh/setup-uv step writes uv "
-                "0.13.4 itself instead of reading pyproject.toml",
+                f"0.13.4 itself instead of reading {VERSION_FILE}",
                 "Dockerfile:5: uv container image does not pin a uv release (it "
                 "names latest)",
                 "app/modal_app.py:9: Modal uv_sync call does not pin a uv release",
@@ -122,20 +139,82 @@ class TestRuleId(unittest.TestCase):
         self.assertEqual([violation.rule_id for violation in run_check(root)], [None])
 
 
-class TestRequiredVersion(GuardCase):
-    """The release is the root pyproject.toml's [tool.uv] required-version."""
+class TestVersionFile(GuardCase):
+    """The release is the one line uv==X.Y.Z of .github/uv-version.txt."""
 
-    def test_one_release_written_with_two_equals_signs_passes(self) -> None:
+    def test_one_release_passes(self) -> None:
         self.assertEqual(self.messages({}), [])
 
-    def test_a_missing_root_project_fails(self) -> None:
+    def test_comment_lines_are_ignored(self) -> None:
         self.assertEqual(
-            self.messages({}, required=None),
+            self.messages({}, release=f"# The uv release CI installs.\n{RELEASE_LINE}"),
+            [],
+        )
+
+    def test_a_missing_version_file_fails(self) -> None:
+        self.assertEqual(
+            self.messages({}, release=None),
+            [f"{VERSION_FILE}, which holds the uv release, is missing"],
+        )
+
+    def test_anything_but_one_release_fails(self) -> None:
+        for release in ("uv>=0.13.6", "uv==0.13", "0.13.6", "uv==0.13.6\nuv==0.13.4"):
+            with self.subTest(release=release):
+                self.assertEqual(
+                    self.messages({}, release=release),
+                    [f"{VERSION_FILE} does not hold one line uv==X.Y.Z"],
+                )
+
+    def test_unpinned_installs_are_reported_even_without_a_release(self) -> None:
+        self.assertEqual(
+            self.messages(
+                {"Dockerfile": "COPY --from=ghcr.io/astral-sh/uv /uv /bin/\n"},
+                release=None,
+            ),
             [
-                "pyproject.toml, whose [tool.uv] required-version holds the uv "
-                "release, is missing"
+                f"{VERSION_FILE}, which holds the uv release, is missing",
+                "Dockerfile:1: uv container image does not pin a uv release",
             ],
         )
+
+
+class TestRequiredVersion(GuardCase):
+    """The root project's required-version is a lower bound the release meets."""
+
+    def test_a_floor_the_release_meets_passes(self) -> None:
+        for required in (">=0.13", f">={PINNED}", ">=0.12.4"):
+            with self.subTest(required=required):
+                self.assertEqual(self.messages({}, required=required), [])
+
+    def test_an_exact_release_fails(self) -> None:
+        """Dependabot runs uv lock with its own uv, which stops on another."""
+        self.assertEqual(
+            self.messages({}, required=f"=={PINNED}"),
+            [
+                f"pyproject.toml's [tool.uv] required-version is '=={PINNED}', not "
+                "a lower bound written >=X.Y"
+            ],
+        )
+
+    def test_a_floor_above_the_release_fails(self) -> None:
+        self.assertEqual(
+            self.messages({}, required=">=0.14"),
+            [
+                "pyproject.toml's [tool.uv] required-version '>=0.14' refuses uv "
+                f"{PINNED}, the release in {VERSION_FILE}"
+            ],
+        )
+
+    def test_another_form_fails(self) -> None:
+        for required in ("~=0.13", "<0.14", ">=0.13,<0.14", "0.13.6"):
+            with self.subTest(required=required):
+                self.assertEqual(
+                    self.messages({}, required=required),
+                    [
+                        "pyproject.toml's [tool.uv] required-version is "
+                        f"{required!r}, not a lower bound written >=X.Y"
+                    ],
+                )
 
     def test_a_missing_required_version_fails(self) -> None:
         self.assertEqual(
@@ -143,31 +222,8 @@ class TestRequiredVersion(GuardCase):
             ["pyproject.toml sets no [tool.uv] required-version"],
         )
 
-    def test_a_range_or_a_bare_release_is_not_one_release(self) -> None:
-        for required in (">=0.13.6", "0.13.6", "==0.13", "==latest", "~=0.13.6"):
-            with self.subTest(required=required):
-                self.assertEqual(
-                    self.messages({}, required=required),
-                    [
-                        "pyproject.toml's [tool.uv] required-version is "
-                        f"{required!r}, not one release written ==X.Y.Z"
-                    ],
-                )
-
-    def test_unpinned_installs_are_reported_even_without_a_release(self) -> None:
-        messages = self.messages(
-            {"Dockerfile": "COPY --from=ghcr.io/astral-sh/uv /uv /bin/\n"},
-            required=None,
-        )
-
-        self.assertEqual(
-            messages,
-            [
-                "pyproject.toml, whose [tool.uv] required-version holds the uv "
-                "release, is missing",
-                "Dockerfile:1: uv container image does not pin a uv release",
-            ],
-        )
+    def test_a_repository_without_a_root_project_needs_none(self) -> None:
+        self.assertEqual(self.messages({}, required=None), [])
 
 
 class TestSetupUvSteps(GuardCase):
@@ -217,26 +273,28 @@ class TestSetupUvSteps(GuardCase):
             installs, [(".github/workflows/ci.yml:7: astral-sh/setup-uv step", PINNED)]
         )
 
-    def test_reading_the_root_project_pins_the_release(self) -> None:
+    def test_reading_the_version_file_pins_the_release(self) -> None:
         self.assertEqual(
             self.messages(
                 self.workflow(
                     "    - uses: astral-sh/setup-uv@v8.1.0\n"
                     "      with:\n"
-                    "        version-file: pyproject.toml\n"
+                    f"        version-file: {VERSION_FILE}\n"
                     "    - uses: astral-sh/setup-uv@v8.1.0\n"
-                    "      with: { version-file: pyproject.toml }\n"
+                    f"      with: {{ version-file: {VERSION_FILE} }}\n"
                 )
             ),
             [],
         )
 
     def test_another_version_file_is_not_a_pin(self) -> None:
+        """pyproject.toml's required-version is a floor, which setup-uv would
+        meet with the newest release."""
         messages = self.messages(
             self.workflow(
                 "    - uses: astral-sh/setup-uv@v8.1.0\n"
                 "      with:\n"
-                "        version-file: .tool-versions\n"
+                "        version-file: pyproject.toml\n"
             )
         )
 
@@ -268,9 +326,9 @@ class TestSetupUvSteps(GuardCase):
             messages,
             [
                 ".github/workflows/ci.yml:7: astral-sh/setup-uv step writes uv "
-                "0.13.4 itself instead of reading pyproject.toml",
+                f"0.13.4 itself instead of reading {VERSION_FILE}",
                 ".github/workflows/ci.yml:10: astral-sh/setup-uv step writes uv "
-                f"{PINNED} itself instead of reading pyproject.toml",
+                f"{PINNED} itself instead of reading {VERSION_FILE}",
                 ".github/workflows/ci.yml:13: astral-sh/setup-uv step does not pin "
                 "a uv release (it names latest)",
             ],

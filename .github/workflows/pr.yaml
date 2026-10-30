@@ -30,12 +30,17 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # The check compares a Dependabot pull request with its base branch.
+          fetch-depth: 0
           persist-credentials: false
       - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
-          version-file: pyproject.toml
+          version-file: .github/uv-version.txt
           python-version: "3.13"
-      - run: bash tools/check-changelog.sh
+      - env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.base_ref }}
+        run: bash tools/check-changelog.sh
 
   verify:
     uses: ./.github/workflows/ci.yml
@@ -56,7 +61,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
-          version-file: pyproject.toml
+          version-file: .github/uv-version.txt
           python-version: "3.13"
       # The ci-scripts tests run shellcheck; the tool needs nothing else.
       - run: uv tool install shellcheck-py==0.11.0.1
