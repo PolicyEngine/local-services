@@ -1,4 +1,4 @@
-"""The tools/ scripts that CI and the release run, other than the relock's.
+"""The tools/ scripts that CI and the release run.
 
 Each test runs a script with fake uv, uvx and git first on PATH, in a
 temporary directory, so nothing is built, installed, tagged or pushed.
@@ -321,6 +321,8 @@ FAKE_UV_BUMP = 'if [[ "$1" == "run" ]]; then echo 1.2.4; fi\n'
 
 
 def update_version(fakes, checkout, uv_body=FAKE_UV_BUMP):
+    """Run the release script with one pending fragment, as a merge has."""
+    write(checkout / "changelog.d/change.fixed.md", "A fix.\n")
     fakes.add("uv", uv_body)
     fakes.add("uvx")
     return run_script("update-version.sh", env=fakes.env(), cwd=checkout)
