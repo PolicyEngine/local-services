@@ -44,6 +44,11 @@ exclude = [
     "/docs/engineering/skills/rules-registry.md",
 ]
 
+# The one uv release, as in .uv-version: uv refuses to run this project with
+# any other (rule emitter.dependencies.uv-version-pinned).
+[tool.uv]
+required-version = "==0.13.6"
+
 [tool.uv.workspace]
 members = ["packages/microcosm-emitter-interface"]
 
