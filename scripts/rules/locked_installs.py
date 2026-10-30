@@ -690,7 +690,11 @@ def lock_violations(
 def relock_violations(
     root: Path, files: list[str], repository: Repository
 ) -> list[Violation]:
-    """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR."""
+    """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR.
+
+    Its jobs may share the work, so one that holds no token can relock and a
+    later one open the pull request.
+    """
     rule_id = repository.rule_id(RELOCK_RULE)
     projects = _project_directories(root, files, repository.test_directories)
     for path in files:
@@ -700,32 +704,28 @@ def relock_violations(
             r"^\s+schedule:", (root / path).read_text(encoding="utf-8"), re.MULTILINE
         ):
             continue
-        for workflow, _job, text in _workflow_jobs(
-            root, [path], repository.script_directories
-        ):
-            if not (_RELOCK.search(text) and _OPENS_PR.search(text)):
-                continue
-            globs = re.findall(r"[\w./*-]*pyproject\.toml", text)
-            uncovered = [
-                directory
-                for directory in projects
-                if directory != "."
-                and not any(
-                    fnmatch.fnmatch(f"{directory}/pyproject.toml", glob)
-                    for glob in globs
-                )
-            ]
-            if not uncovered:
-                return []
-            return [
-                Violation(
-                    rule_id,
-                    "locked-installs",
-                    f"{workflow} does not relock {directory}/uv.lock",
-                    "relock every project directory in the scheduled job",
-                )
-                for directory in uncovered
-            ]
+        text = "\n".join(
+            job_text
+            for _workflow, _job, job_text in _workflow_jobs(
+                root, [path], repository.script_directories
+            )
+        )
+        if not (_RELOCK.search(text) and _OPENS_PR.search(text)):
+            continue
+        globs = re.findall(r"[\w./*-]*pyproject\.toml", text)
+        return [
+            Violation(
+                rule_id,
+                "locked-installs",
+                f"{path} does not relock {directory}/uv.lock",
+                "relock every project directory in the scheduled workflow",
+            )
+            for directory in projects
+            if directory != "."
+            and not any(
+                fnmatch.fnmatch(f"{directory}/pyproject.toml", glob) for glob in globs
+            )
+        ]
     return [
         Violation(
             rule_id,
