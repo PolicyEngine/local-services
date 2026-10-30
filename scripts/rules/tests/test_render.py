@@ -70,10 +70,10 @@ def rule_node(number: int) -> str:
 
 
 class ClaimsTest(unittest.TestCase):
-    """The views say they list the registered rules, not every rule there is.
+    """The views say the registry holds every rule of the repository.
 
-    A repository may still have rules written only in prose, outside the
-    registry, until each is registered.
+    Every rule is registered, including those once written only as prose in
+    AGENTS.md, so the views list them all.
     """
 
     def setUp(self) -> None:
@@ -81,24 +81,24 @@ class ClaimsTest(unittest.TestCase):
         assert registry is not None, problems
         self.registry = registry
 
-    def test_the_agents_block_lists_the_registered_rules(self) -> None:
+    def test_the_agents_block_says_every_rule_lives_in_the_registry(self) -> None:
         block = render_agents_block(self.registry)
 
         self.assertIn(
-            "The rules registered in `rules/registry.toml` are listed below, and",
+            "Every rule for this repository lives in `rules/registry.toml` and is "
+            "rendered,",
             block,
         )
-        self.assertNotIn("Every rule", block)
+        self.assertNotIn("The rules registered in", block)
 
-    def test_rules_md_lists_the_registered_rules(self) -> None:
+    def test_rules_md_lists_every_rule_that_governs_the_repository(self) -> None:
         rules_md = render_rules_md(self.registry)
 
         self.assertIn(
-            "Every rule registered for `example` in `rules/registry.toml` is "
-            "listed here with how it is enforced.",
+            "Every rule that governs `example` is listed here with how it is enforced.",
             rules_md,
         )
-        self.assertNotIn("Every rule that governs", rules_md)
+        self.assertNotIn("Every rule registered for", rules_md)
 
 
 class EnforcerDescriptionTest(unittest.TestCase):
