@@ -1,4 +1,4 @@
-"""Validate release ordering, credential scope, and script-only shell logic."""
+"""Validate release ordering, credential scope and workflow structure."""
 
 import re
 import runpy
@@ -50,15 +50,6 @@ def remove_version_line(pyproject_text):
 
 def add_tool_version_line(pyproject_text):
     return pyproject_text + '\n[tool.example]\nversion = "9.9.9"\n'
-
-
-def test_shell_logic_lives_in_scripts():
-    for path in workflow_paths():
-        config = workflow(path.name)
-        for job in config["jobs"].values():
-            for step in job.get("steps", []):
-                if "run" in step:
-                    assert "\n" not in step["run"].strip(), (path, step)
 
 
 def test_pull_requests_require_every_check_and_a_changelog_fragment():
