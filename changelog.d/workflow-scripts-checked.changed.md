@@ -1,0 +1,1 @@
+Pull requests now refuse a workflow `run:` step that holds more than one command, a script under `tools/` that a workflow calls but no test names, and a script under `tools/` that shellcheck faults: the rules registry's ci-scripts check runs in the "Rules registry" job. Every such script now has tests that run it with fake commands. The wheels are unchanged.
