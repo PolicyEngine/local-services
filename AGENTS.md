@@ -9,14 +9,16 @@
 - Preserve the existing collector protocol; do not add a general hosted events API.
 - Push feature branches and open PRs; do not push directly to main. Do not automatically merge or monitor queued checks.
 
+The rules above are not registered in `rules/registry.toml` yet, so the Rules section below does not list them and the registry guard does not check them. Follow them as written; they are being moved into the registry.
+
 ## Rules
 
 <!-- BEGIN GENERATED: rules (python -m scripts.rules render) -->
 
-Every rule for this repository lives in `rules/registry.toml` and is rendered,
-with its enforcement and gaps, in `docs/generated/rules.md`. Blocking rules
-fail CI. Doc-only rules are not checked automatically, so follow them yourself.
-To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
+The rules registered in `rules/registry.toml` are listed below, and
+rendered with their enforcement and gaps in `docs/generated/rules.md`.
+Blocking rules fail CI. Doc-only rules are not checked automatically, so
+follow them yourself. To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 
 ### Code quality
 
