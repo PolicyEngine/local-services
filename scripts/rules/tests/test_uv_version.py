@@ -84,7 +84,7 @@ class TestUvVersionProof(unittest.TestCase):
             [
                 ".github/workflows/ci.yml:16: astral-sh/setup-uv step does not pin "
                 "a uv release",
-                ".github/workflows/ci.yml:30: astral-sh/setup-uv step writes uv "
+                ".github/workflows/ci.yml:31: astral-sh/setup-uv step writes uv "
                 "0.13.4 itself instead of reading pyproject.toml",
                 "Dockerfile:5: uv container image does not pin a uv release (it "
                 "names latest)",

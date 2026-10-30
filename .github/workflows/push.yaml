@@ -34,7 +34,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
       - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
-          version: "0.13.6"
+          version-file: pyproject.toml
           python-version: "3.13"
       - run: bash tools/update-version.sh
       - uses: EndBug/add-and-commit@290ea2c423ad77ca9c62ae0f5b224379612c0321 # v10
