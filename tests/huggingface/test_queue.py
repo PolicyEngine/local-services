@@ -27,14 +27,14 @@ def queue(tmp_path):
     handle.close()
 
 
-def stage(queue, path_in_repo, content, *, now, flush=True, interval=30.0, **extra):
+def stage(queue, path_in_repo, content, *, now, **extra):
     queue.stage_run_files(
         repository=extra.pop("repository", REPOSITORY),
         run_id=extra.pop("run_id", "run-1"),
         files=[(path_in_repo, content)],
         run_index_entry=extra.pop("run_index_entry", None),
-        flush=flush,
-        interval=interval,
+        flush=extra.pop("flush", True),
+        interval=extra.pop("interval", 30.0),
         now=now,
     )
 

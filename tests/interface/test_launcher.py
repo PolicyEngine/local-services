@@ -123,7 +123,8 @@ def test_emitter_runs_as_a_child_of_the_build_under_the_same_user(tmp_path):
     ],
     ids=["hf-token-first", "huggingface-token-second", "saved-login-last"],
 )
-def test_child_finds_the_build_hugging_face_credential_in_the_same_order(
+# pytest passes three fixtures and the three parametrized values as arguments.
+def test_child_finds_the_build_hugging_face_credential_in_the_same_order(  # noqa: PLR0913, PLR0917
     tmp_path, monkeypatch, loopback_collector, variables, saved_login, expected_token
 ):
     """The token reaches the child only by inheriting the build's environment.

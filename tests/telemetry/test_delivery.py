@@ -541,6 +541,15 @@ def test_missing_credential_never_contacts_collector_and_stays_local_only(
     assert reopened.pending_runs() == []
 
 
+def _queue_a_pending_run(spool_path, run_id: str) -> None:
+    """Register ``run_id`` with one event in the event queue file, then close it."""
+    registration = _registration(run_id)
+    queue = EventSpool(spool_path)
+    queue.register(registration)
+    queue.append(registration, _event())
+    queue.close()
+
+
 @pytest.mark.parametrize(
     "unreadable_login",
     [
@@ -554,11 +563,7 @@ def test_an_unreadable_saved_login_keeps_runs_pending_until_it_can_be_read(
 ) -> None:
     # An earlier build's run, still pending in the event queue file.
     spool_path = tmp_path / "events.sqlite3"
-    earlier = _registration("run-earlier")
-    earlier_queue = EventSpool(spool_path)
-    earlier_queue.register(earlier)
-    earlier_queue.append(earlier, _event())
-    earlier_queue.close()
+    _queue_a_pending_run(spool_path, "run-earlier")
     # Neither HF_TOKEN nor HUGGINGFACE_TOKEN is set, so the emitter reads the
     # login saved by `hf auth login`.
     login_reads: list[str] = []

@@ -53,6 +53,10 @@ if TYPE_CHECKING:
 _RETRYABLE_CLIENT_ERRORS = frozenset(
     {HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS}
 )
+#: HTTP client errors (4xx) run from this status up to, but not including,
+#: ``_FIRST_SERVER_ERROR_STATUS``.
+_FIRST_CLIENT_ERROR_STATUS = HTTPStatus.BAD_REQUEST
+_FIRST_SERVER_ERROR_STATUS = HTTPStatus.INTERNAL_SERVER_ERROR
 #: Session answers for a given token that can no longer be used, and the
 #: reason each pending run records.
 _UNUSABLE_GIVEN_TOKEN_REASONS: dict[SessionResult, str] = {
@@ -62,7 +66,10 @@ _UNUSABLE_GIVEN_TOKEN_REASONS: dict[SessionResult, str] = {
 
 
 def _permanent_client_error(status: int) -> bool:
-    return 400 <= int(status) < 500 and status not in _RETRYABLE_CLIENT_ERRORS
+    return (
+        _FIRST_CLIENT_ERROR_STATUS <= int(status) < _FIRST_SERVER_ERROR_STATUS
+        and status not in _RETRYABLE_CLIENT_ERRORS
+    )
 
 
 def _registration_key(registration: Mapping[str, Any]) -> str:
@@ -134,38 +141,46 @@ class CollectorDelivery:
                 registration, token
             ):
                 continue
-            events = self.spool.batch(run_id, str(registration["producer_id"]))
-            if not events:
-                continue
-            try:
-                status, _ = _http_post(
-                    self.collector_url + RUN_EVENTS_PATH_TEMPLATE.format(run_id=run_id),
-                    {"events": events},
-                    token,
-                )
-            except NETWORK_FAILURES:
-                self._defer_retry()
-                continue
-            if status == HTTPStatus.ACCEPTED:
-                self.spool.acknowledge([event["event_id"] for event in events])
+            if self._deliver_events(registration, run_id, token):
                 made_progress = True
-                self._retry_seconds = INITIAL_RETRY_SECONDS
-            elif status == HTTPStatus.UNAUTHORIZED:
-                self.session.invalidate()
-            elif status == HTTPStatus.FORBIDDEN:
-                self._make_local_only(
-                    registration,
-                    LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION,
-                )
-            elif _permanent_client_error(status):
-                self._make_local_only(
-                    registration,
-                    LOCAL_ONLY_REJECTED_EVENTS,
-                    message=REJECTED_EVENTS_MESSAGE.format(status=int(status)),
-                )
-            else:
-                self._defer_retry()
         return made_progress
+
+    def _deliver_events(
+        self, registration: Mapping[str, Any], run_id: str, token: str
+    ) -> bool:
+        """Send the run's next batch of events; return whether it was accepted."""
+        events = self.spool.batch(run_id, str(registration["producer_id"]))
+        if not events:
+            return False
+        try:
+            status, _ = _http_post(
+                self.collector_url + RUN_EVENTS_PATH_TEMPLATE.format(run_id=run_id),
+                {"events": events},
+                token,
+            )
+        except NETWORK_FAILURES:
+            self._defer_retry()
+            return False
+        if status == HTTPStatus.ACCEPTED:
+            self.spool.acknowledge([event["event_id"] for event in events])
+            self._retry_seconds = INITIAL_RETRY_SECONDS
+            return True
+        if status == HTTPStatus.UNAUTHORIZED:
+            self.session.invalidate()
+        elif status == HTTPStatus.FORBIDDEN:
+            self._make_local_only(
+                registration,
+                LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION,
+            )
+        elif _permanent_client_error(status):
+            self._make_local_only(
+                registration,
+                LOCAL_ONLY_REJECTED_EVENTS,
+                message=REJECTED_EVENTS_MESSAGE.format(status=int(status)),
+            )
+        else:
+            self._defer_retry()
+        return False
 
     def _collector_token(self, registration: Mapping[str, Any]) -> str | None:
         try:
