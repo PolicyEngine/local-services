@@ -36,6 +36,10 @@ jobs:
         with:
           version-file: .github/uv-version.txt
           python-version: "3.13"
+          # A merge without changelog fragments runs no uv command, so no cache
+          # directory exists for setup-uv to save
+          # (rule emitter.ci.uv-cache-only-where-uv-runs).
+          enable-cache: false
       - id: version
         run: bash tools/update-version.sh
       # A merge without changelog fragments, such as Dependabot's lock-only
