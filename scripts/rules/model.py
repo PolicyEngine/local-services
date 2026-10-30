@@ -127,6 +127,9 @@ class Repository:
     workflows call, ``packages`` are globs of the package directories (``.`` is
     the repository root), and ``file_exception_directories`` are the directory
     names under which a ruff per-file ignore may switch rules off.
+    ``pull_request_conditions`` are the job and step ``if:`` conditions known
+    to hold on every pull-request run, without ``${{ }}``; the required-check
+    check counts a job or step with any other ``if:`` as one that may not run.
     """
 
     rule_prefix: str = ""
@@ -135,6 +138,7 @@ class Repository:
     script_directories: tuple[str, ...] = ()
     packages: tuple[str, ...] = ()
     file_exception_directories: tuple[str, ...] = ()
+    pull_request_conditions: tuple[str, ...] = ()
 
     def rule_id(self, name: str) -> str:
         """Return the id of this repository's rule ``name``, such as ``ci.x``."""

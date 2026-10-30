@@ -6,29 +6,80 @@ workflow (``[repository].pr_workflow``) whose name is
 so a rule blocks merges only when one of its ``[[rule.ci]]`` jobs is the
 required job, a job it needs (directly or through other jobs' needs), or a job
 of a reusable workflow in this repository that one of those jobs calls with
-``uses: ./.github/workflows/...``. A rule whose jobs are all elsewhere, such
-as in a workflow that runs only after merging, is reported.
+``uses: ./.github/workflows/...``.
+
+A job counts, and its needs and called workflows are followed, only when it
+runs on every pull request and its failure fails the run: it sets no
+``continue-on-error`` other than ``false``, and has no ``if:`` unless
+``[repository].pull_request_conditions`` lists the condition. The required job
+itself is exempt, because it usually runs ``if: always()`` to report the
+others. When a job runs the rule's check in some of its steps, at least one of
+those steps must meet the same two conditions.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from scripts.rules.model import Violation, normalized_package
 from scripts.rules.resolve import workflow_jobs
+from scripts.rules.workflows import called_workflow, normalized_condition
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from scripts.rules.model import Registry, Repository
+    from scripts.rules.model import CiRef, Registry, Repository
+    from scripts.rules.workflows import JobBlock, StepBlock
 
 CHECK = "required-check"
-# How a job calls a reusable workflow of the same repository.
-LOCAL_WORKFLOW_PREFIX = "./"
+# continue-on-error values that leave a failure failing the run.
+FAILURE_FAILS_THE_RUN = ("", "false")
+UNLISTED_CONDITION = "[repository].pull_request_conditions does not list"
 
 
-def required_jobs(root: Path, repository: Repository) -> set[tuple[str, str]] | None:
-    """Return each (workflow, job id) the required check waits for, itself included.
+@dataclass
+class Reach:
+    """The jobs the required check waits for, and the reached jobs it can't.
+
+    Both are keyed by (workflow path, job id); ``excluded`` says why each job
+    does not count.
+    """
+
+    counted: dict[tuple[str, str], JobBlock] = field(default_factory=dict)
+    excluded: dict[tuple[str, str], str] = field(default_factory=dict)
+
+
+def _condition_listed(condition: str, allowed: frozenset[str]) -> bool:
+    """Whether a job or step with this ``if:`` runs on every pull request."""
+    return not condition or normalized_condition(condition) in allowed
+
+
+def _fails_the_run(continue_on_error: str) -> bool:
+    """Whether a failure with this ``continue-on-error`` value fails the run."""
+    return continue_on_error.strip() in FAILURE_FAILS_THE_RUN
+
+
+def _job_problem(
+    workflow: str, job: JobBlock, repository: Repository, allowed: frozenset[str]
+) -> str | None:
+    """Say why a reached job may not run or fail on a pull request, if it may."""
+    where = f"job '{job.id}' in {workflow}"
+    if not _fails_the_run(job.continue_on_error):
+        return (
+            f"{where} sets continue-on-error, so its failure does not fail "
+            f"'{repository.required_check}'"
+        )
+    if not _condition_listed(job.condition, allowed):
+        return (
+            f"{where} runs only if `{normalized_condition(job.condition)}`, which "
+            f"{UNLISTED_CONDITION}"
+        )
+    return None
+
+
+def required_reach(root: Path, repository: Repository) -> Reach | None:
+    """Return the jobs the required check waits for, itself included.
 
     Return None when the pull-request workflow has no job of that name.
     """
@@ -39,27 +90,64 @@ def required_jobs(root: Path, repository: Repository) -> set[tuple[str, str]] | 
     )
     if required is None:
         return None
-    found: set[tuple[str, str]] = set()
+    allowed = frozenset(repository.pull_request_conditions)
+    reach = Reach()
     pending = [(workflow, required.id)]
     while pending:
-        workflow_path, job_id = pending.pop()
-        if (workflow_path, job_id) in found:
+        key = pending.pop()
+        if key in reach.counted or key in reach.excluded:
             continue
-        found.add((workflow_path, job_id))
+        workflow_path, job_id = key
         job = workflow_jobs(root / workflow_path)[0].get(job_id)
         if job is None:
             continue
+        problem = (
+            None
+            if job is required
+            else _job_problem(workflow_path, job, repository, allowed)
+        )
+        if problem is not None:
+            reach.excluded[key] = problem
+            continue
+        reach.counted[key] = job
         pending.extend((workflow_path, needed) for needed in job.needs)
-        if job.uses.startswith(LOCAL_WORKFLOW_PREFIX):
-            called = normalized_package(job.uses)
+        called = called_workflow(job.uses)
+        if called is not None:
             pending.extend(
                 (called, called_id) for called_id in workflow_jobs(root / called)[0]
             )
-    return found
+    return reach
+
+
+def _step_counts(step: StepBlock, allowed: frozenset[str]) -> bool:
+    """Whether a step runs on every pull request and its failure fails the job."""
+    return _fails_the_run(step.continue_on_error) and _condition_listed(
+        step.condition, allowed
+    )
+
+
+def _ref_problem(
+    ref: CiRef, reach: Reach, repository: Repository, allowed: frozenset[str]
+) -> str | None:
+    """Say why a rule's CI job cannot stop a merge, or return None if it can."""
+    key = (normalized_package(ref.workflow), ref.job)
+    where = f"job '{ref.job}' in {key[0]}"
+    if key in reach.excluded:
+        return reach.excluded[key]
+    job = reach.counted.get(key)
+    if job is None:
+        return f"{where} is not one that '{repository.required_check}' waits for"
+    running = [step for step in job.steps if ref.invocation in step.text]
+    if running and not any(_step_counts(step, allowed) for step in running):
+        return (
+            f"each step of {where} that runs '{ref.invocation}' sets "
+            f"continue-on-error or runs only under an if: that {UNLISTED_CONDITION}"
+        )
+    return None
 
 
 def check_required(registry: Registry, root: Path) -> list[Violation]:
-    """Report each blocking rule none of whose CI jobs the required check waits for.
+    """Report each blocking rule none of whose CI jobs can stop a merge.
 
     Nothing is checked while the pull-request workflow is missing, which
     validation reports.
@@ -68,8 +156,8 @@ def check_required(registry: Registry, root: Path) -> list[Violation]:
     if not repository.pr_workflow or not (root / repository.pr_workflow).is_file():
         return []
     name = repository.required_check
-    required = required_jobs(root, repository)
-    if required is None:
+    reach = required_reach(root, repository)
+    if reach is None:
         return [
             Violation(
                 None,
@@ -79,19 +167,22 @@ def check_required(registry: Registry, root: Path) -> list[Violation]:
                 "check the main branch requires",
             )
         ]
-    return [
-        Violation(
-            rule.id,
-            CHECK,
-            f"none of its CI jobs is one that '{name}' waits for, so it cannot "
-            "stop a merge",
-            f"add its job to the needs of the job named '{name}' in "
-            f"{repository.pr_workflow}",
-        )
-        for rule in registry.rules
-        if rule.blocking
-        and rule.ci
-        and not any(
-            (normalized_package(ref.workflow), ref.job) in required for ref in rule.ci
-        )
-    ]
+    allowed = frozenset(repository.pull_request_conditions)
+    violations = []
+    for rule in registry.rules:
+        if not rule.blocking or not rule.ci:
+            continue
+        problems = [_ref_problem(ref, reach, repository, allowed) for ref in rule.ci]
+        if all(problem is not None for problem in problems):
+            violations.append(
+                Violation(
+                    rule.id,
+                    CHECK,
+                    "none of its CI jobs can stop a merge: "
+                    + "; ".join(problem for problem in problems if problem),
+                    f"run it in a job that '{name}' in {repository.pr_workflow} "
+                    "waits for, without continue-on-error and without an if: "
+                    f"that {UNLISTED_CONDITION}",
+                )
+            )
+    return violations

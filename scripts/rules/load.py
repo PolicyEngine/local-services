@@ -33,6 +33,7 @@ from scripts.rules.model import (
     Tier,
     Violation,
 )
+from scripts.rules.workflows import normalized_condition
 
 _EnumT = TypeVar("_EnumT", bound=Enum)
 
@@ -56,9 +57,13 @@ _REPOSITORY_KEYS = {
     "script_directories",
     "packages",
     "file_exception_directories",
+    "pull_request_conditions",
 }
 # The first part of every rule id: one lowercase word.
 _RULE_PREFIX = re.compile(r"[a-z][a-z0-9]*")
+# Status functions that make a job run after a job it needs failed, or a step
+# run after an earlier step failed.
+_RUNS_AFTER_FAILURE = re.compile(r"\b(?:always|failure|cancelled)\s*\(")
 # A GitHub repository's owner/name.
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _AGENTS_KEYS = {"instructions", "adapters", "max_adapter_lines"}
@@ -215,8 +220,24 @@ def _repository(c: _Collector, raw: object) -> Repository:
             f"repository.rule_prefix is {prefix!r}, not one lowercase word",
             "use the word every rule id starts with, such as 'emitter'",
         )
+    conditions = tuple(
+        normalized_condition(condition)
+        for condition in c.string_list(
+            None, raw, "pull_request_conditions", where, required=False
+        )
+    )
+    for condition in conditions:
+        if _RUNS_AFTER_FAILURE.search(condition):
+            c.add(
+                None,
+                f"repository.pull_request_conditions lists {condition!r}, which "
+                "also holds after a job it needs, or an earlier step, failed",
+                "list only conditions that hold on every pull-request run, "
+                "without always(), failure() or cancelled()",
+            )
     return Repository(
         rule_prefix=prefix,
+        pull_request_conditions=conditions,
         pr_workflow=c.string(None, raw, "pr_workflow", where),
         required_check=c.string(None, raw, "required_check", where),
         script_directories=c.string_list(None, raw, "script_directories", where),
