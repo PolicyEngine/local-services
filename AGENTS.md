@@ -51,6 +51,7 @@ To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 
 ### Code quality
 
+- `emitter.quality.python-file-length`: No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under a tests or fixtures directory, or a conftest.py. (blocking: quality guard `file-length`)
 - `emitter.quality.ruff-format`: All Python is formatted with ruff format. (blocking: ruff format)
 - `emitter.quality.ruff-lint`: All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles. (blocking: ruff check (B, E, F, I, N, UP, W))
 - `emitter.quality.tests-pass`: Every test except the collector contract test passes on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs. (blocking: CI job `tests`)
