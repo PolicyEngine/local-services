@@ -432,6 +432,54 @@ class TestRepositoryLayout(unittest.TestCase):
         self.assertEqual(self.lock_messages(files, tools), [])
         self.assertEqual(len(self.lock_messages(files, elsewhere)), 1)
 
+    def test_the_lock_check_may_run_in_a_workflow_the_pr_workflow_calls(
+        self,
+    ) -> None:
+        files = {
+            ".github/workflows/pr.yaml": (
+                "on: pull_request\njobs:\n  verify:\n"
+                "    uses: ./.github/workflows/ci.yml\n"
+            ),
+            ".github/workflows/ci.yml": (
+                "on: workflow_call\njobs:\n  quality:\n"
+                "    uses: ./.github/workflows/locks.yml\n"
+            ),
+            ".github/workflows/locks.yml": (
+                "on: workflow_call\njobs:\n  locks:\n    steps:\n"
+                "      - run: bash tools/check-locks.sh\n"
+            ),
+            "tools/check-locks.sh": "uv lock --check\n",
+        }
+        repository = Repository(
+            rule_prefix="ex",
+            pr_workflow=".github/workflows/pr.yaml",
+            script_directories=("tools",),
+        )
+
+        self.assertEqual(self.lock_messages(files, repository), [])
+
+        uncalled = {
+            **files,
+            ".github/workflows/pr.yaml": (
+                "on: pull_request\njobs:\n  verify:\n    steps:\n"
+                "      - run: echo nothing\n"
+            ),
+        }
+        self.assertEqual(len(self.lock_messages(uncalled, repository)), 1)
+
+    def test_a_pr_workflow_written_from_dot_slash_matches(self) -> None:
+        files = {
+            ".github/workflows/pr.yaml": (
+                "on: pull_request\njobs:\n  locks:\n    steps:\n"
+                "      - run: uv lock --check\n"
+            ),
+        }
+        repository = Repository(
+            rule_prefix="ex", pr_workflow="./.github/workflows/pr.yaml"
+        )
+
+        self.assertEqual(self.lock_messages(files, repository), [])
+
     def test_a_script_is_no_lock_check_by_its_name(self) -> None:
         files = {
             ".github/workflows/pr.yml": (
