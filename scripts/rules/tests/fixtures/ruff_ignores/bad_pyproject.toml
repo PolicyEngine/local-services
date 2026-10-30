@@ -1,0 +1,5 @@
+# Proof fixture for the ruff-ignores guard: S is ignored, but neither the
+# rule's baseline nor its exceptions list it.
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "ANN", "S"]

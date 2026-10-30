@@ -1,0 +1,5 @@
+# Proof fixture for the ruff-ignores guard: every ignored rule is listed,
+# COM812 as an exception and ANN in the baseline.
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "ANN"]
