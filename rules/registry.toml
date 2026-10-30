@@ -653,6 +653,133 @@ autofix = false
 [rule.enforcer]
 kind = "none"
 
+# --- Dependency locking --------------------------------------------------------
+
+# The locked-installs guard names these four rules by their ids.
+[[rule]]
+id = "emitter.dependencies.lock-committed"
+category = "dependencies"
+statement = "Every project directory with a pyproject.toml commits a uv.lock that matches it, or is a member of the uv workspace whose uv.lock locks it, and a pull-request job checks the lock with uv lock --check."
+rationale = "scripts/rules/locked_installs.py"
+scope = ["pyproject.toml", "uv.lock", "packages/*/pyproject.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "uv lock --check"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/lock_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/lock_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_lock_committed"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.dependencies.install-from-lock"
+category = "dependencies"
+statement = "Every install of the project's Python dependencies, in workflows and the scripts under tools/ they run, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site."
+rationale = "scripts/rules/locked_installs.py"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/install_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/install_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_install_from_lock"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.dependencies.test-from-lock"
+category = "dependencies"
+statement = "Every test command (pytest, python -m unittest) in workflows and the scripts under tools/ they run runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site."
+rationale = "scripts/rules/locked_installs.py"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/test_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/test_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_test_from_lock"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.dependencies.scheduled-relock"
+category = "dependencies"
+statement = "A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade) and opens or updates a pull request with the result."
+rationale = "scripts/rules/locked_installs.py"
+scope = [".github/workflows/update-dependencies.yaml", "uv.lock"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "locked-installs"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/locked_installs/relock_bad"
+good_fixture = "scripts/rules/tests/fixtures/locked_installs/relock_good"
+test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::test_rule_proof_scheduled_relock"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.dependencies.uv-version-pinned"
+category = "dependencies"
+statement = "Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, and any uv container image, install script, release download or package install of uv names the release."
+rationale = "scripts/rules/uv_version.py"
+scope = [".uv-version", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "uv-version"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/uv_version/bad"
+good_fixture = "scripts/rules/tests/fixtures/uv_version/good"
+test = "scripts/rules/tests/test_uv_version.py::TestUvVersionProof::test_rule_proof_uv_version_pinned"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
 # --- CI workflows and scripts --------------------------------------------------
 
 [[rule]]
