@@ -708,6 +708,60 @@ workflow = ".github/workflows/pr.yaml"
 job = "rules"
 invocation = "unittest discover -s scripts/rules/tests"
 
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "uv tool install shellcheck-py==0.11.0.1"
+category = "pinned-tool"
+reason = "shellcheck is a binary the ci-scripts tests run; the rules job has no project environment, so it installs the exact shellcheck-py release."
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "uv run --no-project python -m unittest discover -s scripts/rules/tests"
+reason = "The rules tool uses only the standard library, so its tests run without installing the project."
+removal = "scripts/rules needs a package beyond the standard library"
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "uv run --no-project python scripts/run_quality_guards.py"
+reason = "The quality guards are the rules tool, which uses only the standard library, so they run without installing the project."
+removal = "scripts/rules needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/check-changelog.sh"
+match = "uv run --no-project python tools/bump-version.py --check"
+reason = "tools/bump-version.py uses only the standard library, so the changelog job checks fragments without installing the project."
+removal = "tools/bump-version.py needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/update-version.sh"
+match = "uv run --no-project python tools/bump-version.py"
+reason = "tools/bump-version.py uses only the standard library, so the release bumps the version before uv lock records it, without installing the project."
+removal = "tools/bump-version.py needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/update-version.sh"
+match = "uvx --from towncrier==26.9.0"
+category = "pinned-tool"
+reason = "towncrier builds the changelog at release time and is no dependency of either distribution, so the release runs the exact towncrier release."
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv pip install -e .collector/telemetry-service"
+reason = "The collector contract test runs against calibration-diagnostics' telemetry-service at the commit the script pins, which is no part of this workspace or its uv.lock."
+removal = "the contract test no longer installs the pinned collector from its source"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv pip install --reinstall --no-deps dist/*.whl"
+reason = "The contract test tests the wheels build-packages built, so they replace the workspace's editable installs; their dependencies come from the locked environment uv sync --locked installed first."
+removal = "the contract test no longer tests the built wheels"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv run --no-sync pytest tests/test_collector_contract.py"
+reason = "Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again."
+removal = "the contract test no longer tests the built wheels"
+
 [[rule]]
 id = "emitter.dependencies.test-from-lock"
 category = "dependencies"
@@ -731,6 +785,18 @@ test = "scripts/rules/tests/test_locked_installs.py::TestLockedInstallsProof::te
 workflow = ".github/workflows/pr.yaml"
 job = "rules"
 invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule.exception]]
+path = ".github/workflows/pr.yaml"
+match = "python -m unittest discover -s scripts/rules/tests"
+reason = "The rules tool uses only the standard library and is no part of either distribution, so its tests run without the project's locked environment."
+removal = "scripts/rules needs a package beyond the standard library"
+
+[[rule.exception]]
+path = "tools/check-collector.sh"
+match = "uv run --no-sync pytest tests/test_collector_contract.py"
+reason = "Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again."
+removal = "the contract test no longer tests the built wheels"
 
 [[rule]]
 id = "emitter.dependencies.scheduled-relock"

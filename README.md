@@ -171,7 +171,7 @@ Use Python 3.13 or 3.14 on Linux or macOS.
 ```bash
 uv sync --locked
 bash tools/check-quality.sh
-uv run --no-sync pytest -m 'not collector'
+uv run --locked pytest -m 'not collector'
 bash tools/check-artifacts.sh
 bash tools/check-changelog.sh
 ```

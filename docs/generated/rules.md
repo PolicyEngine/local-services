@@ -8,11 +8,11 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 31 | 0 | 0 | 7 | 38 |
+| mechanical | 36 | 0 | 0 | 7 | 43 |
 | metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 32 of 39 rules.
+**Blocking:** 37 of 44 rules.
 
 ## Gaps
 
@@ -59,7 +59,17 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 ### Exceptions and review dates
 
-- None.
+- `emitter.dependencies.install-from-lock`: exception for `.github/workflows/pr.yaml` (`uv run --no-project python -m unittest discover -s scripts/rules/tests`); remove when scripts/rules needs a package beyond the standard library (The rules tool uses only the standard library, so its tests run without installing the project.)
+- `emitter.dependencies.install-from-lock`: exception for `.github/workflows/pr.yaml` (`uv run --no-project python scripts/run_quality_guards.py`); remove when scripts/rules needs a package beyond the standard library (The quality guards are the rules tool, which uses only the standard library, so they run without installing the project.)
+- `emitter.dependencies.install-from-lock`: exception for `.github/workflows/pr.yaml` (`uv tool install shellcheck-py==0.11.0.1`) [pinned-tool] (shellcheck is a binary the ci-scripts tests run; the rules job has no project environment, so it installs the exact shellcheck-py release.)
+- `emitter.dependencies.install-from-lock`: exception for `tools/check-changelog.sh` (`uv run --no-project python tools/bump-version.py --check`); remove when tools/bump-version.py needs a package beyond the standard library (tools/bump-version.py uses only the standard library, so the changelog job checks fragments without installing the project.)
+- `emitter.dependencies.install-from-lock`: exception for `tools/check-collector.sh` (`uv pip install --reinstall --no-deps dist/*.whl`); remove when the contract test no longer tests the built wheels (The contract test tests the wheels build-packages built, so they replace the workspace's editable installs; their dependencies come from the locked environment uv sync --locked installed first.)
+- `emitter.dependencies.install-from-lock`: exception for `tools/check-collector.sh` (`uv pip install -e .collector/telemetry-service`); remove when the contract test no longer installs the pinned collector from its source (The collector contract test runs against calibration-diagnostics' telemetry-service at the commit the script pins, which is no part of this workspace or its uv.lock.)
+- `emitter.dependencies.install-from-lock`: exception for `tools/check-collector.sh` (`uv run --no-sync pytest tests/test_collector_contract.py`); remove when the contract test no longer tests the built wheels (Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again.)
+- `emitter.dependencies.install-from-lock`: exception for `tools/update-version.sh` (`uv run --no-project python tools/bump-version.py`); remove when tools/bump-version.py needs a package beyond the standard library (tools/bump-version.py uses only the standard library, so the release bumps the version before uv lock records it, without installing the project.)
+- `emitter.dependencies.install-from-lock`: exception for `tools/update-version.sh` (`uvx --from towncrier==26.9.0`) [pinned-tool] (towncrier builds the changelog at release time and is no dependency of either distribution, so the release runs the exact towncrier release.)
+- `emitter.dependencies.test-from-lock`: exception for `.github/workflows/pr.yaml` (`python -m unittest discover -s scripts/rules/tests`); remove when scripts/rules needs a package beyond the standard library (The rules tool uses only the standard library and is no part of either distribution, so its tests run without the project's locked environment.)
+- `emitter.dependencies.test-from-lock`: exception for `tools/check-collector.sh` (`uv run --no-sync pytest tests/test_collector_contract.py`); remove when the contract test no longer tests the built wheels (Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again.)
 
 ## Runtime and package boundaries
 
@@ -251,6 +261,37 @@ flowchart LR
   r_emitter_quality_tests_pass --> e_CI_job_tests
   e_CI_job_tests --> j_CI_ci_yml_tests
   r_emitter_quality_toolchain -.-> gap_unenforced
+```
+
+## Dependency locking
+
+| Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `emitter.dependencies.install-from-lock` | Every install of the project's Python dependencies, in workflows and the scripts under tools/ they run, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules` | yes |
+| `emitter.dependencies.lock-committed` | Every project directory with a pyproject.toml commits a uv.lock that matches it, or is a member of the uv workspace whose uv.lock locks it, and a pull-request job checks the lock with uv lock --check. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules`, `ci.yml:quality` | yes |
+| `emitter.dependencies.scheduled-relock` | A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade) and opens or updates a pull request with the result. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules` | yes |
+| `emitter.dependencies.test-from-lock` | Every test command (pytest, python -m unittest) in workflows and the scripts under tools/ they run runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules` | yes |
+| `emitter.dependencies.uv-version-pinned` | Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, and any uv container image, install script, release download or package install of uv names the release. | mechanical | enforced | yes | quality guard `uv-version` | `pr.yaml:rules` | yes |
+
+```mermaid
+flowchart LR
+  r_emitter_dependencies_install_from_lock("emitter.dependencies.install-from-lock (enforced)")
+  e_quality_guard_locked_installs["quality guard locked-installs"]
+  j_CI_pr_yaml_rules["CI pr.yaml:rules"]
+  r_emitter_dependencies_lock_committed("emitter.dependencies.lock-committed (enforced)")
+  j_CI_ci_yml_quality["CI ci.yml:quality"]
+  r_emitter_dependencies_scheduled_relock("emitter.dependencies.scheduled-relock (enforced)")
+  r_emitter_dependencies_test_from_lock("emitter.dependencies.test-from-lock (enforced)")
+  r_emitter_dependencies_uv_version_pinned("emitter.dependencies.uv-version-pinned (enforced)")
+  e_quality_guard_uv_version["quality guard uv-version"]
+  r_emitter_dependencies_install_from_lock --> e_quality_guard_locked_installs
+  e_quality_guard_locked_installs --> j_CI_pr_yaml_rules
+  r_emitter_dependencies_lock_committed --> e_quality_guard_locked_installs
+  e_quality_guard_locked_installs --> j_CI_ci_yml_quality
+  r_emitter_dependencies_scheduled_relock --> e_quality_guard_locked_installs
+  r_emitter_dependencies_test_from_lock --> e_quality_guard_locked_installs
+  r_emitter_dependencies_uv_version_pinned --> e_quality_guard_uv_version
+  e_quality_guard_uv_version --> j_CI_pr_yaml_rules
 ```
 
 ## CI workflows and scripts

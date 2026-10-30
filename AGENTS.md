@@ -59,6 +59,14 @@ To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 - `emitter.quality.tests-pass`: Every pytest test under tests/ except the collector contract test passes in ci.yml's tests job, on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs. (blocking: CI job `tests`)
 - `emitter.quality.toolchain`: Use uv, Python 3.13 or later, pytest and Ruff. (doc-only, not checked: follow it yourself)
 
+### Dependency locking
+
+- `emitter.dependencies.install-from-lock`: Every install of the project's Python dependencies, in workflows and the scripts under tools/ they run, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.lock-committed`: Every project directory with a pyproject.toml commits a uv.lock that matches it, or is a member of the uv workspace whose uv.lock locks it, and a pull-request job checks the lock with uv lock --check. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.scheduled-relock`: A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade) and opens or updates a pull request with the result. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.test-from-lock`: Every test command (pytest, python -m unittest) in workflows and the scripts under tools/ they run runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.uv-version-pinned`: Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, and any uv container image, install script, release download or package install of uv names the release. (blocking: quality guard `uv-version`)
+
 ### CI workflows and scripts
 
 - `emitter.ci.pull-request-workflow-structure`: pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages. (blocking: pytest `tests/test_workflows.py`)
