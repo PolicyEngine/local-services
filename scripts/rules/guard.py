@@ -11,6 +11,7 @@ from scripts.rules.adapters import check_adapters
 from scripts.rules.baseline import (
     BaseUnavailableError,
     check_baselines,
+    check_ci_scripts_baselines,
     check_pyright_packages,
     default_base_ref,
     load_base_registry,
@@ -148,6 +149,7 @@ def _compare_with_base(
     ):
         result.violations += violations
         result.notes += notes
+    result.violations += check_ci_scripts_baselines(registry, root, ref)
 
 
 def check(root: Path = REPO_ROOT) -> list[str]:

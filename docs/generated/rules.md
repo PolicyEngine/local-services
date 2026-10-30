@@ -8,17 +8,17 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 37 | 0 | 0 | 7 | 44 |
+| mechanical | 39 | 0 | 0 | 7 | 46 |
 | metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 38 of 45 rules.
+**Blocking:** 40 of 47 rules.
 
 ## Gaps
 
 ### Not enforced (doc-only)
 
-- `emitter.ci.shell-logic-in-tools-scripts`: Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command.
+- `emitter.ci.shell-logic-in-tools-scripts`: Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command, and a test runs that script, with fake commands in place of anything it would change or reach outside the test.
 - `emitter.persistence.sqlalchemy-and-alembic-only`: Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL or direct-driver persistence in any form, no schema repair and no adoption of databases made before Alembic.
 - `emitter.persistence.typescript-uses-drizzle`: TypeScript database code, if any is added, uses Drizzle ORM and Drizzle Kit migrations.
 - `emitter.process.feature-branches-and-pull-requests`: Push feature branches and open pull requests; never push to main directly, merge automatically or monitor queued checks.
@@ -39,7 +39,6 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 - `emitter.boundaries.shared-definitions-written-once`
 - `emitter.boundaries.telemetry-client-imports-no-service-code`
 - `emitter.ci.pull-request-workflow-structure`
-- `emitter.ci.run-steps-are-one-line`
 - `emitter.dependencies.dependabot-relock`
 - `emitter.distributions.exactly-two-at-one-version`
 - `emitter.distributions.lock-only-merges-release-nothing`
@@ -309,15 +308,20 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `emitter.ci.multiline-run-is-script` | Every workflow run: step holds one command: one line of code, with no commands chained by &&, \|\| or ;. | mechanical | enforced | yes | quality guard `ci-scripts` | `pr.yaml:rules` | yes |
 | `emitter.ci.pull-request-workflow-structure` | pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.required-checks` | Every pull request runs the verification workflow, ci.yml, and Required checks, the one status check main's ruleset requires, passes only when every other pull-request job succeeded. | mechanical | enforced | yes | CI job `verify`, `required` | `pr.yaml:verify`, `pr.yaml:required` | — |
-| `emitter.ci.run-steps-are-one-line` | No workflow run: step spans more than one line of text. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
-| `emitter.ci.shell-logic-in-tools-scripts` | Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command. | mechanical | doc-only | no | nothing | — | — |
+| `emitter.ci.shell-logic-in-tools-scripts` | Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command, and a test runs that script, with fake commands in place of anything it would change or reach outside the test. | mechanical | doc-only | no | nothing | — | — |
 | `emitter.ci.shell-scripts-parse` | Every shell script under tools/ parses (bash -n). | mechanical | enforced | yes | CI job `quality` | `ci.yml:quality` | — |
+| `emitter.ci.shell-scripts-pass-shellcheck` | Every shell script under tools/ passes shellcheck, which the Rules registry job installs as shellcheck-py 0.11.0.1. | mechanical | enforced | yes | quality guard `ci-scripts` | `pr.yaml:rules` | yes |
+| `emitter.ci.workflow-scripts-tested` | Every shell script under tools/ that a workflow calls is named in a test file under tests/. | mechanical | enforced | yes | quality guard `ci-scripts` | `pr.yaml:rules` | yes |
 | `emitter.ci.workflows-pass-actionlint` | Every workflow passes actionlint 1.7.12, which also runs shellcheck on each run: step. | mechanical | enforced | yes | CI job `lint-workflows` | `pr.yaml:lint-workflows` | — |
 
 ```mermaid
 flowchart LR
+  r_emitter_ci_multiline_run_is_script("emitter.ci.multiline-run-is-script (enforced)")
+  e_quality_guard_ci_scripts["quality guard ci-scripts"]
+  j_CI_pr_yaml_rules["CI pr.yaml:rules"]
   r_emitter_ci_pull_request_workflow_structure("emitter.ci.pull-request-workflow-structure (enforced)")
   e_pytest_tests_test_workflows_py["pytest tests/test_workflows.py"]
   j_CI_ci_yml_tests["CI ci.yml:tests"]
@@ -325,24 +329,28 @@ flowchart LR
   e_CI_job_verify__required["CI job verify, required"]
   j_CI_pr_yaml_verify["CI pr.yaml:verify"]
   j_CI_pr_yaml_required["CI pr.yaml:required"]
-  r_emitter_ci_run_steps_are_one_line("emitter.ci.run-steps-are-one-line (enforced)")
   r_emitter_ci_shell_logic_in_tools_scripts("emitter.ci.shell-logic-in-tools-scripts (doc-only)")
   gap_unenforced>"not enforced"]
   r_emitter_ci_shell_scripts_parse("emitter.ci.shell-scripts-parse (enforced)")
   e_CI_job_quality["CI job quality"]
   j_CI_ci_yml_quality["CI ci.yml:quality"]
+  r_emitter_ci_shell_scripts_pass_shellcheck("emitter.ci.shell-scripts-pass-shellcheck (enforced)")
+  r_emitter_ci_workflow_scripts_tested("emitter.ci.workflow-scripts-tested (enforced)")
   r_emitter_ci_workflows_pass_actionlint("emitter.ci.workflows-pass-actionlint (enforced)")
   e_CI_job_lint_workflows["CI job lint-workflows"]
   j_CI_pr_yaml_lint_workflows["CI pr.yaml:lint-workflows"]
+  r_emitter_ci_multiline_run_is_script --> e_quality_guard_ci_scripts
+  e_quality_guard_ci_scripts --> j_CI_pr_yaml_rules
   r_emitter_ci_pull_request_workflow_structure --> e_pytest_tests_test_workflows_py
   e_pytest_tests_test_workflows_py --> j_CI_ci_yml_tests
   r_emitter_ci_required_checks --> e_CI_job_verify__required
   e_CI_job_verify__required --> j_CI_pr_yaml_verify
   e_CI_job_verify__required --> j_CI_pr_yaml_required
-  r_emitter_ci_run_steps_are_one_line --> e_pytest_tests_test_workflows_py
   r_emitter_ci_shell_logic_in_tools_scripts -.-> gap_unenforced
   r_emitter_ci_shell_scripts_parse --> e_CI_job_quality
   e_CI_job_quality --> j_CI_ci_yml_quality
+  r_emitter_ci_shell_scripts_pass_shellcheck --> e_quality_guard_ci_scripts
+  r_emitter_ci_workflow_scripts_tested --> e_quality_guard_ci_scripts
   r_emitter_ci_workflows_pass_actionlint --> e_CI_job_lint_workflows
   e_CI_job_lint_workflows --> j_CI_pr_yaml_lint_workflows
 ```
