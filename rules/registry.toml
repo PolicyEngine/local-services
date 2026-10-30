@@ -994,7 +994,7 @@ invocation = "rhysd/actionlint"
 [[rule]]
 id = "emitter.ci.pull-request-workflow-structure"
 category = "ci"
-statement = "pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages; pr-description.yaml runs only for open pull requests into main, on every event that can change the description, with read-only permissions, in one job named PR description."
+statement = "pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages; pr-description.yaml runs for open pull requests whose base, or whose stack's final target, is main, on every event that can change the description, with read-only permissions, in one job named PR description."
 rationale = "README.md#publication"
 scope = [".github/workflows/pr.yaml", ".github/workflows/ci.yml", ".github/workflows/pr-description.yaml"]
 tier = "mechanical"
@@ -1095,7 +1095,7 @@ invocation = "tools/check-changelog.sh"
 [[rule]]
 id = "emitter.process.pr-tracking-issue"
 category = "process"
-statement = "The first line of every open pull request's description into main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository; automated pull requests open or reuse such an issue."
+statement = "The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository; automated pull requests open or reuse such an issue."
 rationale = "README.md#publication"
 scope = [".github/workflows/pr-description.yaml", "scripts/rules/pr_description.py", "tools/relock-open-pull-request.sh"]
 tier = "mechanical"
