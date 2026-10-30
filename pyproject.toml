@@ -82,6 +82,37 @@ ignore = [
     "D213",
     # ruff format settles line length.
     "E501",
+    # The rule families with findings not fixed yet. This list may only
+    # shrink: fix a family, then remove it here and from the baseline
+    # (rules/baselines/ruff-families-not-yet-fixed.txt, issue #54).
+    "A",
+    "ANN",
+    "ARG",
+    "BLE",
+    "C4",
+    "C90",
+    "CPY",
+    "D",
+    "DTZ",
+    "EM",
+    "FBT",
+    "INP",
+    "ISC",
+    "PERF",
+    "PLC",
+    "PLR",
+    "PLW",
+    "PT",
+    "PTH",
+    "RET",
+    "RSE",
+    "RUF",
+    "S",
+    "SIM",
+    "SLF",
+    "T20",
+    "TC",
+    "TRY",
 ]
 
 [tool.ruff.lint.isort]

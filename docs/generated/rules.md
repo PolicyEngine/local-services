@@ -8,11 +8,11 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 39 | 0 | 0 | 7 | 46 |
+| mechanical | 39 | 1 | 0 | 7 | 47 |
 | metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 40 of 47 rules.
+**Blocking:** 41 of 48 rules.
 
 ## Gaps
 
@@ -54,7 +54,7 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 ### Ratcheted (existing violations still tolerated)
 
-- None.
+- `emitter.quality.ruff-families-not-yet-fixed`: 28 remaining in `rules/baselines/ruff-families-not-yet-fixed.txt`
 
 ### Exceptions and review dates
 
@@ -71,6 +71,11 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 - `emitter.dependencies.install-from-lock`: exception for `tools/update-version.sh` (`uvx --from towncrier==26.9.0`) [pinned-tool] (towncrier builds the changelog at release time and is no dependency of either distribution, so the release runs the exact towncrier release.)
 - `emitter.dependencies.test-from-lock`: exception for `.github/workflows/pr.yaml` (`python -m unittest discover -s scripts/rules/tests`); remove when scripts/rules needs a package beyond the standard library (The rules tool uses only the standard library and is no part of either distribution, so its tests run without the project's locked environment.)
 - `emitter.dependencies.test-from-lock`: exception for `tools/check-collector.sh` (`uv run --no-sync pytest tests/test_collector_contract.py`); remove when the contract test no longer tests the built wheels (Syncing would replace the installed wheels with the workspace sources, so the contract test runs in the locked environment without syncing it again.)
+- `emitter.quality.ruff-families-not-yet-fixed`: exception for `pyproject.toml` (`COM812`) (It conflicts with ruff format, which places trailing commas.)
+- `emitter.quality.ruff-families-not-yet-fixed`: exception for `pyproject.toml` (`D203`) (It conflicts with D211 (no blank line before a class docstring), which stays on.)
+- `emitter.quality.ruff-families-not-yet-fixed`: exception for `pyproject.toml` (`D213`) (It conflicts with D212 (a multi-line docstring's summary on its first line), which stays on.)
+- `emitter.quality.ruff-families-not-yet-fixed`: exception for `pyproject.toml` (`E501`) (ruff format settles line length; the lines it leaves long are strings and comments it does not break.)
+- `emitter.quality.ruff-families-not-yet-fixed`: exception for `pyproject.toml` (`ISC001`) (It conflicts with ruff format, which may join implicitly concatenated strings onto one line.)
 
 ## Runtime and package boundaries
 
@@ -228,6 +233,7 @@ flowchart LR
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.quality.python-file-length` | No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under tests/ or under the rules tool's tests and fixtures, scripts/rules/tests/. | metric | enforced | yes | quality guard `file-length` | `pr.yaml:rules` | yes |
+| `emitter.quality.ruff-families-not-yet-fixed` | Ruff ignores only the rules this rule lists: the rule families whose findings are not fixed yet, in its baseline, which may only shrink, and the rules that stay off, as its exceptions with their reasons. | mechanical | ratcheted | yes | quality guard `ruff-ignores` | `pr.yaml:rules` | yes |
 | `emitter.quality.ruff-format` | All Python is formatted with ruff format. | mechanical | enforced | yes | ruff format | `ci.yml:quality` | — |
 | `emitter.quality.ruff-lint` | All Python passes ruff check with every Ruff rule selected (ALL), except the rules emitter.quality.ruff-families-not-yet-fixed lists: the families not fixed yet, and the rules that stay off (COM812 and ISC001, which conflict with ruff format, D203 and D213, which conflict with D211 and D212, and E501, which ruff format settles). | mechanical | enforced | yes | ruff check (ALL) | `ci.yml:quality` | — |
 | `emitter.quality.rules-tool-tests-pass` | The rules tool's own tests, the unittest tests under scripts/rules/tests, pass in pr.yaml's rules job, on Ubuntu with Python 3.13 and only the standard library. | mechanical | enforced | yes | CI job `rules` | `pr.yaml:rules` | — |
@@ -239,6 +245,8 @@ flowchart LR
   r_emitter_quality_python_file_length("emitter.quality.python-file-length (enforced)")
   e_quality_guard_file_length["quality guard file-length"]
   j_CI_pr_yaml_rules["CI pr.yaml:rules"]
+  r_emitter_quality_ruff_families_not_yet_fixed("emitter.quality.ruff-families-not-yet-fixed (ratcheted)")
+  e_quality_guard_ruff_ignores["quality guard ruff-ignores"]
   r_emitter_quality_ruff_format("emitter.quality.ruff-format (enforced)")
   e_ruff_format["ruff format"]
   j_CI_ci_yml_quality["CI ci.yml:quality"]
@@ -253,6 +261,8 @@ flowchart LR
   gap_unenforced>"not enforced"]
   r_emitter_quality_python_file_length --> e_quality_guard_file_length
   e_quality_guard_file_length --> j_CI_pr_yaml_rules
+  r_emitter_quality_ruff_families_not_yet_fixed --> e_quality_guard_ruff_ignores
+  e_quality_guard_ruff_ignores --> j_CI_pr_yaml_rules
   r_emitter_quality_ruff_format --> e_ruff_format
   e_ruff_format --> j_CI_ci_yml_quality
   r_emitter_quality_ruff_lint --> e_ruff_check__ALL_

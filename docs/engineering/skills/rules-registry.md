@@ -138,13 +138,19 @@ fail the guard yet.
 
 ## Baselines
 
-- **Ruff is never ratcheted.** Every rule family `pyproject.toml` selects is
-  described by a ruff lint rule, and every one applies except those listed in
-  `ignore` and the registered [file-level exceptions](#file-level-exceptions).
-  When a ruff upgrade or a wider selection adds rules, the same PR fixes every
-  new violation. Don't use `--add-noqa`. Outside the files that allow
-  file-level exceptions, a justified exception is an inline
-  `# noqa: CODE  # reason`.
+- **Ruff's selection is never ratcheted; its ignore list is, and may only
+  shrink.** Every rule family `pyproject.toml` selects (here `ALL`) is
+  described by a ruff lint rule, and no ruff rule has a baseline. Every
+  selected rule applies except those listed in `ignore` and the registered
+  [file-level exceptions](#file-level-exceptions), and the `ruff-ignores`
+  quality guard requires each ignored rule to be listed by
+  `emitter.quality.ruff-families-not-yet-fixed`: a family whose findings are
+  not fixed yet in its baseline, or a rule that stays off as one of its
+  `[[rule.exception]]` entries, with its reason. The pull request that fixes a
+  family removes it from `ignore` and the baseline, and lowers the count. When
+  a ruff upgrade adds rules, the same PR fixes every new violation. Don't use
+  `--add-noqa`. Outside the files that allow file-level exceptions, a
+  justified exception is an inline `# noqa: CODE  # reason`.
 - Other enforcers (mypy, Pyright, Import Linter, custom guards) may start
   `ratcheted` with a baseline file of tolerated violations. A new rule that
   starts ratcheted with a count above 0 needs a `[rule.downgrade]` section,

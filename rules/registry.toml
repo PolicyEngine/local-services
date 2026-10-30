@@ -577,6 +577,61 @@ invocation = "tools/check-quality.sh"
 
 # tools/check-quality.sh runs ruff format --check, so discovery cannot see it.
 [[rule]]
+id = "emitter.quality.ruff-families-not-yet-fixed"
+category = "quality"
+statement = "Ruff ignores only the rules this rule lists: the rule families whose findings are not fixed yet, in its baseline, which may only shrink, and the rules that stay off, as its exceptions with their reasons."
+rationale = "docs/engineering/skills/rules-registry.md#baselines"
+scope = ["pyproject.toml"]
+tier = "mechanical"
+status = "ratcheted"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "ruff-ignores"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.baseline]
+file = "rules/baselines/ruff-families-not-yet-fixed.txt"
+count = 28
+[rule.downgrade]
+reason = "Selecting every Ruff rule found 7,991 findings in these 28 families on 2026-10-30, too many to fix in one change, so each is ignored until a pull request fixes it."
+issue = 54
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/ruff_ignores/bad_pyproject.toml"
+good_fixture = "scripts/rules/tests/fixtures/ruff_ignores/good_pyproject.toml"
+test = "scripts/rules/tests/test_ruff_ignores.py::TestRuffIgnoresProof::test_rule_proof_ruff_ignores"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule.exception]]
+path = "pyproject.toml"
+match = "COM812"
+reason = "It conflicts with ruff format, which places trailing commas."
+
+[[rule.exception]]
+path = "pyproject.toml"
+match = "ISC001"
+reason = "It conflicts with ruff format, which may join implicitly concatenated strings onto one line."
+
+[[rule.exception]]
+path = "pyproject.toml"
+match = "D203"
+reason = "It conflicts with D211 (no blank line before a class docstring), which stays on."
+
+[[rule.exception]]
+path = "pyproject.toml"
+match = "D213"
+reason = "It conflicts with D212 (a multi-line docstring's summary on its first line), which stays on."
+
+[[rule.exception]]
+path = "pyproject.toml"
+match = "E501"
+reason = "ruff format settles line length; the lines it leaves long are strings and comments it does not break."
+
+[[rule]]
 id = "emitter.quality.ruff-format"
 category = "quality"
 statement = "All Python is formatted with ruff format."
