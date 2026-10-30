@@ -17,7 +17,10 @@ pins another one:
 - the uv install script and uv release downloads must name the version in
   their URL;
 - ``pip``, ``pipx`` or ``uv tool`` installs of the ``uv`` package must pin
-  ``uv==<version>``, and ``uv self update`` must name the version.
+  ``uv==<version>``, and ``uv self update`` must name the version;
+- when the repository root has a ``pyproject.toml``, its ``[tool.uv]
+  required-version`` must be ``==<version>``, so a developer's uv refuses to
+  run the project with another release.
 
 A workflow input can't be read from a file, and Modal imports its image
 definitions inside containers that don't hold the repository root, so each
@@ -28,6 +31,7 @@ install writes the version itself and this guard keeps every copy equal to
 from __future__ import annotations
 
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,6 +48,8 @@ if TYPE_CHECKING:
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_NAME = "uv-version"
 VERSION_FILE = ".uv-version"
+# The project at the repository root, whose [tool.uv] uv itself reads.
+ROOT_PROJECT = "pyproject.toml"
 
 # The kinds of uv install, each with how to pin it.
 SETUP_UV_STEP = "astral-sh/setup-uv step"
@@ -362,6 +368,35 @@ def compare(
     return violations
 
 
+def required_version_problems(
+    root: Path, pinned: str, rule_id: str | None = None
+) -> list[Violation]:
+    """Report a root pyproject.toml whose uv required-version is not ``==pinned``.
+
+    A repository without a root pyproject.toml has nowhere to set it.
+    """
+    pyproject = root / ROOT_PROJECT
+    if not pyproject.is_file():
+        return []
+    expected = f"=={pinned}"
+    fix = f'set required-version = "{expected}" under [tool.uv] in {ROOT_PROJECT}'
+    try:
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return [Violation(rule_id, GUARD_NAME, f"{ROOT_PROJECT} is not TOML", fix)]
+    required = config.get("tool", {}).get("uv", {}).get("required-version")
+    if required is None:
+        message = f"{ROOT_PROJECT} sets no [tool.uv] required-version"
+    elif required != expected:
+        message = (
+            f"{ROOT_PROJECT}'s [tool.uv] required-version is {required!r}, "
+            f"not {expected!r}"
+        )
+    else:
+        return []
+    return [Violation(rule_id, GUARD_NAME, message, fix)]
+
+
 def guard_rule_id(registry: Registry | None) -> str | None:
     """Return the id of the registry's rule that lists this guard, if any."""
     if registry is None:
@@ -386,6 +421,7 @@ def run_check(root: Path = REPO_ROOT) -> list[Violation]:
     return [
         *violations,
         *compare(scan(root, test_directories=test_directories), pinned, rule_id),
+        *(required_version_problems(root, pinned, rule_id) if pinned else []),
     ]
 
 
