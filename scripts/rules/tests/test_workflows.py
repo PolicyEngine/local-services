@@ -8,7 +8,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from scripts.rules.workflows import JobBlock, RunBlock, StepBlock, parse_jobs
+from scripts.rules.workflows import JobBlock, RunBlock, parse_jobs
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -81,68 +81,6 @@ jobs:
     def test_anchors_are_reported(self) -> None:
         _, problems = parse_jobs("jobs:\n  a: &base\n    steps: []\n")
         self.assertTrue(problems)
-
-
-class NeedsTest(unittest.TestCase):
-    def test_needs_are_read_in_each_form(self) -> None:
-        jobs, problems = parse_jobs(
-            "jobs:\n"
-            "  one:\n    needs: build\n    steps: []\n"
-            "  inline:\n    needs: [build, 'test']\n    steps: []\n"
-            '  block:\n    needs:\n      - build\n      - "test"\n    steps: []\n'
-            "  none:\n    steps:\n      - name: needs\n        run: echo needs\n"
-        )
-
-        self.assertEqual(problems, [])
-        self.assertEqual(
-            {job_id: job.needs for job_id, job in jobs.items()},
-            {
-                "one": ("build",),
-                "inline": ("build", "test"),
-                "block": ("build", "test"),
-                "none": (),
-            },
-        )
-
-
-class ConditionsTest(unittest.TestCase):
-    def test_job_and_step_conditions_and_continue_on_error_are_read(self) -> None:
-        jobs, problems = parse_jobs(
-            "jobs:\n"
-            "  build:\n"
-            "    if: ${{ github.event_name == 'push' }}\n"
-            "    continue-on-error: true\n"
-            "    steps:\n"
-            "      - name: Build\n"
-            '        if: "success()"\n'
-            "        continue-on-error: ${{ matrix.experimental }}\n"
-            "        run: make build\n"
-            "      - uses: actions/checkout@v4\n"
-            "        with:\n"
-            "          if: not a step setting\n"
-            "      - run: |\n"
-            "          make test\n"
-            "  plain:\n"
-            "    steps:\n"
-            "      - run: make\n"
-        )
-
-        self.assertEqual(problems, [])
-        build, plain = jobs["build"], jobs["plain"]
-        self.assertEqual(build.condition, "${{ github.event_name == 'push' }}")
-        self.assertEqual(build.continue_on_error, "true")
-        self.assertEqual(
-            [
-                (step.label, step.text, step.condition, step.continue_on_error)
-                for step in build.steps
-            ],
-            [
-                ("Build", "make build", "success()", "${{ matrix.experimental }}"),
-                ("step 2", "actions/checkout@v4", "", ""),
-                ("step 3", "make test", "", ""),
-            ],
-        )
-        self.assertEqual((plain.condition, plain.continue_on_error), ("", ""))
 
 
 SYNTHETIC_WORKFLOW = """
@@ -241,15 +179,6 @@ class JobParsingTest(unittest.TestCase):
                         text='echo "a; b"\n\necho ${{ x || y }}',
                     ),
                 ),
-                steps=(
-                    StepBlock(1, "First", "folded one\nfolded two"),
-                    StepBlock(2, "step 2", "actions/checkout@v4"),
-                    StepBlock(3, "step 3", "echo a && echo b"),
-                    # The bare string is a step with no run: or uses:.
-                    StepBlock(4, "step 4", ""),
-                    StepBlock(5, "Third", 'echo "a; b"\n\necho ${{ x || y }}'),
-                    StepBlock(6, "Fourth", "org/action@v1"),
-                ),
             ),
         )
 
@@ -287,10 +216,6 @@ class JobParsingTest(unittest.TestCase):
                         chained=False,
                         text="multi\nline",
                     ),
-                ),
-                steps=(
-                    StepBlock(1, "Unindented list", "make test"),
-                    StepBlock(2, "Named after run", "multi\nline"),
                 ),
             ),
         )

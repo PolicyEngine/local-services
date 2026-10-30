@@ -6,11 +6,9 @@ dependencies, so this reads only the subset these repositories use: block-style
 block scalars), and ``strategy.matrix`` lists. Anything outside that subset is
 reported as unsupported rather than guessed at.
 
-It answers five questions: does job X exist, does its run text (or reusable
-workflow reference) contain a given invocation string, does each step's
-``run:`` block hold more than one line of code (or chain several commands),
-which jobs does a job need, and which ``if:`` and ``continue-on-error``
-settings do a job and each of its steps have?
+It answers three questions: does job X exist, does its run text (or reusable
+workflow reference) contain a given invocation string, and does each step's
+``run:`` block hold more than one line of code (or chain several commands)?
 """
 
 from __future__ import annotations
@@ -26,21 +24,8 @@ _LIST_ITEM = re.compile(r"^(\s*)-\s+(.*)$")
 _UNSUPPORTED = re.compile(r"(<<:|:\s*[&*][A-Za-z0-9_-]+\s*$)")
 # A quoted scalar is at least its opening and closing quote.
 _QUOTE_PAIR_LENGTH = 2
-_EXPRESSION = re.compile(r"^\$\{\{(.*)\}\}$", re.DOTALL)
-# The settings of a job or step that decide whether it runs, and whether its
-# failure fails the run.
-_RUN_SETTINGS = ("if", "continue-on-error")
 # How a job calls a reusable workflow of the same repository.
 _LOCAL_WORKFLOW_PREFIX = "./"
-
-
-def normalized_condition(condition: str) -> str:
-    """Return an ``if:`` condition without ``${{ }}`` and with single spaces."""
-    text = condition.strip()
-    expression = _EXPRESSION.match(text)
-    if expression:
-        text = expression.group(1)
-    return " ".join(text.split())
 
 
 def called_workflow(uses: str) -> str | None:
@@ -66,21 +51,6 @@ class RunBlock:
 
 
 @dataclass(frozen=True)
-class StepBlock:
-    """One step: its label, its ``run:`` or ``uses:`` text, and its run settings.
-
-    ``condition`` is the step's ``if:`` and ``continue_on_error`` its
-    ``continue-on-error:``, each as written, or empty when absent.
-    """
-
-    number: int
-    label: str
-    text: str
-    condition: str = ""
-    continue_on_error: str = ""
-
-
-@dataclass(frozen=True)
 class JobBlock:
     """One workflow job: its run text, step names, ``uses:`` references and matrix."""
 
@@ -92,12 +62,6 @@ class JobBlock:
     step_uses: tuple[str, ...] = ()
     matrix: dict[str, tuple[str, ...]] = field(default_factory=dict)
     run_blocks: tuple[RunBlock, ...] = ()
-    # The ids of the jobs it needs, from its ``needs:``.
-    needs: tuple[str, ...] = ()
-    # The job's ``if:`` and ``continue-on-error:``, as written, or empty.
-    condition: str = ""
-    continue_on_error: str = ""
-    steps: tuple[StepBlock, ...] = ()
 
     def invokes(self, invocation: str) -> bool:
         """Whether the job's commands or actions mention ``invocation``."""
@@ -207,8 +171,6 @@ class _JobReader:
         self.runs: list[str] = []
         self.steps: list[str] = []
         self.matrix: dict[str, tuple[str, ...]] = {}
-        self.needs: tuple[str, ...] = ()
-        self.settings: dict[str, str] = {}
         self.body_indent: int | None = None
         # Step tracking, so each run: block can be attributed to its step.
         self.item_indent: int | None = None
@@ -216,8 +178,6 @@ class _JobReader:
         self.step_index = 0
         self.step_key_column = -1
         self.step_labels: dict[int, str] = {}
-        self.step_texts: dict[int, list[str]] = {}
-        self.step_settings: dict[int, dict[str, str]] = {}
         self.blocks: list[tuple[int, str, str]] = []
 
     def read(self) -> None:
@@ -240,24 +200,9 @@ class _JobReader:
             step_uses=tuple(self.step_uses),
             step_names=tuple(self.steps),
             matrix=self.matrix,
-            needs=self.needs,
-            condition=self.settings.get("if", ""),
-            continue_on_error=self.settings.get("continue-on-error", ""),
-            steps=tuple(
-                StepBlock(
-                    number=number,
-                    label=self._step_label(number),
-                    text="\n".join(self.step_texts.get(number, [])),
-                    condition=self.step_settings.get(number, {}).get("if", ""),
-                    continue_on_error=self.step_settings.get(number, {}).get(
-                        "continue-on-error", ""
-                    ),
-                )
-                for number in range(1, self.step_index + 1)
-            ),
             run_blocks=tuple(
                 RunBlock(
-                    step=self._step_label(number),
+                    step=self.step_labels.get(number) or f"step {number}",
                     code_lines=code_lines(text),
                     chained=chains_commands(text),
                     text=text,
@@ -265,15 +210,6 @@ class _JobReader:
                 for number, text, _style in self.blocks
             ),
         )
-
-    def _step_label(self, number: int) -> str:
-        """Return a step's name, or its position when it has none."""
-        return self.step_labels.get(number) or f"step {number}"
-
-    def _add_step_text(self, text: str) -> None:
-        """Record ``run:`` or ``uses:`` text as the current step's."""
-        if self.in_steps:
-            self.step_texts.setdefault(self.step_index, []).append(text)
 
     def _still_inside(self, column: int) -> bool:
         """Whether the current line is blank or indented past ``column``."""
@@ -311,8 +247,6 @@ class _JobReader:
             self._read_block_scalar(entry)
         elif entry.key == "matrix" and not entry.value:
             self._read_matrix(entry.column)
-        elif entry.key == "needs" and entry.top_level:
-            self._read_needs(entry)
         else:
             self._record_scalar(entry)
             self.index += 1
@@ -336,17 +270,8 @@ class _JobReader:
             self.step_labels[self.step_index] = _unquote(entry.value)
 
     def _record_scalar(self, entry: _KeyLine) -> None:
-        """Record a one-line ``name:``, ``uses:``, ``run:`` or run setting."""
-        if entry.key in _RUN_SETTINGS and entry.top_level:
-            self.settings[entry.key] = _unquote(entry.value)
-        elif (
-            entry.key in _RUN_SETTINGS
-            and self.in_steps
-            and entry.column == self.step_key_column
-        ):
-            settings = self.step_settings.setdefault(self.step_index, {})
-            settings[entry.key] = _unquote(entry.value)
-        elif entry.key == "name" and entry.top_level:
+        """Record a one-line ``name:``, ``uses:`` or ``run:`` value."""
+        if entry.key == "name" and entry.top_level:
             self.name = _unquote(entry.value)
         elif entry.key == "name":
             self.steps.append(_unquote(entry.value))
@@ -354,11 +279,9 @@ class _JobReader:
             self.uses = _unquote(entry.value)
         elif entry.key == "uses":
             self.step_uses.append(_unquote(entry.value))
-            self._add_step_text(_unquote(entry.value))
         elif entry.key == "run":
             self.runs.append(_unquote(entry.value))
             self.blocks.append((self.step_index, _unquote(entry.value), "|"))
-            self._add_step_text(_unquote(entry.value))
 
     def _read_block_scalar(self, entry: _KeyLine) -> None:
         """Read a ``|`` or ``>`` run: block, one stripped line per script line."""
@@ -369,28 +292,6 @@ class _JobReader:
             self.index += 1
         self.runs.append("\n".join(block))
         self.blocks.append((self.step_index, "\n".join(block), entry.value.strip()[:1]))
-        self._add_step_text("\n".join(block))
-
-    def _read_needs(self, entry: _KeyLine) -> None:
-        """Read ``needs:``: one job, an inline list, or a block list of jobs."""
-        self.index += 1
-        value = entry.value.strip()
-        if value.startswith("["):
-            self.needs = _inline_list(value)
-            return
-        if value:
-            self.needs = (_unquote(value),)
-            return
-        # Block list items may sit at the key's own column.
-        list_column = entry.column - 1
-        items = []
-        while self._still_inside(list_column):
-            item = _LIST_ITEM.match(self.lines[self.index])
-            if not item or _KEY.match(self.lines[self.index]):
-                break
-            items.append(_unquote(item.group(2)))
-            self.index += 1
-        self.needs = tuple(items)
 
     def _read_matrix(self, column: int) -> None:
         """Read the ``strategy.matrix`` entries nested under the key at ``column``."""

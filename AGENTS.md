@@ -27,6 +27,6 @@ follow them yourself. To add or change a rule, read `docs/engineering/skills/rul
 ### Process and repository hygiene
 
 - `emitter.agents.adapters-point-to-agents-md`: CLAUDE.md only points to AGENTS.md; guidance and rules are written in AGENTS.md alone. (blocking: quality guard `rules-registry`)
-- `emitter.process.rules-registry`: Every rule is registered in rules/registry.toml, is enforced where it claims to be, runs in a job the required check waits for if it blocks merges, and its rendered views are current. (blocking: quality guard `rules-registry`)
+- `emitter.process.rules-registry`: Every rule is registered in rules/registry.toml, is enforced where it claims to be, and its rendered views are current. (blocking: quality guard `rules-registry`)
 
 <!-- END GENERATED: rules -->

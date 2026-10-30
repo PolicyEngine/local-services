@@ -56,7 +56,7 @@ flowchart LR
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.agents.adapters-point-to-agents-md` | CLAUDE.md only points to AGENTS.md; guidance and rules are written in AGENTS.md alone. | mechanical | enforced | yes | quality guard `rules-registry` | `pr.yaml:rules` | yes |
-| `emitter.process.rules-registry` | Every rule is registered in rules/registry.toml, is enforced where it claims to be, runs in a job the required check waits for if it blocks merges, and its rendered views are current. | mechanical | enforced | yes | quality guard `rules-registry` | `pr.yaml:rules` | **unproven** |
+| `emitter.process.rules-registry` | Every rule is registered in rules/registry.toml, is enforced where it claims to be, and its rendered views are current. | mechanical | enforced | yes | quality guard `rules-registry` | `pr.yaml:rules` | **unproven** |
 
 ```mermaid
 flowchart LR

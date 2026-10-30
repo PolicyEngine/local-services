@@ -17,8 +17,6 @@ issue_repository = "PolicyEngine/microcosm-emitter"
 [repository]
 rule_prefix = "emitter"
 pr_workflow = ".github/workflows/pr.yaml"
-# The one status check the main branch's ruleset requires.
-required_check = "Required checks"
 script_directories = ["tools"]
 test_directories = ["tests"]
 # microcosm-emitter at the root, and microcosm-emitter-interface.
@@ -78,7 +76,7 @@ adapters = ["CLAUDE.md"]
 [[rule]]
 id = "emitter.process.rules-registry"
 category = "process"
-statement = "Every rule is registered in rules/registry.toml, is enforced where it claims to be, runs in a job the required check waits for if it blocks merges, and its rendered views are current."
+statement = "Every rule is registered in rules/registry.toml, is enforced where it claims to be, and its rendered views are current."
 rationale = "docs/engineering/skills/rules-registry.md"
 scope = ["rules/registry.toml"]
 tier = "mechanical"

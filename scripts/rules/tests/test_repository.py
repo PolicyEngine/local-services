@@ -1,9 +1,9 @@
 """Tests for the ``[repository]`` table: where the checks find what they read.
 
 The table names what differs between repositories that use this tool: the
-prefix of every rule id, the pull-request workflow, the status check the main
-branch requires, the directories that hold scripts, the package directories,
-and the directories where a ruff per-file ignore may switch rules off.
+prefix of every rule id, the pull-request workflow, the directories that hold
+scripts and tests, the package directories, and the directories where a ruff
+per-file ignore may switch rules off.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ REGISTRY_WITHOUT_TABLE = REGISTRY.replace(REPOSITORY_TABLE, "")
 SETTINGS = (
     "rule_prefix",
     "pr_workflow",
-    "required_check",
     "script_directories",
     "test_directories",
     "packages",
@@ -52,7 +51,6 @@ class LoadTest(unittest.TestCase):
             Repository(
                 rule_prefix="ex",
                 pr_workflow=".github/workflows/pr.yml",
-                required_check="CI complete",
                 script_directories=("scripts",),
                 test_directories=("tests",),
                 packages=(".",),
@@ -65,9 +63,8 @@ class LoadTest(unittest.TestCase):
             schema_problems(REGISTRY_WITHOUT_TABLE),
             [
                 "[registry] schema: the registry has no [repository] table. Fix: "
-                "add [repository] with rule_prefix, pr_workflow, required_check, "
-                "script_directories, test_directories, packages and "
-                "file_exception_directories.",
+                "add [repository] with rule_prefix, pr_workflow, script_directories, "
+                "test_directories, packages and file_exception_directories.",
             ],
         )
 
@@ -96,8 +93,8 @@ class LoadTest(unittest.TestCase):
             [
                 "[registry] schema: unknown key 'scripts_dir' in repository. Fix: "
                 "remove it or use one of ['file_exception_directories', 'packages', "
-                "'pr_workflow', 'pull_request_conditions', 'required_check', "
-                "'rule_prefix', 'script_directories', 'test_directories'].",
+                "'pr_workflow', 'rule_prefix', 'script_directories', "
+                "'test_directories'].",
             ],
         )
 
@@ -132,43 +129,6 @@ class LoadTest(unittest.TestCase):
         registry, _ = load_text(named)
         assert registry is not None
         self.assertEqual(registry.discovery.workflows, (".github/workflows/x.yml",))
-
-    def test_pull_request_conditions_are_optional(self) -> None:
-        registry, _ = load_text(REGISTRY)
-        assert registry is not None
-        self.assertEqual(registry.repository.pull_request_conditions, ())
-
-        listed = REGISTRY.replace(
-            REPOSITORY_TABLE,
-            REPOSITORY_TABLE
-            + "pull_request_conditions = [\"${{ github.event_name == 'pull_request' }}\"]\n",
-        )
-        registry, problems = load_text(listed)
-        self.assertEqual(problems, [])
-        assert registry is not None
-        self.assertEqual(
-            registry.repository.pull_request_conditions,
-            ("github.event_name == 'pull_request'",),
-        )
-
-    def test_a_condition_that_also_holds_after_a_failure_is_refused(self) -> None:
-        for condition in ("always()", "failure() || success()", "!cancelled()"):
-            with self.subTest(condition=condition):
-                text = REGISTRY.replace(
-                    REPOSITORY_TABLE,
-                    REPOSITORY_TABLE + f'pull_request_conditions = ["{condition}"]\n',
-                )
-
-                self.assertEqual(
-                    schema_problems(text),
-                    [
-                        "[registry] schema: repository.pull_request_conditions lists "
-                        f"{condition!r}, which also holds after a job it needs, or "
-                        "an earlier step, failed. Fix: list only conditions that "
-                        "hold on every pull-request run, without always(), "
-                        "failure() or cancelled().",
-                    ],
-                )
 
     def test_a_rule_id_is_the_prefix_and_a_name(self) -> None:
         repository = Repository(rule_prefix="emitter")

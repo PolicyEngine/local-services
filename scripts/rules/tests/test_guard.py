@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 from scripts.rules.baseline import check_baselines, check_pyright_packages
 from scripts.rules.load import load_text
 from scripts.rules.render import render_agents_block, render_rules_md
-from scripts.rules.tests.support import REGISTRY, WORKFLOW, Repo
+from scripts.rules.tests.support import REGISTRY, Repo
 
 if TYPE_CHECKING:
     from scripts.rules.model import Registry
@@ -426,8 +426,9 @@ class ProofCiTest(unittest.TestCase):
             )
             repo.edit(
                 "rules/registry.toml",
-                "ignore_jobs = [",
-                'ignore_jobs = [{ job = "tool-tests", reason = "runs tool tests" }, ',
+                "[discovery]\n",
+                "[discovery]\n"
+                'ignore_jobs = [{ job = "tool-tests", reason = "runs tool tests" }]\n',
             )
             proof = (
                 'bad_fixture = "rules/fixtures/bad.py"\n'
@@ -478,30 +479,17 @@ invocation = "scripts.rules pyright"
 """
 
 PYRIGHT_SETTINGS = '[project]\nname = "package"\n\n[tool.pyright]\ninclude = ["src"]\n'
-# The pull-request workflow calls the Pyright workflow in a job its required
-# check needs.
-PR_WORKFLOW_CALLING_PYRIGHT = (
-    WORKFLOW.replace(
-        "needs: [test, lint, typecheck, quality-guards]",
-        "needs: [test, lint, typecheck, quality-guards, pyright]",
-    )
-    + "  pyright:\n    uses: ./.github/workflows/pyright.yml\n"
-)
 
 
 def pyright_files() -> dict[str, str]:
     """Return a repository whose Pyright rule checks two packages in a matrix job."""
     return {
-        ".github/workflows/pr.yml": PR_WORKFLOW_CALLING_PYRIGHT,
         ".github/workflows/pyright.yml": PYRIGHT_WORKFLOW,
         "libs/alpha/pyproject.toml": PYRIGHT_SETTINGS,
         "libs/alpha/src/alpha.py": "",
         "projects/beta/pyproject.toml": PYRIGHT_SETTINGS,
         "projects/beta/src/beta.py": "",
-        "rules/registry.toml": (REGISTRY + PYRIGHT_RULE).replace(
-            "ignore_jobs = [",
-            'ignore_jobs = [{ job = "pyright", reason = "Calls pyright.yml." }, ',
-        ),
+        **with_rule(PYRIGHT_RULE),
     }
 
 
@@ -995,9 +983,10 @@ class HiddenRuleTest(unittest.TestCase):
             )
             repo.edit(
                 "rules/registry.toml",
-                "ignore_jobs = [",
+                "[discovery]\n",
+                "[discovery]\n"
                 'ignore_jobs = [{ job = "deploy", '
-                'reason = "deploys, enforces nothing" }, ',
+                'reason = "deploys, enforces nothing" }]\n',
             )
             repo.render()
             self.assertEqual(repo.messages(), [])

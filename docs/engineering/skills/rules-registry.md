@@ -48,15 +48,12 @@ gap is visible, rather than leaving it out.
 ## Repository settings
 
 The `[repository]` table says where this repository keeps what the checks
-read, so the tool assumes no repository's layout. Every key is required except
-`pull_request_conditions`.
+read, so the tool assumes no repository's layout. Every key is required.
 
 | Key | Meaning |
 | --- | --- |
 | `rule_prefix` | One lowercase word that starts every rule id, followed by a dot (`emitter` here). The locked-installs check names its rules `<rule_prefix>.dependencies.<name>`. |
-| `pr_workflow` | The workflow that runs on every pull request. `[discovery].workflows` defaults to it, the locked-installs check looks for `uv lock --check` in it and in the reusable workflows it calls, and it holds the required check. |
-| `required_check` | The name of the `pr_workflow` job whose status check the main branch requires (see [Required check](#required-check)). |
-| `pull_request_conditions` | Optional. Job and step `if:` conditions known to hold on every pull-request run, written with or without `${{ }}`. A condition using `always()`, `failure()` or `cancelled()` is refused. |
+| `pr_workflow` | The workflow that runs on every pull request. `[discovery].workflows` defaults to it, and the locked-installs check looks for `uv lock --check` in it and in the reusable workflows it calls. |
 | `script_directories` | Directories whose shell scripts workflows call. The locked-installs check follows workflow commands into them, and the ci-scripts check tests and shellchecks them. |
 | `test_directories` | Directory names that hold tests and their support code. The locked-installs and uv-version checks skip Python modules under them, and the file-length check gives files under them the test-code limit. Files under a `fixtures` directory count as test support everywhere. |
 | `packages` | Globs of the package directories, each holding a `pyproject.toml`; `.` is the repository root. The Pyright coverage check requires a Pyright rule for each. |
@@ -190,30 +187,6 @@ fail the guard yet.
   and reports them, with what it tried. Fixing violations and shrinking a
   baseline is fine.
 
-## Required check
-
-The main branch's ruleset requires one status check: the `pr_workflow` job
-named `required_check`, which passes only when the jobs it needs pass. A
-blocking rule can stop a merge only when one of its `[[rule.ci]]` jobs is
-that job, a job it needs (directly or through other jobs' needs), or a job of
-a reusable workflow of this repository (`uses: ./.github/workflows/...`) that
-one of those jobs calls.
-
-Such a job counts, and its needs and called workflows are followed, only when
-it runs on every pull request and its failure fails the run: it sets no
-`continue-on-error` other than `false`, and it has no job-level `if:` unless
-`pull_request_conditions` lists the condition. The guard does not evaluate
-conditions; listing one is a reviewed claim that it holds on every pull
-request. The required job itself is exempt, since it usually runs
-`if: always()` to report the others. When steps of a counted job run the
-rule's check (their `run:` or `uses:` holds the rule's `invocation`), at least
-one of those steps must meet the same two conditions.
-
-The guard reports a blocking rule none of whose jobs counts, saying why for
-each, and a `required_check` that names no job. It does not read the ruleset
-itself, so keep `required_check` equal to the check the ruleset requires, and
-it does not check that the required job fails when a job it needs failed.
-
 ## File-level exceptions
 
 A ruff `per-file-ignores` entry switches rules off for whole files. It is
@@ -255,10 +228,10 @@ with a reason.
 This copy of `scripts/rules/` started from the simulation API's
 (PolicyEngine/policyengine-sim-api at `4b09f76d`), which started from the
 Public API's. What that copy assumed about its own repository (script
-directories, the pull-request workflow's file name, package locations, the
-required check's name, the rule-id prefix, where file-level exceptions are
-allowed, and the PR description script its issue lookup came from) is now
-read from `[repository]`, so another repository, such as microcosm-collector,
+directories, the pull-request workflow's file name, package locations, test
+directories, the rule-id prefix, where file-level exceptions are allowed, and
+the PR description script its issue lookup came from) is now read from
+`[repository]`, so another repository, such as microcosm-collector,
 can copy this version and change only its registry. The copies may diverge:
 each repository owns its copy. Port a change by hand when it's useful in more
 than one.

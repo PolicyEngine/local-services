@@ -122,25 +122,19 @@ class Repository:
     """The ``[repository]`` table: where this repository keeps what checks read.
 
     ``rule_prefix`` starts every rule id. ``pr_workflow`` is the workflow that
-    runs on every pull request, and ``required_check`` the name of its job that
-    the main branch requires. ``script_directories`` hold the scripts that
+    runs on every pull request. ``script_directories`` hold the scripts that
     workflows call, ``packages`` are globs of the package directories (``.`` is
     the repository root), ``test_directories`` are the directory names that
     hold tests and their support code, and ``file_exception_directories`` are
     the directory names under which a ruff per-file ignore may switch rules off.
-    ``pull_request_conditions`` are the job and step ``if:`` conditions known
-    to hold on every pull-request run, without ``${{ }}``; the required-check
-    check counts a job or step with any other ``if:`` as one that may not run.
     """
 
     rule_prefix: str = ""
     pr_workflow: str = ""
-    required_check: str = ""
     script_directories: tuple[str, ...] = ()
     test_directories: tuple[str, ...] = ()
     packages: tuple[str, ...] = ()
     file_exception_directories: tuple[str, ...] = ()
-    pull_request_conditions: tuple[str, ...] = ()
 
     def rule_id(self, name: str) -> str:
         """Return the id of this repository's rule ``name``, such as ``ci.x``."""
