@@ -518,6 +518,62 @@ class TestRepositoryLayout(unittest.TestCase):
             ],
         )
 
+    def test_a_uv_workspace_member_shares_the_workspace_lock(self) -> None:
+        """A member's dependencies are locked in the workspace root's uv.lock."""
+        workspace = {
+            ".github/workflows/pr.yml": (
+                "on: pull_request\njobs:\n  locks:\n    steps:\n"
+                "      - run: uv lock --check\n"
+            ),
+            "pyproject.toml": (
+                '[project]\nname = "root"\n\n'
+                '[tool.uv.workspace]\nmembers = ["packages/*"]\n'
+                'exclude = ["packages/standalone"]\n'
+            ),
+            "uv.lock": "",
+            "packages/member/pyproject.toml": '[project]\nname = "member"\n',
+            "packages/standalone/pyproject.toml": '[project]\nname = "alone"\n',
+        }
+
+        self.assertEqual(
+            self.lock_messages(workspace, FIXTURE_REPOSITORY),
+            [
+                f"[{LOCK_RULE}] locked-installs: packages/standalone/pyproject.toml "
+                "has no committed uv.lock. Fix: run uv lock --project "
+                "packages/standalone and commit uv.lock."
+            ],
+        )
+
+    def test_relocking_a_uv_workspace_relocks_its_members(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        files = {
+            ".github/workflows/relock.yml": (
+                "on:\n  schedule:\n    - cron: '0 6 * * 1'\njobs:\n  relock:\n"
+                "    steps:\n      - run: uv lock --upgrade\n"
+                "      - run: gh pr create --fill\n"
+            ),
+            "pyproject.toml": (
+                '[project]\nname = "root"\n\n'
+                '[tool.uv.workspace]\nmembers = ["packages/member"]\n'
+            ),
+            "uv.lock": "",
+            "packages/member/pyproject.toml": '[project]\nname = "member"\n',
+            "packages/other/pyproject.toml": '[project]\nname = "other"\n',
+        }
+        for relative, content in files.items():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text(content, encoding="utf-8")
+
+        self.assertEqual(
+            [
+                violation.message
+                for violation in relock_violations(
+                    root, tracked_files(root), FIXTURE_REPOSITORY
+                )
+            ],
+            [".github/workflows/relock.yml does not relock packages/other/uv.lock"],
+        )
+
     def test_a_script_is_no_lock_check_by_its_name(self) -> None:
         files = {
             ".github/workflows/pr.yml": (
