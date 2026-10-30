@@ -1113,7 +1113,7 @@ invocation = "tools/check-changelog.sh"
 [[rule]]
 id = "emitter.process.pr-tracking-issue"
 category = "process"
-statement = "The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository."
+statement = "The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository; a pull request Dependabot opens is the exception."
 rationale = "README.md#publication"
 scope = [".github/workflows/pr-description.yaml", "scripts/rules/pr_description.py"]
 tier = "mechanical"

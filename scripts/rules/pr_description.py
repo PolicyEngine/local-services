@@ -25,6 +25,10 @@ How the first line is read, as in the simulation API's check:
   the line isn't what the author meant.
 - An empty or missing (``null``) description fails.
 - The number is ASCII digits without a leading zero.
+
+A pull request whose author is Dependabot (``dependabot[bot]``) passes: it
+writes its own descriptions and cannot name an issue, and the weekly
+``uv.lock`` updates it proposes need none.
 """
 
 from __future__ import annotations
@@ -50,6 +54,8 @@ LINE_ENDING = re.compile(r"\r\n|\r|\n")
 # How much of a rejected first line a message quotes.
 SHOWN_FIRST_LINE_LENGTH = 80
 ANNOTATION_TITLE = "PR description"
+# The author of Dependabot's pull requests, which name no tracking issue.
+DEPENDABOT = "dependabot[bot]"
 HOW_TO_FIX = (
     "Edit the description so its first line is exactly Fixes #ISSUE_NUMBER, "
     "where ISSUE_NUMBER is an open issue in this repository; editing the "
@@ -124,8 +130,8 @@ def _required_environment(name: str) -> str:
     return value
 
 
-def _description_from_event(event_path: str) -> str | None:
-    """Return the pull request description in the event payload at ``event_path``."""
+def _pull_request_from_event(event_path: str) -> dict[str, object]:
+    """Return the pull request in the event payload at ``event_path``."""
     event = json.loads(Path(event_path).read_text(encoding="utf-8"))
     pull_request = event.get("pull_request") if isinstance(event, dict) else None
     if not isinstance(pull_request, dict):
@@ -134,8 +140,13 @@ def _description_from_event(event_path: str) -> str | None:
             "check on pull_request events."
         )
         raise SystemExit(msg)
-    body = pull_request.get("body")
-    return body if isinstance(body, str) else None
+    return pull_request
+
+
+def _author(pull_request: dict[str, object]) -> str | None:
+    user = pull_request.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    return login if isinstance(login, str) else None
 
 
 def _citing_the_rule(message: str) -> str:
@@ -151,7 +162,15 @@ def _annotation_text(message: str) -> str:
 def main() -> int:
     """Check the pull request in this run's event; return the exit status."""
     repository = _required_environment("GITHUB_REPOSITORY")
-    description = _description_from_event(_required_environment("GITHUB_EVENT_PATH"))
+    pull_request = _pull_request_from_event(_required_environment("GITHUB_EVENT_PATH"))
+    if _author(pull_request) == DEPENDABOT:
+        print(
+            "Dependabot opened this pull request, so its description needs no "
+            "tracking issue."
+        )
+        return 0
+    body = pull_request.get("body")
+    description = body if isinstance(body, str) else None
     try:
         number = issue_number_from_description(description)
         require_open_issue(repository, number)

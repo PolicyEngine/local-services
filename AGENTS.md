@@ -84,7 +84,7 @@ To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 - `emitter.agents.adapters-point-to-agents-md`: CLAUDE.md only points to AGENTS.md; guidance and rules are written in AGENTS.md alone. (blocking: quality guard `rules-registry`)
 - `emitter.process.changelog-fragment`: Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released; a Dependabot pull request that changes only uv.lock is the exception. (blocking: CI job `changelog`)
 - `emitter.process.feature-branches-and-pull-requests`: Push feature branches and open pull requests; never push to main directly, merge automatically or monitor queued checks. (doc-only, not checked: follow it yourself)
-- `emitter.process.pr-tracking-issue`: The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository. (blocking: CI job `pr-description`)
+- `emitter.process.pr-tracking-issue`: The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository; a pull request Dependabot opens is the exception. (blocking: CI job `pr-description`)
 - `emitter.process.rules-registry`: Every rule is registered in rules/registry.toml, is enforced where it claims to be, and its rendered views are current. (blocking: quality guard `rules-registry`)
 
 <!-- END GENERATED: rules -->
