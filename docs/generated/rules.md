@@ -8,11 +8,11 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 40 | 0 | 0 | 7 | 47 |
+| mechanical | 39 | 0 | 0 | 7 | 46 |
 | metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 41 of 48 rules.
+**Blocking:** 40 of 47 rules.
 
 ## Gaps
 
@@ -39,7 +39,6 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 - `emitter.boundaries.shared-definitions-written-once`
 - `emitter.boundaries.telemetry-client-imports-no-service-code`
 - `emitter.ci.pull-request-workflow-structure`
-- `emitter.ci.run-steps-are-one-line`
 - `emitter.distributions.exactly-two-at-one-version`
 - `emitter.distributions.one-build-script`
 - `emitter.distributions.release-credentials`
@@ -303,7 +302,6 @@ flowchart LR
 | `emitter.ci.multiline-run-is-script` | Every workflow run: step holds one command: one line of code, with no commands chained by &&, \|\| or ;. | mechanical | enforced | yes | quality guard `ci-scripts` | `pr.yaml:rules` | yes |
 | `emitter.ci.pull-request-workflow-structure` | pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages; pr-description.yaml runs only for open pull requests into main, on every event that can change the description, with read-only permissions, in one job named PR description. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.required-checks` | Every pull request runs the verification workflow, ci.yml, and Required checks, a status check main's ruleset requires, passes only when every other pr.yaml job succeeded. | mechanical | enforced | yes | CI job `verify`, `required` | `pr.yaml:verify`, `pr.yaml:required` | — |
-| `emitter.ci.run-steps-are-one-line` | No workflow run: step spans more than one line of text. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.shell-logic-in-tools-scripts` | Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command, and a test runs that script, with fake commands in place of anything it would change or reach outside the test. | mechanical | doc-only | no | nothing | — | — |
 | `emitter.ci.shell-scripts-parse` | Every shell script under tools/ parses (bash -n). | mechanical | enforced | yes | CI job `quality` | `ci.yml:quality` | — |
 | `emitter.ci.shell-scripts-pass-shellcheck` | Every shell script under tools/ passes shellcheck, which the Rules registry job installs as shellcheck-py 0.11.0.1. | mechanical | enforced | yes | quality guard `ci-scripts` | `pr.yaml:rules` | yes |
@@ -322,7 +320,6 @@ flowchart LR
   e_CI_job_verify__required["CI job verify, required"]
   j_CI_pr_yaml_verify["CI pr.yaml:verify"]
   j_CI_pr_yaml_required["CI pr.yaml:required"]
-  r_emitter_ci_run_steps_are_one_line("emitter.ci.run-steps-are-one-line (enforced)")
   r_emitter_ci_shell_logic_in_tools_scripts("emitter.ci.shell-logic-in-tools-scripts (doc-only)")
   gap_unenforced>"not enforced"]
   r_emitter_ci_shell_scripts_parse("emitter.ci.shell-scripts-parse (enforced)")
@@ -340,7 +337,6 @@ flowchart LR
   r_emitter_ci_required_checks --> e_CI_job_verify__required
   e_CI_job_verify__required --> j_CI_pr_yaml_verify
   e_CI_job_verify__required --> j_CI_pr_yaml_required
-  r_emitter_ci_run_steps_are_one_line --> e_pytest_tests_test_workflows_py
   r_emitter_ci_shell_logic_in_tools_scripts -.-> gap_unenforced
   r_emitter_ci_shell_scripts_parse --> e_CI_job_quality
   e_CI_job_quality --> j_CI_ci_yml_quality
