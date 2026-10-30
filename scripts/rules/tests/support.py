@@ -22,6 +22,7 @@ rule_prefix = "ex"
 pr_workflow = ".github/workflows/pr.yml"
 required_check = "CI complete"
 script_directories = ["scripts"]
+test_directories = ["tests"]
 packages = ["."]
 file_exception_directories = ["tests", ".github", "scripts"]
 """

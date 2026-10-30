@@ -480,6 +480,44 @@ class TestRepositoryLayout(unittest.TestCase):
 
         self.assertEqual(self.lock_messages(files, repository), [])
 
+    def test_python_in_the_registry_test_directories_is_not_scanned(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for path in ("checks/fake_image.py", "authenticated_tests/image.py"):
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text("image.pip_install('x')\n", encoding="utf-8")
+
+        scanned = scan(root, test_directories=("checks",)).scanned
+
+        self.assertEqual(scanned, {"authenticated_tests/image.py"})
+        self.assertEqual(
+            scan(root).scanned,
+            {"authenticated_tests/image.py", "checks/fake_image.py"},
+        )
+
+    def test_projects_in_the_registry_test_directories_need_no_lock(self) -> None:
+        files = {
+            ".github/workflows/pr.yml": (
+                "on: pull_request\njobs:\n  locks:\n    steps:\n"
+                "      - run: uv lock --check\n"
+            ),
+            "checks/sample/pyproject.toml": "",
+        }
+        listed = Repository(
+            rule_prefix="ex",
+            pr_workflow=".github/workflows/pr.yml",
+            test_directories=("checks",),
+        )
+
+        self.assertEqual(self.lock_messages(files, listed), [])
+        self.assertEqual(
+            self.lock_messages(files, FIXTURE_REPOSITORY),
+            [
+                f"[{LOCK_RULE}] locked-installs: checks/sample/pyproject.toml has "
+                "no committed uv.lock. Fix: run uv lock --project checks/sample "
+                "and commit uv.lock."
+            ],
+        )
+
     def test_a_script_is_no_lock_check_by_its_name(self) -> None:
         files = {
             ".github/workflows/pr.yml": (

@@ -23,6 +23,8 @@ from scripts.rules.load import load_text
 from scripts.rules.tests.support import REPOSITORY_TABLE
 
 FIXTURES = Path(__file__).parent / "fixtures" / "file_length"
+# The example repository's test directories.
+TEST_DIRECTORIES = ("tests",)
 
 FILE_LENGTH_RULE = (
     """
@@ -82,7 +84,9 @@ def long_paths_in_fixture(fixture_name: str) -> tuple[list[str], list[str]]:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         files = materialize(fixture_name, root)
-        found = [long_file.path for long_file in find_long_files(root)]
+        found = [
+            long_file.path for long_file in find_long_files(root, TEST_DIRECTORIES)
+        ]
     return found, sorted(str(listed_file["path"]) for listed_file in files)
 
 
@@ -122,12 +126,17 @@ class TestLineLimit(unittest.TestCase):
             "projects/example/src/example/fixtures/sample.py",
         ):
             with self.subTest(path=path):
-                self.assertTrue(is_test_code(path))
-                self.assertEqual(line_limit(path), TEST_LINE_LIMIT)
+                self.assertTrue(is_test_code(path, TEST_DIRECTORIES))
+                self.assertEqual(line_limit(path, TEST_DIRECTORIES), TEST_LINE_LIMIT)
 
     def test_conftest_files_are_test_code_anywhere(self) -> None:
-        self.assertTrue(is_test_code("conftest.py"))
-        self.assertTrue(is_test_code("projects/example/conftest.py"))
+        self.assertTrue(is_test_code("conftest.py", ()))
+        self.assertTrue(is_test_code("projects/example/conftest.py", ()))
+
+    def test_test_directories_are_the_registry_s(self) -> None:
+        self.assertTrue(is_test_code("pkg/checks/test_a.py", ("checks",)))
+        self.assertFalse(is_test_code("pkg/tests/test_a.py", ("checks",)))
+        self.assertTrue(is_test_code("pkg/fixtures/sample.py", ()))
 
     def test_other_files_are_source_code(self) -> None:
         for path in (
@@ -139,8 +148,8 @@ class TestLineLimit(unittest.TestCase):
             ".github/scripts/check_pr_description.py",
         ):
             with self.subTest(path=path):
-                self.assertFalse(is_test_code(path))
-                self.assertEqual(line_limit(path), SOURCE_LINE_LIMIT)
+                self.assertFalse(is_test_code(path, TEST_DIRECTORIES))
+                self.assertEqual(line_limit(path, TEST_DIRECTORIES), SOURCE_LINE_LIMIT)
 
 
 class TestCountLines(unittest.TestCase):
@@ -170,7 +179,7 @@ class TestTrackedFiles(unittest.TestCase):
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "add", "pkg/tracked.py"], cwd=root, check=True)
 
-            found = find_long_files(root)
+            found = find_long_files(root, TEST_DIRECTORIES)
 
         self.assertEqual(
             found,
@@ -222,6 +231,30 @@ class TestCompare(unittest.TestCase):
             violation.fix,
             "remove it from rules/baselines/python-file-length.txt and lower the "
             "rule's baseline count",
+        )
+
+
+class TestRunCheckTestDirectories(unittest.TestCase):
+    def test_the_registry_says_which_directories_hold_test_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "rules").mkdir()
+            (root / "rules" / "registry.toml").write_text(
+                FILE_LENGTH_RULE.replace(
+                    'test_directories = ["tests"]', 'test_directories = ["checks"]'
+                ).replace('status = "ratcheted"', 'status = "enforced"')
+            )
+            write_lines(root, "checks/test_long.py", SOURCE_LINE_LIMIT + 1)
+            write_lines(root, "tests/test_long.py", SOURCE_LINE_LIMIT + 1)
+
+            messages = [violation.message for violation in run_check(root)]
+
+        self.assertEqual(
+            messages,
+            [
+                "tests/test_long.py has 801 lines, over the 800-line limit for "
+                "source code"
+            ],
         )
 
 

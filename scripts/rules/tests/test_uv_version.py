@@ -367,12 +367,29 @@ class TestModalImages(GuardCase):
     def test_test_modules_and_fixtures_are_not_read(self) -> None:
         messages = self.messages(
             {
+                "rules/registry.toml": UV_VERSION_REGISTRY,
                 "app/tests/test_image.py": "image.uv_sync(frozen=True)\n",
                 "app/fixtures/fake_modal.py": "image.uv_sync(frozen=True)\n",
             }
         )
 
         self.assertEqual(messages, [])
+
+    def test_test_modules_are_the_registry_test_directories(self) -> None:
+        files = {"app/checks/test_image.py": "image.uv_sync(frozen=True)\n"}
+
+        self.assertEqual(len(self.messages(files)), 1)
+        self.assertEqual(
+            self.messages(
+                {
+                    **files,
+                    "rules/registry.toml": UV_VERSION_REGISTRY.replace(
+                        'test_directories = ["tests"]', 'test_directories = ["checks"]'
+                    ),
+                }
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

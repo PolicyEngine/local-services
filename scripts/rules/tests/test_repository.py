@@ -21,6 +21,7 @@ SETTINGS = (
     "pr_workflow",
     "required_check",
     "script_directories",
+    "test_directories",
     "packages",
     "file_exception_directories",
 )
@@ -53,6 +54,7 @@ class LoadTest(unittest.TestCase):
                 pr_workflow=".github/workflows/pr.yml",
                 required_check="CI complete",
                 script_directories=("scripts",),
+                test_directories=("tests",),
                 packages=(".",),
                 file_exception_directories=("tests", ".github", "scripts"),
             ),
@@ -64,7 +66,8 @@ class LoadTest(unittest.TestCase):
             [
                 "[registry] schema: the registry has no [repository] table. Fix: "
                 "add [repository] with rule_prefix, pr_workflow, required_check, "
-                "script_directories, packages and file_exception_directories.",
+                "script_directories, test_directories, packages and "
+                "file_exception_directories.",
             ],
         )
 
@@ -94,7 +97,7 @@ class LoadTest(unittest.TestCase):
                 "[registry] schema: unknown key 'scripts_dir' in repository. Fix: "
                 "remove it or use one of ['file_exception_directories', 'packages', "
                 "'pr_workflow', 'pull_request_conditions', 'required_check', "
-                "'rule_prefix', 'script_directories'].",
+                "'rule_prefix', 'script_directories', 'test_directories'].",
             ],
         )
 
