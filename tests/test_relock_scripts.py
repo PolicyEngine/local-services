@@ -1,9 +1,14 @@
 """The scheduled relock: its workflow and the tools/ scripts it runs.
 
-Each script test runs the script with fake git, gh and date first on PATH.
+The script tests run each script in a real temporary git repository whose
+origin is a local bare repository, with fake gh and date first on PATH. The
+fake gh evaluates each --jq expression with jq, over JSON the test gives it,
+as gh would over GitHub's answer.
 """
 
+import json
 import runpy
+import subprocess
 
 import pytest
 import yaml
@@ -16,16 +21,56 @@ from fake_commands import (
 )
 
 PREPARE_BRANCH = "relock-prepare-branch.sh"
-COMMIT_AND_PUSH = "relock-commit-and-push.sh"
+COMMIT = "relock-commit.sh"
 OPEN_PULL_REQUEST = "relock-open-pull-request.sh"
 RELOCK_WORKFLOW = "update-dependencies.yaml"
 REPOSITORY = "PolicyEngine/microcosm-emitter"
-REMOTE_HEAD = "0123456789abcdef0123456789abcdef01234567"
+BRANCH = "bot/update-dependencies/2026-11-02-060012"
+EARLIER_BRANCH = "bot/update-dependencies/2026-10-26-060009"
+RELOCK_COMMIT = "Update locked dependencies (2026-11-02)"
 
 
 @pytest.fixture
 def fakes(tmp_path):
-    return FakeCommands.create(tmp_path)
+    fakes = FakeCommands.create(tmp_path)
+    fakes.add(
+        "date",
+        'if [[ "$*" == *%H* ]]; then echo 2026-11-02-060012; else echo 2026-11-02; fi\n',
+    )
+    return fakes
+
+
+def git(directory, *arguments):
+    return subprocess.run(
+        ["git", "-C", str(directory), *arguments],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def checkout(tmp_path, monkeypatch):
+    """A clone of a local bare origin whose main holds uv.lock, as checkout makes."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True
+    )
+    work = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True)
+    git(work, "config", "user.name", "Someone")
+    git(work, "config", "user.email", "someone@example.com")
+    (work / "uv.lock").write_text("locked = 1\n")
+    (work / "changelog.d").mkdir()
+    (work / "changelog.d/.gitkeep").touch()
+    git(work, "add", "--all")
+    git(work, "commit", "-q", "-m", "Start")
+    git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git(work, "config", "--unset", "user.name")
+    git(work, "config", "--unset", "user.email")
+    return work
 
 
 def relock_workflow():
@@ -35,12 +80,12 @@ def relock_workflow():
     )
 
 
-def relock_steps():
-    return relock_workflow()["jobs"]["relock"]["steps"]
+def steps_of(job):
+    return relock_workflow()["jobs"][job]["steps"]
 
 
-def step_running(command):
-    (step,) = [step for step in relock_steps() if step.get("run") == command]
+def step_running(job, command):
+    (step,) = [step for step in steps_of(job) if step.get("run") == command]
     return step
 
 
@@ -54,356 +99,180 @@ def test_the_relock_runs_weekly_and_by_hand_only():
     assert [entry["cron"] for entry in triggers["schedule"]] == ["0 6 * * 1"]
 
 
-def test_the_relock_runs_the_tested_scripts_around_uv_lock_upgrade():
-    runs = [step["run"] for step in relock_steps() if "run" in step]
-
-    assert runs == [
-        f"bash tools/{PREPARE_BRANCH}",
-        "uv lock --upgrade",
-        f"bash tools/{COMMIT_AND_PUSH}",
-        f"bash tools/{OPEN_PULL_REQUEST}",
-    ]
-
-
-def test_the_relock_passes_the_recorded_head_and_the_app_token_to_the_scripts():
-    assert step_running(f"bash tools/{PREPARE_BRANCH}")["id"] == "branch"
-    assert "env" not in step_running(f"bash tools/{PREPARE_BRANCH}")
-    push = step_running(f"bash tools/{COMMIT_AND_PUSH}")
-    assert push["id"] == "push"
-    assert push["env"] == {"REMOTE_HEAD": "${{ steps.branch.outputs.remote_head }}"}
-    open_pull_request = step_running(f"bash tools/{OPEN_PULL_REQUEST}")
-    # It runs whenever the update changed files, even when the branch already
-    # held them, so an open pull request keeps naming an open issue.
-    assert open_pull_request["if"] == "steps.push.outputs.changes_detected == 'true'"
-    assert open_pull_request["env"] == {
-        "GH_TOKEN": "${{ steps.app-token.outputs.token }}"
-    }
-
-
-def test_only_the_app_token_step_reads_secrets():
-    """The App token, unlike GITHUB_TOKEN, starts CI on the pull request it opens."""
+def test_the_relock_job_holds_no_token_while_uv_lock_runs_build_code():
+    """uv lock may build a dependency's source archive, running its code."""
     workflow = relock_workflow()
     assert workflow["permissions"] == {"contents": "read"}
-    steps = relock_steps()
-    token = steps[0]
-    assert token["id"] == "app-token"
+    relock = workflow["jobs"]["relock"]
+    assert "permissions" not in relock
+    steps = relock["steps"]
+    assert steps[0]["uses"].startswith("actions/checkout@")
+    assert steps[0]["with"] == {"ref": "main", "persist-credentials": "false"}
+    assert [step["run"] for step in steps if "run" in step] == ["uv lock --upgrade"]
+    upload = steps[-1]
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["name"] == "relocked-uv-lock"
+    assert upload["with"]["path"] == "uv.lock"
+    assert "secrets." not in yaml.safe_dump(relock)
+
+
+def test_the_proposing_job_commits_before_it_creates_the_app_token():
+    proposal = relock_workflow()["jobs"]["propose"]
+    assert proposal["needs"] == "relock"
+    steps = proposal["steps"]
+    assert steps[0]["with"] == {"ref": "main", "persist-credentials": "false"}
+    download = steps[1]
+    assert download["uses"].startswith("actions/download-artifact@")
+    assert download["with"] == {"name": "relocked-uv-lock", "path": "."}
+    assert [step.get("run") or step["id"] for step in steps[2:]] == [
+        f"bash tools/{PREPARE_BRANCH}",
+        f"bash tools/{COMMIT}",
+        "app-token",
+        f"bash tools/{OPEN_PULL_REQUEST}",
+    ]
+    assert step_running("propose", f"bash tools/{PREPARE_BRANCH}")["id"] == "branch"
+    assert step_running("propose", f"bash tools/{COMMIT}")["id"] == "commit"
+
+
+def test_the_app_token_is_narrowed_and_only_its_step_reads_secrets():
+    token = next(step for step in steps_of("propose") if step.get("id") == "app-token")
     assert token["uses"].startswith("actions/create-github-app-token@")
+    assert token["if"] == "steps.commit.outputs.changes_detected == 'true'"
     assert token["with"] == {
         "app-id": "${{ secrets.APP_ID }}",
         "private-key": "${{ secrets.APP_PRIVATE_KEY }}",
+        "permission-contents": "write",
+        "permission-pull-requests": "write",
+        # To open the tracking issue when none is open.
+        "permission-issues": "write",
     }
-    text = (WORKFLOWS_DIRECTORY / RELOCK_WORKFLOW).read_text()
-    assert text.count("secrets.") == 2
-    checkout = steps[1]
-    assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout["with"] == {
-        "ref": "main",
-        "fetch-depth": "0",
-        "token": "${{ steps.app-token.outputs.token }}",
+    assert (WORKFLOWS_DIRECTORY / RELOCK_WORKFLOW).read_text().count("secrets.") == 2
+    proposal = step_running("propose", f"bash tools/{OPEN_PULL_REQUEST}")
+    assert proposal["if"] == "steps.commit.outputs.changes_detected == 'true'"
+    assert proposal["env"] == {
+        "BRANCH": "${{ steps.branch.outputs.branch }}",
+        "GH_TOKEN": "${{ steps.app-token.outputs.token }}",
     }
 
 
 # --- relock-prepare-branch.sh ---------------------------------------------
 
-# The fake git reports the remote branch's head from FAKE_REMOTE_HEAD (unset:
-# the branch does not exist) and answers the other commands from the
-# environment.
-FAKE_GIT = """\
-case "$1" in
-  ls-remote)
-    if [[ -n "${FAKE_REMOTE_HEAD:-}" ]]; then
-      printf '%s\\trefs/heads/update-dependencies\\n' "${FAKE_REMOTE_HEAD}"
-    fi
-    exit "${FAKE_GIT_LS_REMOTE_EXIT:-0}"
-    ;;
-  status) printf '%s' "${FAKE_GIT_STATUS:-}" ;;
-  diff) exit "${FAKE_GIT_DIFF_EXIT:-1}" ;;
-  push) exit "${FAKE_GIT_PUSH_EXIT:-0}" ;;
-esac
-"""
-GIT_IDENTITY = [
-    ["git", "config", "user.name", "github-actions[bot]"],
-    [
-        "git",
-        "config",
-        "user.email",
-        "41898282+github-actions[bot]@users.noreply.github.com",
-    ],
-]
-REMOTE_BRANCH_LOOKUP = [
-    "git",
-    "ls-remote",
-    "--heads",
-    "origin",
-    "refs/heads/update-dependencies",
-]
-REBUILD_FROM_MAIN = ["git", "checkout", "-B", "update-dependencies", "origin/main"]
+
+def prepare_branch(fakes, checkout, **env):
+    output = checkout.parent / "github-output"
+    result = run_script(
+        PREPARE_BRANCH, env=fakes.env(GITHUB_OUTPUT=str(output), **env), cwd=checkout
+    )
+    return result, github_output(output)
 
 
-def prepare_branch(fakes, tmp_path, **env):
-    output = tmp_path / "github-output"
-    fakes.add("git", FAKE_GIT)
-    result = run_script(PREPARE_BRANCH, env=fakes.env(GITHUB_OUTPUT=str(output), **env))
-    return result, output
+def test_prepare_branch_starts_a_branch_named_for_this_run_from_main(fakes, checkout):
+    main = git(checkout, "rev-parse", "HEAD")
 
-
-def test_prepare_branch_rebuilds_the_branch_from_main_when_it_exists(fakes, tmp_path):
-    """Merging main into an older update branch would mix two uv.lock resolutions."""
-    result, output = prepare_branch(fakes, tmp_path, FAKE_REMOTE_HEAD=REMOTE_HEAD)
+    result, output = prepare_branch(fakes, checkout)
 
     assert result.returncode == 0, result.stderr
-    assert fakes.calls("git") == [
-        *GIT_IDENTITY,
-        REMOTE_BRANCH_LOOKUP,
-        ["git", "fetch", "--quiet", "origin", REMOTE_HEAD],
-        REBUILD_FROM_MAIN,
-    ]
-    assert github_output(output) == {"remote_head": REMOTE_HEAD}
+    assert output == {"branch": BRANCH}
+    assert git(checkout, "branch", "--show-current") == BRANCH
+    assert git(checkout, "rev-parse", "HEAD") == main
+    assert git(checkout, "config", "user.name") == "github-actions[bot]"
 
 
-def test_prepare_branch_starts_from_main_without_an_update_branch(fakes, tmp_path):
-    result, output = prepare_branch(fakes, tmp_path)
-
-    assert result.returncode == 0, result.stderr
-    assert fakes.calls("git") == [
-        *GIT_IDENTITY,
-        REMOTE_BRANCH_LOOKUP,
-        REBUILD_FROM_MAIN,
-    ]
-    assert github_output(output) == {"remote_head": ""}
-
-
-def test_prepare_branch_fails_when_the_branch_lookup_fails(fakes, tmp_path):
-    result, output = prepare_branch(fakes, tmp_path, FAKE_GIT_LS_REMOTE_EXIT="128")
-
-    assert result.returncode != 0
-    assert github_output(output) == {}
-    assert not any(call[1] == "checkout" for call in fakes.calls("git"))
-
-
-def test_prepare_branch_requires_the_output_file(fakes):
-    fakes.add("git", FAKE_GIT)
+def test_prepare_branch_requires_the_output_file(fakes, checkout):
     environment = fakes.env()
     environment.pop("GITHUB_OUTPUT", None)
 
-    result = run_script(PREPARE_BRANCH, env=environment)
+    result = run_script(PREPARE_BRANCH, env=environment, cwd=checkout)
 
     assert result.returncode != 0
     assert "GITHUB_OUTPUT is required" in result.stderr
-    assert fakes.calls() == []
 
 
-# --- relock-commit-and-push.sh --------------------------------------------
+# --- relock-commit.sh -----------------------------------------------------
 
-# Every pull request adds a changelog fragment; the relock's never changes, so
-# the push still compares only the update with the remote branch.
-RELOCK_FRAGMENT = "changelog.d/update-dependencies.changed.md"
 RELOCK_FRAGMENT_TEXT = (
     "Updated the locked dependencies in `uv.lock` to the newest versions the "
     "requirements allow.\n"
 )
-# Records which fragments exist when git add stages the update.
-FAKE_GIT_RECORDING_FRAGMENTS = """\
-if [[ "$1" == "add" ]]; then
-  ls changelog.d > "$FAKE_FRAGMENTS_AT_ADD" 2>/dev/null || true
-fi
-"""
 
 
-def commit_and_push(fakes, tmp_path, git_body=FAKE_GIT, **env):
-    """Run the script in an empty checkout folder, which it may write a fragment to."""
-    output = tmp_path / "github-output"
-    checkout = tmp_path / "checkout"
-    checkout.mkdir(exist_ok=True)
-    fakes.add("git", git_body)
-    fakes.add("date", "echo 2026-10-13\n")
-    result = run_script(
-        COMMIT_AND_PUSH,
-        env=fakes.env(GITHUB_OUTPUT=str(output), **env),
-        cwd=checkout,
-    )
-    return result, output
+def commit(fakes, checkout):
+    output = checkout.parent / "github-output"
+    result = run_script(COMMIT, env=fakes.env(GITHUB_OUTPUT=str(output)), cwd=checkout)
+    return result, github_output(output)
 
 
-def test_commit_and_push_replaces_the_branch_with_a_lease_on_the_recorded_head(
-    fakes, tmp_path
-):
-    result, output = commit_and_push(
-        fakes, tmp_path, REMOTE_HEAD=REMOTE_HEAD, FAKE_GIT_STATUS=" M uv.lock\n"
-    )
+def test_commit_records_the_relock_with_a_releasable_fragment(fakes, checkout):
+    prepare_branch(fakes, checkout)
+    (checkout / "uv.lock").write_text("locked = 2\n")
+
+    result, output = commit(fakes, checkout)
 
     assert result.returncode == 0, result.stderr
-    assert github_output(output) == {
-        "changes_detected": "true",
-        "branch_pushed": "true",
-    }
-    git_calls = fakes.calls("git")
-    assert git_calls == [
-        ["git", "status", "--porcelain"],
-        ["git", "add", "--all"],
-        ["git", "commit", "-m", "Update locked dependencies (2026-10-13)"],
-        ["git", "diff", "--quiet", REMOTE_HEAD, "HEAD", "--"],
-        [
-            "git",
-            "push",
-            f"--force-with-lease=refs/heads/update-dependencies:{REMOTE_HEAD}",
-            "origin",
-            "HEAD:refs/heads/update-dependencies",
-        ],
+    assert output == {"branch": BRANCH, "changes_detected": "true"}
+    assert git(checkout, "log", "-1", "--format=%s") == RELOCK_COMMIT
+    assert git(checkout, "show", "--name-only", "--format=", "HEAD").split() == [
+        "changelog.d/update-dependencies.changed.md",
+        "uv.lock",
     ]
-    assert fakes.calls("date") == [["date", "-u", "+%Y-%m-%d"]]
-
-
-def test_commit_and_push_adds_a_releasable_changelog_fragment(fakes, tmp_path):
-    fragments_at_add = tmp_path / "fragments-at-add"
-    result, _output = commit_and_push(
-        fakes,
-        tmp_path,
-        git_body=FAKE_GIT_RECORDING_FRAGMENTS + FAKE_GIT,
-        REMOTE_HEAD=REMOTE_HEAD,
-        FAKE_GIT_STATUS=" M uv.lock\n",
-        FAKE_FRAGMENTS_AT_ADD=str(fragments_at_add),
-    )
-
-    assert result.returncode == 0, result.stderr
-    changelog = tmp_path / "checkout" / "changelog.d"
+    assert git(checkout, "status", "--porcelain") == ""
+    changelog = checkout / "changelog.d"
     assert (changelog / "update-dependencies.changed.md").read_text() == (
         RELOCK_FRAGMENT_TEXT
     )
-    assert fragments_at_add.read_text() == "update-dependencies.changed.md\n"
     bump_version = runpy.run_path(str(REPOSITORY_ROOT / "tools/bump-version.py"))
     assert bump_version["fragment_types"](changelog) == {"changed"}
 
 
-def test_commit_and_push_adds_no_fragment_without_an_update(fakes, tmp_path):
-    result, _output = commit_and_push(fakes, tmp_path, REMOTE_HEAD=REMOTE_HEAD)
+def test_commit_does_nothing_when_the_relock_changes_nothing(fakes, checkout):
+    prepare_branch(fakes, checkout)
+    before = git(checkout, "rev-parse", "HEAD")
 
-    assert result.returncode == 0, result.stderr
-    assert not (tmp_path / "checkout" / "changelog.d").exists()
-
-
-def test_commit_and_push_creates_the_branch_with_a_plain_push(fakes, tmp_path):
-    result, output = commit_and_push(
-        fakes, tmp_path, REMOTE_HEAD="", FAKE_GIT_STATUS=" M uv.lock\n"
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert github_output(output)["branch_pushed"] == "true"
-    assert fakes.calls("git")[3:] == [
-        ["git", "push", "origin", "HEAD:refs/heads/update-dependencies"]
-    ]
-
-
-def test_commit_and_push_skips_the_push_when_the_branch_holds_the_update(
-    fakes, tmp_path
-):
-    """The commit's date differs every run, so the push compares files."""
-    result, output = commit_and_push(
-        fakes,
-        tmp_path,
-        REMOTE_HEAD=REMOTE_HEAD,
-        FAKE_GIT_STATUS=" M uv.lock\n",
-        FAKE_GIT_DIFF_EXIT="0",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "update-dependencies already holds this update" in result.stdout
-    assert github_output(output) == {
-        "changes_detected": "true",
-        "branch_pushed": "false",
-    }
-    assert not any(call[1] == "push" for call in fakes.calls("git"))
-
-
-@pytest.mark.parametrize("remote_head", [REMOTE_HEAD, ""])
-def test_commit_and_push_does_nothing_when_the_relock_changes_nothing(
-    fakes, tmp_path, remote_head
-):
-    """Pushing main's own commit would leave an open pull request with no changes."""
-    result, output = commit_and_push(fakes, tmp_path, REMOTE_HEAD=remote_head)
+    result, output = commit(fakes, checkout)
 
     assert result.returncode == 0, result.stderr
     assert "uv.lock is already up to date" in result.stdout
-    assert github_output(output) == {
-        "changes_detected": "false",
-        "branch_pushed": "false",
-    }
-    assert fakes.calls("git") == [["git", "status", "--porcelain"]]
-
-
-def test_commit_and_push_rejects_a_remote_head_that_is_not_a_commit(fakes, tmp_path):
-    result, output = commit_and_push(fakes, tmp_path, REMOTE_HEAD="main")
-
-    assert result.returncode == 1
-    assert "REMOTE_HEAD must be empty or a full commit hash" in result.stderr
-    assert github_output(output) == {}
-    assert fakes.calls() == []
-
-
-def test_commit_and_push_fails_when_the_push_fails(fakes, tmp_path):
-    result, output = commit_and_push(
-        fakes,
-        tmp_path,
-        REMOTE_HEAD=REMOTE_HEAD,
-        FAKE_GIT_STATUS=" M uv.lock\n",
-        FAKE_GIT_PUSH_EXIT="1",
-    )
-
-    assert result.returncode != 0
-    assert github_output(output) == {}
+    assert output["changes_detected"] == "false"
+    assert git(checkout, "rev-parse", "HEAD") == before
+    assert not (checkout / "changelog.d/update-dependencies.changed.md").exists()
 
 
 # --- relock-open-pull-request.sh ------------------------------------------
 
-# The fake gh answers each call from the environment and writes each
-# description it is given to FAKE_PR_BODY_LOG.
+# The fake gh runs each --jq expression over the JSON in FAKE_ISSUES_JSON or
+# FAKE_PULL_REQUESTS_JSON, writes the description it is given to
+# FAKE_PR_BODY, and prints the URLs a test sets.
 FAKE_GH = """\
+arguments=("$@")
+expression=""
+for ((index = 0; index < ${#arguments[@]}; index++)); do
+  if [[ "${arguments[index]}" == "--jq" ]]; then
+    expression="${arguments[index + 1]}"
+  fi
+done
 case "$1 $2" in
-  "pr list") printf '%s' "${FAKE_OPEN_PR:-}" ;;
-  "pr view") printf '%s' "${FAKE_OPEN_PR_BODY:-}" ;;
-  "pr create" | "pr edit") cat >> "$FAKE_PR_BODY_LOG" ;;
-  "issue create") printf '%s\\n' "${FAKE_CREATED_ISSUE_URL:-}" ;;
   "api --paginate")
-    printf '%s' "${FAKE_OPEN_ISSUES:-}"
+    jq -r "${expression}" <<<"${FAKE_ISSUES_JSON:-[]}"
     exit "${FAKE_GH_API_EXIT:-0}"
+    ;;
+  "issue create") printf '%s\\n' "${FAKE_CREATED_ISSUE_URL:-}" ;;
+  "pr list") jq -r "${expression}" <<<"${FAKE_PULL_REQUESTS_JSON:-[]}" ;;
+  "pr create")
+    cat > "${FAKE_PR_BODY}"
+    printf 'https://github.com/%s/pull/%s\\n' "${GITHUB_REPOSITORY}" 90
     ;;
 esac
 """
-PULL_REQUEST_SUMMARY = (
+SUMMARY = (
     "Automated weekly relock by `.github/workflows/update-dependencies.yaml`. "
     "`uv lock --upgrade` updates `uv.lock` to the newest versions "
     "`pyproject.toml` allows, so this pull request changes only `uv.lock` and "
     "adds a changelog fragment. CI on this pull request tests the upgraded "
     "versions.\n\n"
-    "Each run rebuilds `update-dependencies` from `main` and replaces it, so "
-    "commits pushed to this branch by hand are lost on the next run."
+    "Each run opens a new relock pull request from a branch of its own, and "
+    "closes the earlier ones unless someone pushed to their branches."
 )
-OPEN_PULL_REQUEST_LOOKUP = [
-    "gh",
-    "pr",
-    "list",
-    "--repo",
-    REPOSITORY,
-    "--base",
-    "main",
-    "--head",
-    "update-dependencies",
-    "--state",
-    "open",
-    "--json",
-    "number,isCrossRepository",
-    "--jq",
-    "map(select(.isCrossRepository | not)) | .[0].number // empty",
-]
-OPEN_TRACKING_ISSUE_LOOKUP = [
-    "gh",
-    "api",
-    "--paginate",
-    f"repos/{REPOSITORY}/issues?state=open&per_page=100",
-    "--jq",
-    '.[] | select(.pull_request == null and .title == "Update locked dependencies")'
-    " | .number",
-]
+TRACKING_ISSUE = {"number": 870, "title": "Update locked dependencies"}
 CREATE_PULL_REQUEST = [
     "gh",
     "pr",
@@ -417,54 +286,65 @@ CREATE_PULL_REQUEST = [
     "--base",
     "main",
     "--head",
-    "update-dependencies",
+    BRANCH,
 ]
 
 
-def open_pull_request(fakes, tmp_path, **env):
-    """Run the script; return its result and the descriptions it set."""
-    body_log = tmp_path / "pr-bodies"
+def relock_pull_request(number, branch, *headlines, cross_repository=False):
+    """GitHub's answer for an open pull request into main, as gh pr list prints."""
+    return {
+        "number": number,
+        "headRefName": branch,
+        "isCrossRepository": cross_repository,
+        "commits": [{"messageHeadline": headline} for headline in headlines],
+    }
+
+
+def open_pull_request(fakes, checkout, issues=(TRACKING_ISSUE,), pulls=(), **env):
+    """Relock on a new branch, then run the script; return its result and body."""
+    prepare_branch(fakes, checkout)
+    (checkout / "uv.lock").write_text("locked = 2\n")
+    commit(fakes, checkout)
+    body = checkout.parent / "pr-body"
     fakes.add("gh", FAKE_GH)
-    result = run_script(
-        OPEN_PULL_REQUEST,
-        env=fakes.env(
-            GITHUB_REPOSITORY=REPOSITORY, FAKE_PR_BODY_LOG=str(body_log), **env
-        ),
-    )
-    descriptions = body_log.read_text() if body_log.exists() else ""
-    return result, descriptions
+    environment = {
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "BRANCH": BRANCH,
+        "GH_TOKEN": "synthetic-token",
+        "FAKE_PR_BODY": str(body),
+        "FAKE_ISSUES_JSON": json.dumps(list(issues)),
+        "FAKE_PULL_REQUESTS_JSON": json.dumps(list(pulls)),
+        **env,
+    }
+    result = run_script(OPEN_PULL_REQUEST, env=fakes.env(**environment), cwd=checkout)
+    return result, body.read_text() if body.exists() else ""
 
 
-def test_open_pull_request_names_the_open_tracking_issue(fakes, tmp_path):
-    result, descriptions = open_pull_request(fakes, tmp_path, FAKE_OPEN_ISSUES="870\n")
-
-    assert result.returncode == 0, result.stderr
-    assert fakes.calls() == [
-        OPEN_PULL_REQUEST_LOOKUP,
-        OPEN_TRACKING_ISSUE_LOOKUP,
-        CREATE_PULL_REQUEST,
-    ]
-    assert descriptions == f"Fixes #870\n\n{PULL_REQUEST_SUMMARY}\n"
+def remote_branch(checkout, branch):
+    return git(checkout.parent / "origin.git", "rev-parse", f"refs/heads/{branch}")
 
 
-def test_open_pull_request_names_the_oldest_open_tracking_issue(fakes, tmp_path):
-    result, descriptions = open_pull_request(
-        fakes, tmp_path, FAKE_OPEN_ISSUES="875\n870\n1001\n"
-    )
+def test_open_pull_request_pushes_the_new_branch_and_names_the_tracking_issue(
+    fakes, checkout
+):
+    result, body = open_pull_request(fakes, checkout)
 
     assert result.returncode == 0, result.stderr
-    assert descriptions.startswith("Fixes #870\n\n")
+    assert remote_branch(checkout, BRANCH) == git(checkout, "rev-parse", "HEAD")
+    assert fakes.calls("gh")[-1] == CREATE_PULL_REQUEST
+    assert body == f"Fixes #870\n\n{SUMMARY}\n"
 
 
-def test_open_pull_request_opens_a_tracking_issue_when_none_is_open(fakes, tmp_path):
-    result, descriptions = open_pull_request(
+def test_open_pull_request_opens_a_tracking_issue_when_none_is_open(fakes, checkout):
+    result, body = open_pull_request(
         fakes,
-        tmp_path,
+        checkout,
+        issues=[{"number": 12, "title": "Something else"}],
         FAKE_CREATED_ISSUE_URL=f"https://github.com/{REPOSITORY}/issues/871",
     )
 
     assert result.returncode == 0, result.stderr
-    assert fakes.calls()[2] == [
+    assert [
         "gh",
         "issue",
         "create",
@@ -476,82 +356,121 @@ def test_open_pull_request_opens_a_tracking_issue_when_none_is_open(fakes, tmp_p
         "Tracks the automated weekly relock from update-dependencies.yaml. The "
         "relock pull request names this issue on the first line of its "
         "description and closes it when it merges.",
+    ] in fakes.calls("gh")
+    assert body.startswith("Fixes #871\n\n")
+
+
+def test_open_pull_request_names_the_oldest_open_tracking_issue(fakes, checkout):
+    issues = [
+        {"number": 875, "title": "Update locked dependencies"},
+        {**TRACKING_ISSUE},
+        {"number": 860, "title": "Update locked dependencies", "pull_request": {}},
     ]
-    assert fakes.calls()[3] == CREATE_PULL_REQUEST
-    assert descriptions == f"Fixes #871\n\n{PULL_REQUEST_SUMMARY}\n"
+
+    result, body = open_pull_request(fakes, checkout, issues=issues)
+
+    assert result.returncode == 0, result.stderr
+    assert body.startswith("Fixes #870\n\n")
 
 
-def test_open_pull_request_fails_when_the_new_issue_has_no_number(fakes, tmp_path):
-    result, descriptions = open_pull_request(
-        fakes, tmp_path, FAKE_CREATED_ISSUE_URL="could not create the issue"
+def test_open_pull_request_closes_earlier_relocks_nobody_pushed_to(fakes, checkout):
+    pulls = [
+        relock_pull_request(
+            80, EARLIER_BRANCH, "Update locked dependencies (2026-10-26)"
+        ),
+        relock_pull_request(
+            81,
+            "bot/update-dependencies/2026-10-19-060010",
+            "Update locked dependencies (2026-10-19)",
+            "Pin the release that broke the build",
+        ),
+        relock_pull_request(
+            82, EARLIER_BRANCH, "Update locked dependencies (x)", cross_repository=True
+        ),
+        relock_pull_request(83, "claude/other-work", "Update locked dependencies (x)"),
+    ]
+
+    result, body = open_pull_request(fakes, checkout, pulls=pulls)
+
+    assert result.returncode == 0, result.stderr
+    assert body == (
+        f"Fixes #870\n\n{SUMMARY}\n\n"
+        "Earlier relock pull requests stay open, because their branches hold "
+        "commits the relock did not make: #81.\n"
+    )
+    closes = [call for call in fakes.calls("gh") if call[1:3] == ["pr", "close"]]
+    assert closes == [
+        [
+            "gh",
+            "pr",
+            "close",
+            "80",
+            "--repo",
+            REPOSITORY,
+            "--comment",
+            "Superseded by #90, which relocks uv.lock from the current main.",
+        ]
+    ]
+
+
+def test_open_pull_request_never_replaces_an_existing_branch(fakes, checkout):
+    """A plain push fails rather than discard commits on a branch of that name."""
+    git(checkout, "checkout", "-q", "-b", "someone")
+    git(
+        checkout,
+        "-c",
+        "user.name=Someone",
+        "-c",
+        "user.email=someone@example.com",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "Someone's work",
+    )
+    git(checkout, "push", "-q", "origin", f"HEAD:refs/heads/{BRANCH}")
+    someones_work = remote_branch(checkout, BRANCH)
+    git(checkout, "checkout", "-q", "main")
+    git(checkout, "branch", "-q", "-D", "someone")
+
+    result, body = open_pull_request(fakes, checkout)
+
+    assert result.returncode != 0
+    assert remote_branch(checkout, BRANCH) == someones_work
+    assert CREATE_PULL_REQUEST not in fakes.calls("gh")
+    assert body == ""
+
+
+def test_open_pull_request_fails_when_the_issue_lookup_fails(fakes, checkout):
+    result, body = open_pull_request(fakes, checkout, FAKE_GH_API_EXIT="1")
+
+    assert result.returncode != 0
+    assert CREATE_PULL_REQUEST not in fakes.calls("gh")
+    assert body == ""
+
+
+def test_open_pull_request_fails_when_the_new_issue_has_no_number(fakes, checkout):
+    result, body = open_pull_request(
+        fakes, checkout, issues=[], FAKE_CREATED_ISSUE_URL="could not create it"
     )
 
     assert result.returncode == 1
     assert "Could not resolve the relock tracking issue" in result.stderr
-    assert CREATE_PULL_REQUEST not in fakes.calls()
-    assert descriptions == ""
+    assert body == ""
 
 
-def test_open_pull_request_fails_when_the_issue_lookup_fails(fakes, tmp_path):
-    result, descriptions = open_pull_request(fakes, tmp_path, FAKE_GH_API_EXIT="1")
-
-    assert result.returncode == 1
-    assert fakes.calls() == [OPEN_PULL_REQUEST_LOOKUP, OPEN_TRACKING_ISSUE_LOOKUP]
-    assert descriptions == ""
-
-
-def test_open_pull_request_rewrites_the_description_of_the_open_one(fakes, tmp_path):
-    """An open pull request whose issue was closed names the open one instead."""
-    result, descriptions = open_pull_request(
-        fakes,
-        tmp_path,
-        FAKE_OPEN_PR="90",
-        FAKE_OPEN_PR_BODY=f"Fixes #860\n\n{PULL_REQUEST_SUMMARY}",
-        FAKE_OPEN_ISSUES="870\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert fakes.calls()[2:] == [
-        [
-            "gh",
-            "pr",
-            "view",
-            "90",
-            "--repo",
-            REPOSITORY,
-            "--json",
-            "body",
-            "--jq",
-            ".body",
-        ],
-        ["gh", "pr", "edit", "90", "--repo", REPOSITORY, "--body-file", "-"],
-    ]
-    assert descriptions == f"Fixes #870\n\n{PULL_REQUEST_SUMMARY}\n"
-
-
-def test_open_pull_request_leaves_a_current_description(fakes, tmp_path):
-    result, descriptions = open_pull_request(
-        fakes,
-        tmp_path,
-        FAKE_OPEN_PR="90",
-        FAKE_OPEN_PR_BODY=f"Fixes #870\n\n{PULL_REQUEST_SUMMARY}",
-        FAKE_OPEN_ISSUES="870\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert not any(
-        call[1:3] in (["pr", "edit"], ["pr", "create"]) for call in fakes.calls()
-    )
-    assert descriptions == ""
-
-
-def test_open_pull_request_requires_the_repository(fakes):
-    fakes.add("gh")
-    environment = fakes.env()
-    environment.pop("GITHUB_REPOSITORY", None)
-
-    result = run_script(OPEN_PULL_REQUEST, env=environment)
+@pytest.mark.parametrize("variable", ["GITHUB_REPOSITORY", "BRANCH"])
+def test_open_pull_request_requires_its_environment(fakes, checkout, variable):
+    result, body = open_pull_request(fakes, checkout, **{variable: ""})
 
     assert result.returncode != 0
-    assert "GITHUB_REPOSITORY is required" in result.stderr
-    assert fakes.calls() == []
+    assert f"{variable} is required" in result.stderr
+    assert fakes.calls("gh") == []
+
+
+def test_open_pull_request_refuses_a_branch_the_relock_does_not_name(fakes, checkout):
+    result, _body = open_pull_request(fakes, checkout, BRANCH="main")
+
+    assert result.returncode != 0
+    assert "is not a relock branch" in result.stderr
+    assert fakes.calls("gh") == []

@@ -700,9 +700,9 @@ invocation = "unittest discover -s scripts/rules/tests"
 [[rule]]
 id = "emitter.dependencies.install-from-lock"
 category = "dependencies"
-statement = "Every install of the project's Python dependencies, in workflows and the scripts under tools/ they run, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site."
+statement = "Every install of the project's Python dependencies, in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site."
 rationale = "scripts/rules/locked_installs.py"
-scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh", "tools/*.py"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
@@ -764,6 +764,12 @@ category = "pinned-tool"
 reason = "towncrier builds the changelog at release time and is no dependency of either distribution, so the release runs the exact towncrier release."
 
 [[rule.exception]]
+path = "tools/check-installed.py"
+match = "uv pip install --python"
+reason = "The installed-artifact check installs the built wheels into two clean environments as uv tool install microcosm-emitter does for a user, so it resolves their runtime dependencies from PyPI afresh: it tests what a user installing this release gets today, not the locked versions."
+removal = "the check no longer reproduces a user's install"
+
+[[rule.exception]]
 path = "tools/check-collector.sh"
 match = "uv pip install -e .collector/telemetry-service"
 reason = "The collector contract test runs against calibration-diagnostics' telemetry-service at the commit the script pins, which is no part of this workspace or its uv.lock."
@@ -784,9 +790,9 @@ removal = "the contract test no longer tests the built wheels"
 [[rule]]
 id = "emitter.dependencies.test-from-lock"
 category = "dependencies"
-statement = "Every test command (pytest, python -m unittest) in workflows and the scripts under tools/ they run runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site."
+statement = "Every test command (pytest, python -m unittest) in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site."
 rationale = "scripts/rules/locked_installs.py"
-scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh", "tools/*.py"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
@@ -820,9 +826,9 @@ removal = "the contract test no longer tests the built wheels"
 [[rule]]
 id = "emitter.dependencies.scheduled-relock"
 category = "dependencies"
-statement = "A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade) and opens or updates a pull request with the result."
+statement = "A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade, or --upgrade-package for named packages) and opens or updates a pull request with the result; its jobs may share the work."
 rationale = "scripts/rules/locked_installs.py"
-scope = [".github/workflows/update-dependencies.yaml", "uv.lock"]
+scope = [".github/workflows/update-dependencies.yaml", "tools/relock-*.sh", "uv.lock"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
@@ -844,9 +850,9 @@ invocation = "unittest discover -s scripts/rules/tests"
 [[rule]]
 id = "emitter.dependencies.uv-version-pinned"
 category = "dependencies"
-statement = "Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, and any uv container image, install script, release download or package install of uv names the release."
+statement = "Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, any uv container image, install script, release download or package install of uv names the release, and the root pyproject.toml's [tool.uv] required-version is ==<release>, so a developer's uv refuses another."
 rationale = "scripts/rules/uv_version.py"
-scope = [".uv-version", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+scope = [".uv-version", "pyproject.toml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
 tier = "mechanical"
 status = "enforced"
 autofix = false

@@ -144,6 +144,44 @@ class TestVersionFile(GuardCase):
         )
 
 
+class TestRequiredVersion(GuardCase):
+    """The root pyproject.toml makes a developer's uv refuse another release."""
+
+    def test_a_required_version_of_the_release_passes(self) -> None:
+        self.assertEqual(
+            self.messages(
+                {"pyproject.toml": f'[tool.uv]\nrequired-version = "=={PINNED}"\n'}
+            ),
+            [],
+        )
+
+    def test_a_missing_required_version_fails(self) -> None:
+        self.assertEqual(
+            self.messages({"pyproject.toml": '[project]\nname = "example"\n'}),
+            ["pyproject.toml sets no [tool.uv] required-version"],
+        )
+
+    def test_another_release_or_a_range_fails(self) -> None:
+        for required in ("==0.13.4", ">=0.13.6", "0.13.6"):
+            with self.subTest(required=required):
+                self.assertEqual(
+                    self.messages(
+                        {
+                            "pyproject.toml": (
+                                f'[tool.uv]\nrequired-version = "{required}"\n'
+                            )
+                        }
+                    ),
+                    [
+                        "pyproject.toml's [tool.uv] required-version is "
+                        f"{required!r}, not '=={PINNED}'"
+                    ],
+                )
+
+    def test_a_repository_without_a_root_project_needs_none(self) -> None:
+        self.assertEqual(self.messages({"projects/app/pyproject.toml": ""}), [])
+
+
 class TestSetupUvSteps(GuardCase):
     def workflow(self, steps: str) -> dict[str, str]:
         """Return a one-job workflow file holding ``steps``."""

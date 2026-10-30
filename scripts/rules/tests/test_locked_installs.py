@@ -574,6 +574,25 @@ class TestRepositoryLayout(unittest.TestCase):
             [".github/workflows/relock.yml does not relock packages/other/uv.lock"],
         )
 
+    def test_a_scheduled_relock_may_open_its_pull_request_in_another_job(
+        self,
+    ) -> None:
+        """One job relocks without secrets; a later one holds the token."""
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        workflow = (
+            "on:\n  schedule:\n    - cron: '0 6 * * 1'\njobs:\n"
+            "  relock:\n    steps:\n      - run: uv lock --upgrade\n"
+            "  propose:\n    needs: relock\n    steps:\n"
+            "      - run: gh pr create --fill\n"
+        )
+        (root / ".github/workflows").mkdir(parents=True)
+        (root / ".github/workflows/relock.yml").write_text(workflow, encoding="utf-8")
+        (root / "pyproject.toml").write_text('[project]\nname = "root"\n')
+
+        self.assertEqual(
+            relock_violations(root, tracked_files(root), FIXTURE_REPOSITORY), []
+        )
+
     def test_a_script_is_no_lock_check_by_its_name(self) -> None:
         files = {
             ".github/workflows/pr.yml": (
@@ -584,6 +603,105 @@ class TestRepositoryLayout(unittest.TestCase):
         }
 
         self.assertEqual(len(self.lock_messages(files, FIXTURE_REPOSITORY)), 1)
+
+
+class TestPythonScripts(unittest.TestCase):
+    """Python scripts in the script directories run installers as subprocesses."""
+
+    def scan_files(self, files: dict[str, str]) -> tuple[list[str], list[str]]:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for path, text in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(text, encoding="utf-8")
+        findings = scan(root, script_directories=("tools",))
+        return (
+            [str(site) for site in findings.unlocked_installs],
+            [str(site) for site in findings.unlocked_tests],
+        )
+
+    def test_a_subprocess_install_in_a_tool_script_is_reported(self) -> None:
+        installs, _tests = self.scan_files(
+            {
+                "tools/install.py": (
+                    "import subprocess\n"
+                    'subprocess.run(["uv", "pip", "install", "requests"], check=True)\n'
+                ),
+                "tools/environments.py": (
+                    "def create(interpreter, wheels):\n"
+                    '    run("uv", "venv", str(interpreter))\n'
+                    '    run("uv", "pip", "install", "--python", str(interpreter), '
+                    "*wheels)\n"
+                ),
+            }
+        )
+
+        self.assertEqual(
+            installs,
+            [
+                "tools/environments.py:3: uv pip install --python",
+                "tools/install.py:2: uv pip install requests",
+            ],
+        )
+
+    def test_a_subprocess_test_run_in_a_tool_script_is_reported(self) -> None:
+        _installs, tests = self.scan_files(
+            {"tools/check.py": 'subprocess.run(("pytest", "tests"), check=True)\n'}
+        )
+
+        self.assertEqual(tests, ["tools/check.py:1: pytest tests"])
+
+    def test_locked_runs_and_text_are_not_installs(self) -> None:
+        installs, tests = self.scan_files(
+            {
+                "tools/fine.py": (
+                    'subprocess.run(["uv", "run", "--locked", "pytest"], check=True)\n'
+                    'print("Run uv pip install requests to fix it.")\n'
+                    'run("uv", "venv", "--python", sys.executable, "env")\n'
+                ),
+            }
+        )
+
+        self.assertEqual((installs, tests), ([], []))
+
+    def test_python_outside_the_script_directories_is_read_for_modal_only(
+        self,
+    ) -> None:
+        installs, _tests = self.scan_files(
+            {
+                "src/pkg/module.py": (
+                    'subprocess.run(["uv", "pip", "install", "requests"], check=True)\n'
+                ),
+            }
+        )
+
+        self.assertEqual(installs, [])
+
+
+class TestMessages(unittest.TestCase):
+    """The fixes name --locked, the flag the rules ask for."""
+
+    def test_the_fixes_name_uv_sync_and_uv_run_with_locked(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (root / "run.sh").write_text("uv run pytest tests/\n", encoding="utf-8")
+
+        violations = find_violations(root, registry_with())
+
+        install_fix, test_fix = (
+            violation.fix
+            for violation in violations
+            if violation.message.startswith(
+                ("unlocked install", "test command outside uv.lock")
+            )
+        )
+        self.assertEqual(
+            install_fix,
+            "install from uv.lock (uv sync --locked, uv run --locked, "
+            "uv_sync(frozen=True)) or register a [[rule.exception]] for the site",
+        )
+        self.assertEqual(
+            test_fix,
+            "run it through uv run --locked or register a [[rule.exception]]",
+        )
 
 
 class TestRepository(unittest.TestCase):

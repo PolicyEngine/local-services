@@ -61,11 +61,11 @@ To add or change a rule, read `docs/engineering/skills/rules-registry.md`.
 
 ### Dependency locking
 
-- `emitter.dependencies.install-from-lock`: Every install of the project's Python dependencies, in workflows and the scripts under tools/ they run, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.install-from-lock`: Every install of the project's Python dependencies, in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site. (blocking: quality guard `locked-installs`)
 - `emitter.dependencies.lock-committed`: Every project directory with a pyproject.toml commits a uv.lock that matches it, or is a member of the uv workspace whose uv.lock locks it, and a pull-request job checks the lock with uv lock --check. (blocking: quality guard `locked-installs`)
-- `emitter.dependencies.scheduled-relock`: A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade) and opens or updates a pull request with the result. (blocking: quality guard `locked-installs`)
-- `emitter.dependencies.test-from-lock`: Every test command (pytest, python -m unittest) in workflows and the scripts under tools/ they run runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site. (blocking: quality guard `locked-installs`)
-- `emitter.dependencies.uv-version-pinned`: Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, and any uv container image, install script, release download or package install of uv names the release. (blocking: quality guard `uv-version`)
+- `emitter.dependencies.scheduled-relock`: A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade, or --upgrade-package for named packages) and opens or updates a pull request with the result; its jobs may share the work. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.test-from-lock`: Every test command (pytest, python -m unittest) in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site. (blocking: quality guard `locked-installs`)
+- `emitter.dependencies.uv-version-pinned`: Every uv install pins the one uv release written in .uv-version: each astral-sh/setup-uv step sets with: version:, any uv container image, install script, release download or package install of uv names the release, and the root pyproject.toml's [tool.uv] required-version is ==<release>, so a developer's uv refuses another. (blocking: quality guard `uv-version`)
 
 ### CI workflows and scripts
 
