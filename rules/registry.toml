@@ -75,6 +75,7 @@ guard_test_globs = [
 ]
 # Structure tests in files that otherwise test behaviour.
 extra_guard_tests = [
+  "tests/interface/test_client_messages.py::test_every_fixture_has_a_typed_call_that_produces_it",
   "tests/interface/test_host_protocol.py::test_every_host_fixture_has_a_test_that_sends_it",
   "tests/interface/test_in_process_clients.py::test_every_telemetry_message_fixture_has_an_in_process_call",
   "tests/interface/test_in_process_clients.py::test_in_process_clients_reuse_the_interface_definitions",
@@ -211,9 +212,9 @@ invocation = 'pytest -m "not collector"'
 # --- Databases and migrations --------------------------------------------------
 
 [[rule]]
-id = "emitter.persistence.sqlalchemy-and-alembic-only"
+id = "emitter.persistence.no-raw-sql-or-schema-calls"
 category = "persistence"
-statement = "Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL, no direct-driver persistence, no create_all(), no schema repair and no adoption of databases made before Alembic."
+statement = "No module under src/microcosm_emitter calls a function or method named create_all, exec_driver_sql, executescript or text, or imports sqlite3, psycopg or psycopg2 in the form import <module>."
 rationale = "README.md#delivery-and-persistence"
 scope = ["src/microcosm_emitter/**/*.py"]
 tier = "mechanical"
@@ -226,6 +227,21 @@ nodes = ["tests/test_boundaries.py::test_database_code_has_no_raw_sql_or_manual_
 workflow = ".github/workflows/ci.yml"
 job = "tests"
 invocation = 'pytest -m "not collector"'
+
+# The test above checks only the calls and imports it names: a direct-driver
+# import written as from sqlite3 import ..., schema repair and adopting an
+# older database are not checked.
+[[rule]]
+id = "emitter.persistence.sqlalchemy-and-alembic-only"
+category = "persistence"
+statement = "Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL or direct-driver persistence in any form, no schema repair and no adoption of databases made before Alembic."
+rationale = "README.md#delivery-and-persistence"
+scope = ["src/microcosm_emitter/**/*.py"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
 
 # The repository has no TypeScript, so the scope is the file that states the
 # rule until there is some.
@@ -293,7 +309,7 @@ invocation = 'pytest -m "not collector"'
 [[rule]]
 id = "emitter.distributions.artifacts-verified"
 category = "distributions"
-statement = "Every pull request builds both distributions, each wheel from its source archive, passes twine check --strict on them, and has tools/check-installed.py require one wheel and one source archive per distribution, refuse a source archive holding the rules tool, and run the installed smoke checks (tools/installed-smoke.py and tools/installed-interface-smoke.py) in clean environments outside the checkout."
+statement = "Every pull request builds both distributions, each wheel from its source archive, and checks them: twine check --strict passes; tools/check-installed.py finds one wheel and one source archive per distribution, refuses a source archive holding the rules tool, and installs the wheels into two clean environments outside the checkout without Hugging Face credentials; in the emitter's, Microcosm is absent, the project URL is the repository, importing the host and the Orrery client loads no database, Hugging Face, telemetry or service module, and telemetry-only, graph-only, combined and failing services start and record their events and graph jobs in an event queue database at Alembic revision 20261008_02; in a build's, which holds only the interface, the interface has no requirements and ships its protocol fixtures, and the installed emitter it starts reports the interface's version and the telemetry, Orrery and Hugging Face modules, accepts telemetry, an Orrery hand-over and a run-file staging request, and exits with status 0."
 rationale = "README.md#publication"
 scope = ["tools/check-artifacts.sh", "tools/check-installed.py", "tools/installed-smoke.py", "tools/installed-interface-smoke.py"]
 tier = "mechanical"
@@ -453,7 +469,7 @@ invocation = 'pytest -m "not collector"'
 [[rule]]
 id = "emitter.protocol.every-fixture-sent-and-answered"
 category = "protocol"
-statement = "Every protocol fixture has a test in which the interface sends it, and this emitter answers each one: the telemetry, Orrery and Hugging Face modules handle their message and query fixtures, the installed command starts from the launch fixture and answers hello with at least the recorded keys, and the host routes each envelope fixture to its module."
+statement = "Every protocol fixture has an interface test that produces it, from a typed call, a module configuration or a host request, and this emitter answers each one: the telemetry, Orrery and Hugging Face modules handle their message and query fixtures, the installed command starts from the launch fixture and answers hello with at least the recorded keys, and the host routes each envelope fixture to its module."
 rationale = "packages/microcosm-emitter-interface/README.md#compatibility"
 scope = ["packages/microcosm-emitter-interface/src/microcosm_emitter_interface/fixtures/protocol-v1/*.json"]
 tier = "mechanical"
@@ -462,6 +478,7 @@ autofix = false
 [rule.enforcer]
 kind = "pytest"
 nodes = [
+  "tests/interface/test_client_messages.py::test_every_fixture_has_a_typed_call_that_produces_it",
   "tests/interface/test_host_protocol.py::test_every_host_fixture_has_a_test_that_sends_it",
   "tests/interface/test_in_process_clients.py::test_every_telemetry_message_fixture_has_an_in_process_call",
   "tests/interface/test_protocol_fixtures.py::test_telemetry_module_records_each_message_fixture",
@@ -499,7 +516,7 @@ invocation = 'pytest -m "not collector"'
 [[rule]]
 id = "emitter.tests.no-ambient-credentials-or-hosted-collector"
 category = "tests"
-statement = "Tests never use ambient credentials or contact a hosted collector: an autouse fixture in conftest.py removes the Hugging Face credential variables, gives each test a temporary Hugging Face home, and fails a test whose telemetry or authentication request names a host other than loopback."
+statement = "Tests never use ambient Hugging Face credentials, and never send a telemetry or authentication request to a hosted collector: an autouse fixture in conftest.py removes the Hugging Face credential variables, gives each test a temporary Hugging Face home, and fails a test whose telemetry or authentication request names a host other than loopback."
 rationale = "README.md#development"
 scope = ["conftest.py"]
 tier = "mechanical"
@@ -515,7 +532,7 @@ invocation = 'pytest -m "not collector"'
 [[rule]]
 id = "emitter.tests.real-migrations-synthetic-credentials"
 category = "tests"
-statement = "Tests use temporary databases created through real migrations, synthetic credentials and loopback network services."
+statement = "Tests use temporary databases created through real migrations, synthetic credentials and loopback network services, and contact no hosted collector through any client, including the HTTP clients of the submissions client and the Orrery queue, which conftest.py does not intercept."
 rationale = "README.md#development"
 scope = ["tests/**/*.py"]
 tier = "mechanical"
@@ -566,7 +583,7 @@ invocation = "tools/check-quality.sh"
 [[rule]]
 id = "emitter.quality.tests-pass"
 category = "quality"
-statement = "Every test except the collector contract test passes on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs."
+statement = "Every pytest test under tests/ except the collector contract test passes in ci.yml's tests job, on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs."
 rationale = "README.md#development"
 scope = ["tests/**/*.py"]
 tier = "mechanical"
@@ -604,6 +621,22 @@ above_fixture = "scripts/rules/tests/fixtures/file_length/bad_files.toml"
 # The source limit; both fixtures also cover the 1,500-line limit for test code.
 threshold = 800
 test = "scripts/rules/tests/test_file_length.py::TestFileLengthProof::test_rule_proof_python_file_length"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+[[rule]]
+id = "emitter.quality.rules-tool-tests-pass"
+category = "quality"
+statement = "The rules tool's own tests, the unittest tests under scripts/rules/tests, pass in pr.yaml's rules job, on Ubuntu with Python 3.13 and only the standard library."
+rationale = "docs/engineering/skills/rules-registry.md#commands"
+scope = ["scripts/rules/tests/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
 workflow = ".github/workflows/pr.yaml"
 job = "rules"
 invocation = "unittest discover -s scripts/rules/tests"
@@ -750,9 +783,9 @@ invocation = "unittest discover -s scripts/rules/tests"
 # --- CI workflows and scripts --------------------------------------------------
 
 [[rule]]
-id = "emitter.ci.multiline-shell-in-scripts"
+id = "emitter.ci.run-steps-are-one-line"
 category = "ci"
-statement = "No workflow run: step spans more than one line; shell logic of several lines lives in a Bash script under tools/, which the step calls with a single command."
+statement = "No workflow run: step spans more than one line of text."
 rationale = "README.md#development"
 scope = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
 tier = "mechanical"
@@ -765,6 +798,18 @@ nodes = ["tests/test_workflows.py::test_shell_logic_lives_in_scripts"]
 workflow = ".github/workflows/ci.yml"
 job = "tests"
 invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.ci.shell-logic-in-tools-scripts"
+category = "ci"
+statement = "Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command."
+rationale = "README.md#development"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml", "tools/*.sh"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
 
 # tools/check-quality.sh runs bash -n, so discovery cannot see it.
 [[rule]]
