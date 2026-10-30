@@ -1,3 +1,10 @@
+## [0.11.2] - 2026-10-30
+
+### Changed
+
+- Pull requests now check the repository's rules registry. `rules/registry.toml` lists the repository's registered rules; the "Rules registry" job runs the rules tool's tests and `python -m scripts.rules guard`, which fails when a rule names a check that does not exist or a CI job that does not run it, when CI runs a check no rule describes, or when a rule or its list of tolerated violations is weaker than on `main`. `python -m scripts.rules render` writes `docs/generated/rules.md` and the Rules section of `AGENTS.md`. The tool is a copy of the simulation API's, reading what differs between repositories from the registry's `[repository]` table. The wheels are unchanged, the build leaves the tool, the registry and their documents out of the `microcosm-emitter` source archive, and the artifact check refuses an archive that holds them.
+
+
 ## [0.11.1] - 2026-10-29
 
 ### Fixed
