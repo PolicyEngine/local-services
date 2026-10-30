@@ -1216,5 +1216,61 @@ class BaselineTest(unittest.TestCase):
             )
 
 
+CI_SCRIPTS_TABLE = """
+[ci_scripts]
+workflows = ".github/workflows/*.yml"
+test_globs = ["tests/**/test_*.py"]
+multiline_baseline = "rules/baselines/ci-multiline-run.txt"
+untested_baseline = "rules/baselines/ci-untested-scripts.txt"
+shellcheck_baseline = "rules/baselines/ci-shellcheck.txt"
+"""
+CI_SCRIPTS_BASELINE_HEADER = (
+    "# Tolerated existing violations. This list may only shrink.\n"
+)
+
+
+class CiScriptsBaselineTest(unittest.TestCase):
+    """The [ci_scripts] baselines may only shrink, like a ratcheted rule's.
+
+    Their rules can be enforced, with no [rule.baseline] count to compare, so
+    the guard compares each file's entries with the base ref's.
+    """
+
+    def messages_after(self, base_entries: str, entries: str) -> list[str]:
+        """Commit the shellcheck baseline with ``base_entries``, then list
+        ``entries`` in it, and return the guard's messages against the commit.
+        """
+        files = {"rules/registry.toml": REGISTRY + CI_SCRIPTS_TABLE}
+        for name in ("ci-multiline-run", "ci-untested-scripts", "ci-shellcheck"):
+            files[f"rules/baselines/{name}.txt"] = CI_SCRIPTS_BASELINE_HEADER
+        files["rules/baselines/ci-shellcheck.txt"] += base_entries
+        repo = self.enterContext(Repo(files))
+        git = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t"]
+        subprocess.run(["git", "init", "-q"], cwd=repo.root, check=True)
+        subprocess.run([*git, "add", "-A"], cwd=repo.root, check=True)
+        subprocess.run([*git, "commit", "-qm", "base"], cwd=repo.root, check=True)
+        repo.write(
+            "rules/baselines/ci-shellcheck.txt", CI_SCRIPTS_BASELINE_HEADER + entries
+        )
+        return repo.messages(base_ref="HEAD")
+
+    def test_an_entry_beyond_the_base_fails(self) -> None:
+        self.assertIn(
+            "[registry] baseline: rules/baselines/ci-shellcheck.txt grew from 0 to "
+            "1 entries. Fix: fix what the check reports instead of listing it.",
+            self.messages_after("", "tools/new.sh\n"),
+        )
+
+    def test_a_baseline_may_keep_or_shrink_its_entries(self) -> None:
+        for entries in ("tools/old.sh\n", ""):
+            with self.subTest(entries=entries):
+                self.assertFalse(
+                    any(
+                        "ci-shellcheck.txt grew" in message
+                        for message in self.messages_after("tools/old.sh\n", entries)
+                    )
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

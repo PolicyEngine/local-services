@@ -874,23 +874,6 @@ invocation = "unittest discover -s scripts/rules/tests"
 # --- CI workflows and scripts --------------------------------------------------
 
 [[rule]]
-id = "emitter.ci.run-steps-are-one-line"
-category = "ci"
-statement = "No workflow run: step spans more than one line of text."
-rationale = "README.md#development"
-scope = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
-tier = "mechanical"
-status = "enforced"
-autofix = false
-[rule.enforcer]
-kind = "pytest"
-nodes = ["tests/test_workflows.py::test_shell_logic_lives_in_scripts"]
-[[rule.ci]]
-workflow = ".github/workflows/ci.yml"
-job = "tests"
-invocation = 'pytest -m "not collector"'
-
-[[rule]]
 id = "emitter.ci.shell-logic-in-tools-scripts"
 category = "ci"
 statement = "Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command, and a test runs that script, with fake commands in place of anything it would change or reach outside the test."

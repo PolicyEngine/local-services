@@ -38,6 +38,16 @@ def write(path, text=""):
     path.write_text(text)
 
 
+def with_matches_sorted(call, matches_from):
+    """Return ``call`` with its arguments from ``matches_from`` on sorted.
+
+    They are a glob's matches, which bash orders by the locale's collation:
+    macOS runners use en_US.UTF-8 and Ubuntu's C, and no command here
+    depends on the order.
+    """
+    return [*call[:matches_from], *sorted(call[matches_from:])]
+
+
 # --- check-quality.sh -----------------------------------------------------
 
 
@@ -133,19 +143,24 @@ def test_check_artifacts_builds_once_then_checks_and_installs_the_build(
     result = check_artifacts(fakes, checkout)
 
     assert result.returncode == 0, result.stderr
-    assert fakes.calls() == [
-        ["uv", "build", "--all-packages", "--out-dir", "dist"],
-        [
-            "uv",
-            "run",
-            "--locked",
-            "twine",
-            "check",
-            "--strict",
-            "dist/example-1.0-py3-none-any.whl",
-            "dist/example-1.0.tar.gz",
-        ],
-        ["uv", "run", "--locked", "python", "tools/check-installed.py"],
+    build, twine, installed_check = fakes.calls()
+    assert build == ["uv", "build", "--all-packages", "--out-dir", "dist"]
+    assert with_matches_sorted(twine, 6) == [
+        "uv",
+        "run",
+        "--locked",
+        "twine",
+        "check",
+        "--strict",
+        "dist/example-1.0-py3-none-any.whl",
+        "dist/example-1.0.tar.gz",
+    ]
+    assert installed_check == [
+        "uv",
+        "run",
+        "--locked",
+        "python",
+        "tools/check-installed.py",
     ]
     assert not (checkout / "dist/stale-0.9-py3-none-any.whl").exists()
 
@@ -197,7 +212,9 @@ def test_check_collector_runs_the_contract_test_against_the_built_wheels(
     )
 
     assert result.returncode == 0, result.stderr
-    assert fakes.calls() == [
+    calls = fakes.calls()
+    calls[3] = with_matches_sorted(calls[3], 5)
+    assert calls == [
         ["git", "-C", ".collector", "rev-parse", "HEAD"],
         ["uv", "sync", "--locked"],
         ["uv", "pip", "install", "-e", ".collector/telemetry-service"],
