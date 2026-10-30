@@ -44,6 +44,8 @@ INSTALL_RULE = "dependencies.install-from-lock"
 TEST_RULE = "dependencies.test-from-lock"
 RELOCK_RULE = "dependencies.scheduled-relock"
 PINNED_TOOL = "pinned-tool"
+# Fixture trees hold example files, never this repository's own installs.
+FIXTURE_DIRECTORY = "fixtures"
 
 _LOCKED_FLAG = re.compile(r"(?<![\w-])--(frozen|locked)(?![\w-])")
 _UNLOCKED_RUN_FLAG = re.compile(r"(?<![\w-])--(with|with-requirements|no-project)\b")
@@ -137,16 +139,23 @@ def tracked_files(root: Path) -> list[str]:
     )
 
 
-def _is_fixture_or_test(path: str) -> bool:
+def _is_fixture_or_test(path: str, test_directories: Iterable[str]) -> bool:
+    """Whether ``path`` is under a fixtures directory or a test directory."""
     parts = PurePosixPath(path).parts
-    return "fixtures" in parts or "tests" in parts or "authenticated_tests" in parts
+    return FIXTURE_DIRECTORY in parts or any(
+        directory in parts for directory in test_directories
+    )
 
 
-def file_kind(path: str) -> str | None:
-    """Return which kind of install-capable file ``path`` is, or None."""
+def file_kind(path: str, test_directories: Iterable[str] = ()) -> str | None:
+    """Return which kind of install-capable file ``path`` is, or None.
+
+    Nothing under a fixtures directory counts, and Python modules under one of
+    ``test_directories`` don't either.
+    """
     pure = PurePosixPath(path)
     name = pure.name.lower()
-    if "fixtures" in pure.parts:
+    if FIXTURE_DIRECTORY in pure.parts:
         return None
     kinds = (
         (
@@ -162,7 +171,10 @@ def file_kind(path: str) -> str | None:
         ("makefile", name == "makefile" or name.endswith(".mk")),
         ("dockerfile", "dockerfile" in name and not name.endswith(".dockerignore")),
         ("compose", fnmatch.fnmatch(name, "*compose*.y*ml")),
-        ("python", name.endswith(".py") and not _is_fixture_or_test(path)),
+        (
+            "python",
+            name.endswith(".py") and not _is_fixture_or_test(path, test_directories),
+        ),
     )
     return next((kind for kind, matches in kinds if matches), None)
 
@@ -298,11 +310,19 @@ def _scan_python(path: str, text: str, findings: Findings) -> None:
             findings.unlocked_tests.append(Site(path, number, call))
 
 
-def scan(root: Path, files: Iterable[str] | None = None) -> Findings:
-    """Scan every install-capable file under ``root``."""
+def scan(
+    root: Path,
+    files: Iterable[str] | None = None,
+    test_directories: Iterable[str] = (),
+) -> Findings:
+    """Scan every install-capable file under ``root``.
+
+    Python modules under ``test_directories`` are not scanned.
+    """
     findings = Findings()
+    directories = tuple(test_directories)
     for path in sorted(tracked_files(root) if files is None else files):
-        kind = file_kind(path)
+        kind = file_kind(path, directories)
         if kind is None:
             continue
         findings.scanned.add(path)
@@ -456,12 +476,16 @@ def executed_text(
     return "\n".join(pieces)
 
 
-def _project_directories(files: list[str]) -> list[str]:
+def _project_directories(
+    files: list[str], test_directories: Iterable[str]
+) -> list[str]:
+    """Return the directories of the projects, leaving out fixtures and tests."""
+    directories = tuple(test_directories)
     return sorted(
         str(PurePosixPath(path).parent)
         for path in files
         if PurePosixPath(path).name == "pyproject.toml"
-        and not _is_fixture_or_test(path)
+        and not _is_fixture_or_test(path, directories)
     )
 
 
@@ -519,7 +543,7 @@ def lock_violations(
             f"{directory}/pyproject.toml has no committed uv.lock",
             f"run uv lock --project {directory} and commit uv.lock",
         )
-        for directory in _project_directories(files)
+        for directory in _project_directories(files, repository.test_directories)
         if f"{directory}/uv.lock".removeprefix("./") not in tracked
     ]
     pull_request = pull_request_workflows(root, pr_workflow)
@@ -546,7 +570,7 @@ def relock_violations(
 ) -> list[Violation]:
     """Rule 4: a scheduled workflow relocks every uv.lock and opens a PR."""
     rule_id = repository.rule_id(RELOCK_RULE)
-    projects = _project_directories(files)
+    projects = _project_directories(files, repository.test_directories)
     for path in files:
         if file_kind(path) != "workflow":
             continue
@@ -593,8 +617,8 @@ def relock_violations(
 def find_violations(root: Path, registry: Registry) -> list[Violation]:
     """Run all four checks against the files under ``root``."""
     files = tracked_files(root)
-    findings = scan(root, files)
     repository = registry.repository
+    findings = scan(root, files, repository.test_directories)
     return [
         *lock_violations(root, files, repository),
         *_apply_exceptions(

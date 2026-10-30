@@ -20,6 +20,7 @@ pr_workflow = ".github/workflows/pr.yaml"
 # The one status check the main branch's ruleset requires.
 required_check = "Required checks"
 script_directories = ["tools"]
+test_directories = ["tests"]
 # microcosm-emitter at the root, and microcosm-emitter-interface.
 packages = [".", "packages/*"]
 file_exception_directories = ["tests", ".github", "tools", "scripts"]

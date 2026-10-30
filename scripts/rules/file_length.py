@@ -1,8 +1,8 @@
 """The file-length quality guard: no tracked Python file is too long.
 
 A tracked Python file may have at most 800 lines, or at most 1,500 when it is
-test code: a file under a ``tests`` or ``fixtures`` directory, or a
-``conftest.py``. While the rule is ratcheted, its baseline file lists the files
+test code: a file under one of the registry's ``[repository].test_directories``
+or a ``fixtures`` directory, or a ``conftest.py``. While the rule is ratcheted, its baseline file lists the files
 that were already over their limit. The guard fails on a file over its limit
 that the baseline doesn't list, and on a listed file that is no longer over its
 limit or no longer tracked, so the baseline only shrinks.
@@ -25,8 +25,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_NAME = "file-length"
 SOURCE_LINE_LIMIT = 800
 TEST_LINE_LIMIT = 1500
-# A file under a directory with one of these names is test code.
-TEST_DIRECTORIES = frozenset({"tests", "fixtures"})
+# A file under a fixtures directory is test code, as is one under a directory
+# the registry lists in [repository].test_directories.
+FIXTURE_DIRECTORY = "fixtures"
 TEST_FILE_NAMES = frozenset({"conftest.py"})
 SPLIT_FIX = (
     "split it into modules that each hold one responsibility and stay under the "
@@ -51,17 +52,20 @@ class LongFile:
         )
 
 
-def is_test_code(path: str) -> bool:
+def is_test_code(path: str, test_directories: Iterable[str]) -> bool:
     """Whether the repository-relative ``path`` holds tests or test support."""
     pure = PurePosixPath(path)
+    directories = {FIXTURE_DIRECTORY, *test_directories}
     return pure.name in TEST_FILE_NAMES or any(
-        part in TEST_DIRECTORIES for part in pure.parts[:-1]
+        part in directories for part in pure.parts[:-1]
     )
 
 
-def line_limit(path: str) -> int:
+def line_limit(path: str, test_directories: Iterable[str]) -> int:
     """Return the most lines the file at ``path`` may have."""
-    return TEST_LINE_LIMIT if is_test_code(path) else SOURCE_LINE_LIMIT
+    return (
+        TEST_LINE_LIMIT if is_test_code(path, test_directories) else SOURCE_LINE_LIMIT
+    )
 
 
 def count_lines(file: Path) -> int:
@@ -69,22 +73,25 @@ def count_lines(file: Path) -> int:
     return len(file.read_bytes().splitlines())
 
 
-def long_files(root: Path, paths: Iterable[str]) -> list[LongFile]:
+def long_files(
+    root: Path, paths: Iterable[str], test_directories: Iterable[str]
+) -> list[LongFile]:
     """Return the Python files among ``paths`` that are over their limit, by path."""
     found = []
+    directories = tuple(test_directories)
     for path in sorted(paths):
         if not path.endswith(".py"):
             continue
         lines = count_lines(root / path)
-        limit = line_limit(path)
+        limit = line_limit(path, directories)
         if lines > limit:
             found.append(LongFile(path, lines, limit))
     return found
 
 
-def find_long_files(root: Path) -> list[LongFile]:
+def find_long_files(root: Path, test_directories: Iterable[str]) -> list[LongFile]:
     """Return every tracked Python file under ``root`` that is over its limit."""
-    return long_files(root, tracked_files(root))
+    return long_files(root, tracked_files(root), test_directories)
 
 
 def file_length_rule(registry: Registry) -> Rule | None:
@@ -146,7 +153,8 @@ def run_check(root: Path = REPO_ROOT) -> list[Violation]:
     if registry is None:
         return violations
     rule = file_length_rule(registry)
-    return compare(find_long_files(root), baseline_entries(root, rule), rule)
+    found = find_long_files(root, registry.repository.test_directories)
+    return compare(found, baseline_entries(root, rule), rule)
 
 
 def check() -> list[str]:

@@ -39,6 +39,8 @@ from scripts.rules.model import Kind, Violation
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from scripts.rules.model import Registry
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_NAME = "uv-version"
 VERSION_FILE = ".uv-version"
@@ -267,11 +269,19 @@ def modal_installs(path: str, text: str) -> list[UvInstall]:
     return installs
 
 
-def scan(root: Path, files: Iterable[str] | None = None) -> list[UvInstall]:
-    """Return every uv install in the install-capable files under ``root``."""
+def scan(
+    root: Path,
+    files: Iterable[str] | None = None,
+    test_directories: Iterable[str] = (),
+) -> list[UvInstall]:
+    """Return every uv install in the install-capable files under ``root``.
+
+    Python modules under ``test_directories`` are not read.
+    """
     installs = []
+    directories = tuple(test_directories)
     for path in sorted(tracked_files(root) if files is None else files):
-        kind = file_kind(path)
+        kind = file_kind(path, directories)
         if kind is None:
             continue
         text = (root / path).read_text(encoding="utf-8", errors="replace")
@@ -352,9 +362,8 @@ def compare(
     return violations
 
 
-def guard_rule_id(root: Path) -> str | None:
+def guard_rule_id(registry: Registry | None) -> str | None:
     """Return the id of the registry's rule that lists this guard, if any."""
-    registry, _ = load_registry(root)
     if registry is None:
         return None
     return next(
@@ -370,9 +379,14 @@ def guard_rule_id(root: Path) -> str | None:
 
 def run_check(root: Path = REPO_ROOT) -> list[Violation]:
     """Return every uv install under ``root`` that doesn't pin ``.uv-version``."""
-    rule_id = guard_rule_id(root)
+    registry, _ = load_registry(root)
+    rule_id = guard_rule_id(registry)
+    test_directories = registry.repository.test_directories if registry else ()
     pinned, violations = read_pinned_version(root, rule_id)
-    return [*violations, *compare(scan(root), pinned, rule_id)]
+    return [
+        *violations,
+        *compare(scan(root, test_directories=test_directories), pinned, rule_id),
+    ]
 
 
 def check() -> list[str]:

@@ -55,6 +55,7 @@ _REPOSITORY_KEYS = {
     "pr_workflow",
     "required_check",
     "script_directories",
+    "test_directories",
     "packages",
     "file_exception_directories",
     "pull_request_conditions",
@@ -205,7 +206,8 @@ def _repository(c: _Collector, raw: object) -> Repository:
             None,
             "the registry has no [repository] table",
             "add [repository] with rule_prefix, pr_workflow, required_check, "
-            "script_directories, packages and file_exception_directories",
+            "script_directories, test_directories, packages and "
+            "file_exception_directories",
         )
         return Repository()
     if not isinstance(raw, dict):
@@ -241,6 +243,7 @@ def _repository(c: _Collector, raw: object) -> Repository:
         pr_workflow=c.string(None, raw, "pr_workflow", where),
         required_check=c.string(None, raw, "required_check", where),
         script_directories=c.string_list(None, raw, "script_directories", where),
+        test_directories=c.string_list(None, raw, "test_directories", where),
         packages=c.string_list(None, raw, "packages", where),
         file_exception_directories=c.string_list(
             None, raw, "file_exception_directories", where
