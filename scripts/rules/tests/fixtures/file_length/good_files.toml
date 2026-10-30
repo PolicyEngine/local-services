@@ -2,7 +2,7 @@
 # long files that are not Python. The proof test writes each file, with this
 # many lines, into a temporary directory and runs the file-length guard on it.
 
-# Source code may have at most 800 lines.
+# Source code may have at most 800 lines, wherever it lives.
 [[file]]
 path = "projects/example/src/example/service.py"
 lines = 800
@@ -11,18 +11,23 @@ lines = 800
 path = "scripts/report.py"
 lines = 800
 
-# Test code may have at most 1,500 lines: files under a tests or fixtures
-# directory, and conftest.py files.
+# A package's fixtures directory ships in its wheel, so it is source code.
 [[file]]
-path = "projects/example/tests/test_service.py"
+path = "packages/example/src/example/fixtures/sample.py"
+lines = 800
+
+[[file]]
+path = "conftest.py"
+lines = 800
+
+# Test code may have at most 1,500 lines: files under the registry's test
+# directories (here tests/), and the rules tool's own tests and fixtures.
+[[file]]
+path = "tests/test_service.py"
 lines = 1500
 
 [[file]]
-path = "rules/fixtures/example/module.py"
-lines = 1500
-
-[[file]]
-path = "projects/example/conftest.py"
+path = "scripts/rules/tests/fixtures/example/module.py"
 lines = 1500
 
 # Only Python files are measured.

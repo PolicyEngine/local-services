@@ -117,26 +117,52 @@ class TestViolations(unittest.TestCase):
 
 
 class TestLineLimit(unittest.TestCase):
-    def test_files_under_tests_and_fixtures_directories_are_test_code(self) -> None:
+    """Test code is under a test directory, a path from the repository root, or
+    under the rules tool's own tests; nothing else gets its limit."""
+
+    def test_files_under_the_test_directories_are_test_code(self) -> None:
         for path in (
-            "projects/example/tests/test_service.py",
-            "projects/example/tests/support/frames.py",
-            "scripts/rules/tests/test_guard.py",
-            "rules/fixtures/sim.example/bad.py",
-            "projects/example/src/example/fixtures/sample.py",
+            "tests/test_service.py",
+            "tests/support/frames.py",
+            "tests/fixtures/sample.py",
         ):
             with self.subTest(path=path):
                 self.assertTrue(is_test_code(path, TEST_DIRECTORIES))
                 self.assertEqual(line_limit(path, TEST_DIRECTORIES), TEST_LINE_LIMIT)
 
-    def test_conftest_files_are_test_code_anywhere(self) -> None:
-        self.assertTrue(is_test_code("conftest.py", ()))
-        self.assertTrue(is_test_code("projects/example/conftest.py", ()))
+    def test_the_rules_tool_s_tests_and_fixtures_are_test_code(self) -> None:
+        for path in (
+            "scripts/rules/tests/test_guard.py",
+            "scripts/rules/tests/fixtures/file_length/sample.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(is_test_code(path, ()))
+                self.assertEqual(line_limit(path, ()), TEST_LINE_LIMIT)
 
-    def test_test_directories_are_the_registry_s(self) -> None:
-        self.assertTrue(is_test_code("pkg/checks/test_a.py", ("checks",)))
-        self.assertFalse(is_test_code("pkg/tests/test_a.py", ("checks",)))
-        self.assertTrue(is_test_code("pkg/fixtures/sample.py", ()))
+    def test_test_directories_are_paths_from_the_repository_root(self) -> None:
+        self.assertTrue(is_test_code("checks/test_a.py", ("checks",)))
+        self.assertTrue(
+            is_test_code("projects/a/tests/test_a.py", ("projects/a/tests",))
+        )
+        self.assertFalse(is_test_code("pkg/checks/test_a.py", ("checks",)))
+        self.assertFalse(is_test_code("tests/test_a.py", ("checks",)))
+        self.assertFalse(is_test_code("tests_more/test_a.py", ("tests",)))
+
+    def test_shipped_fixtures_nested_tests_and_conftest_files_are_source_code(
+        self,
+    ) -> None:
+        """A package's fixtures directory ships in its wheel, so it is source."""
+        for path in (
+            "packages/example/src/example/fixtures/sample.py",
+            "projects/example/src/example/tests/helpers.py",
+            "projects/example/tests/test_service.py",
+            "rules/fixtures/sim.example/bad.py",
+            "conftest.py",
+            "projects/example/conftest.py",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(is_test_code(path, TEST_DIRECTORIES))
+                self.assertEqual(line_limit(path, TEST_DIRECTORIES), SOURCE_LINE_LIMIT)
 
     def test_other_files_are_source_code(self) -> None:
         for path in (
@@ -145,6 +171,7 @@ class TestLineLimit(unittest.TestCase):
             "projects/example/src/example/testing.py",
             "projects/example/tests.py",
             "scripts/run_quality_guards.py",
+            "scripts/rules/file_length.py",
             ".github/scripts/check_pr_description.py",
         ):
             with self.subTest(path=path):
