@@ -83,6 +83,92 @@ jobs:
         self.assertTrue(problems)
 
 
+def matrix_job(matrix_lines: str) -> str:
+    """Return a workflow whose one job, test, has the given matrix lines."""
+    return (
+        "jobs:\n  test:\n    strategy:\n      matrix:\n"
+        "        os: [ubuntu-latest, macos-latest]\n"
+        "        project:\n          - .\n          - packages/interface\n"
+        + matrix_lines
+        + "    steps:\n      - run: make test\n"
+    )
+
+
+class MatrixTest(unittest.TestCase):
+    """include: and exclude: change which values the job runs with."""
+
+    def matrix(self, matrix_lines: str) -> dict[str, tuple[str, ...]]:
+        jobs, problems = parse_jobs(matrix_job(matrix_lines))
+        self.assertEqual(problems, [])
+        return jobs["test"].matrix
+
+    def test_excluding_some_combinations_keeps_every_value(self) -> None:
+        self.assertEqual(
+            self.matrix(
+                "        exclude:\n"
+                "          - os: macos-latest\n"
+                "            project: .\n"
+            ),
+            {
+                "os": ("ubuntu-latest", "macos-latest"),
+                "project": (".", "packages/interface"),
+            },
+        )
+
+    def test_excluding_every_combination_of_a_value_drops_it(self) -> None:
+        self.assertEqual(
+            self.matrix("        exclude:\n          - project: .\n"),
+            {
+                "os": ("ubuntu-latest", "macos-latest"),
+                "project": ("packages/interface",),
+            },
+        )
+
+    def test_include_adds_its_values(self) -> None:
+        self.assertEqual(
+            self.matrix(
+                "        include:\n"
+                "          - project: extra\n"
+                '            python: "3.14"\n'
+                "          - os: windows-latest\n"
+            ),
+            {
+                "os": ("ubuntu-latest", "macos-latest", "windows-latest"),
+                "project": (".", "packages/interface", "extra"),
+                "python": ("3.14",),
+            },
+        )
+
+    def test_include_is_applied_after_exclude(self) -> None:
+        self.assertEqual(
+            self.matrix(
+                "        exclude:\n          - project: .\n"
+                "        include:\n          - os: ubuntu-latest\n"
+                "            project: .\n"
+            ),
+            {
+                "os": ("ubuntu-latest", "macos-latest"),
+                "project": ("packages/interface", "."),
+            },
+        )
+
+    def test_an_inline_include_or_exclude_is_reported(self) -> None:
+        for key in ("include", "exclude"):
+            with self.subTest(key=key):
+                jobs, problems = parse_jobs(
+                    matrix_job(f"        {key}: [{{project: .}}]\n")
+                )
+
+                self.assertEqual(
+                    problems,
+                    [
+                        f"job 'test': a matrix {key} written inline is not "
+                        "supported; write it as a block list"
+                    ],
+                )
+                self.assertNotIn(key, jobs["test"].matrix)
+
+
 SYNTHETIC_WORKFLOW = """
 name: Synthetic
 on: push
@@ -153,11 +239,11 @@ class JobParsingTest(unittest.TestCase):
                 uses="",
                 step_names=("First", "Third", "Fourth", "not a step"),
                 step_uses=("actions/checkout@v4", "org/action@v1"),
-                # A blank line ends a block-style matrix list.
+                # A blank line ends a block-style matrix list. The include
+                # entry adds its project to the values.
                 matrix={
-                    "project": ("a", "b", "c"),
+                    "project": ("a", "b", "c", "x"),
                     "python": ("3.11", "3.12"),
-                    "include": (),
                 },
                 run_blocks=(
                     RunBlock(

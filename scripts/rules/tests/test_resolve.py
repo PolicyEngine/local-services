@@ -26,6 +26,17 @@ jobs:
   other:
     steps:
       - run: tox -e py
+  narrowed:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        project: [projects/alpha, projects/beta]
+        exclude:
+          - os: macos-latest
+            project: projects/alpha
+          - project: projects/beta
+    steps:
+      - run: make test
 """
 MAKEFILE = (
     "test:\n"
@@ -120,6 +131,27 @@ class TestCoverageTest(unittest.TestCase):
         self.assertEqual(
             self.ci_messages(listed),
             [not_collected("ci", "projects/alpha/tests/test_g.py", MAKE_TEST)],
+        )
+
+    def test_the_matrix_is_read_after_its_exclusions(self) -> None:
+        # projects/alpha still runs on one system; projects/beta runs nowhere.
+        def messages(project: str) -> list[str]:
+            rule = make_rule(
+                {"project": project, "nodes": ["tests/test_g.py::t"]},
+                (CiRef(PR_WORKFLOW, "narrowed", "make test"),),
+            )
+            return [
+                message for message in self.ci_messages(rule) if "matrix" in message
+            ]
+
+        self.assertEqual(messages("projects/alpha"), [])
+        self.assertEqual(
+            messages("projects/beta"),
+            [
+                not_in_matrix("ci", "projects/beta").replace(
+                    "job 'test'", "job 'narrowed'"
+                )
+            ],
         )
 
     def test_unittest_start_directory_must_hold_every_node(self) -> None:
