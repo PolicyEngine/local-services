@@ -60,18 +60,631 @@ id = "process"
 title = "Process and repository hygiene"
 
 [discovery]
-# These pull-request jobs run checks that are not registered yet. Registering
-# a job's checks removes its entry here.
-ignore_jobs = [
-  { job = "lint-workflows", reason = "Runs actionlint on the workflows; its rule is not registered yet." },
-  { job = "changelog", reason = "Checks the changelog fragment; its rule is not registered yet." },
-  { job = "verify", reason = "Calls ci.yml, whose jobs run the linters, tests, package builds and collector contract test; ruff check is registered, the rest is not yet." },
-  { job = "required", reason = "Reports every pull-request job as the one required check; its rule is not registered yet." },
+# Every job of the pull-request workflow and of the verification workflow it
+# calls needs a rule. push.yaml stays out: its jobs run after merging, and
+# tests/test_workflows.py checks their order.
+workflows = [".github/workflows/pr.yaml", ".github/workflows/ci.yml"]
+# Every test in these files checks structure, configuration or a released
+# contract, so each needs a rule.
+guard_test_globs = [
+  "tests/test_boundaries.py",
+  "tests/test_workflows.py",
+  "tests/test_package_names.py",
+  "tests/test_source_archives.py",
+  "tests/interface/test_protocol_fixtures.py",
+]
+# Structure tests in files that otherwise test behaviour.
+extra_guard_tests = [
+  "tests/interface/test_host_protocol.py::test_every_host_fixture_has_a_test_that_sends_it",
+  "tests/interface/test_in_process_clients.py::test_every_telemetry_message_fixture_has_an_in_process_call",
+  "tests/interface/test_in_process_clients.py::test_in_process_clients_reuse_the_interface_definitions",
+  "tests/orrery/test_client.py::test_graph_adapter_never_imports_persistence_or_auth",
+  "tests/test_collector_origin.py::test_every_trusted_origin_is_a_bare_https_origin",
 ]
 
 [agents]
 instructions = "AGENTS.md"
 adapters = ["CLAUDE.md"]
+
+# --- Runtime and package boundaries ------------------------------------------
+
+[[rule]]
+id = "emitter.boundaries.host-imports-no-domain-code"
+category = "boundaries"
+statement = "The generic runtime, microcosm_emitter.host, imports no telemetry, Orrery, database or authentication code, no Microcosm, SQLAlchemy, Alembic or Hugging Face Hub module, and not the interface package."
+rationale = "README.md"
+scope = ["src/microcosm_emitter/host/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_boundaries.py::test_generic_runtime_has_no_domain_or_database_imports",
+  "tests/test_boundaries.py::test_emitter_host_does_not_import_the_interface",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.boundaries.telemetry-client-imports-no-service-code"
+category = "boundaries"
+statement = "The telemetry client, microcosm_emitter.telemetry outside its service package, imports no service implementation, database or authentication module, and importing the public modules opens no socket, starts no process and creates no directory."
+rationale = "README.md"
+scope = ["src/microcosm_emitter/telemetry/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_boundaries.py::test_client_has_no_service_or_database_imports",
+  "tests/test_boundaries.py::test_public_imports_have_no_runtime_side_effects",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.boundaries.graph-adapter-imports-no-service-code"
+category = "boundaries"
+statement = "Graph adapters, the Orrery client and its contracts, import no service, database, authentication or HTTP code: inventory hashing, durable enqueue, receipt lookup and retries run in the separate local emitter service, and the client never falls back to writing the database directly."
+rationale = "README.md"
+scope = ["src/microcosm_emitter/orrery/client.py", "src/microcosm_emitter/orrery/contracts.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_boundaries.py::test_graph_client_has_no_service_database_auth_or_http_imports",
+  "tests/orrery/test_client.py::test_graph_adapter_never_imports_persistence_or_auth",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.boundaries.interface-imports-only-the-standard-library"
+category = "boundaries"
+statement = "The interface package imports only the standard library and itself, and importing it loads no microcosm_emitter module."
+rationale = "packages/microcosm-emitter-interface/README.md"
+scope = ["packages/microcosm-emitter-interface/src/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_boundaries.py::test_interface_imports_only_the_standard_library_and_itself",
+  "tests/test_boundaries.py::test_interface_imports_have_no_runtime_side_effects",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.boundaries.shared-definitions-written-once"
+category = "boundaries"
+statement = "What both packages use is defined once: the emitter's in-process clients reuse the interface's TelemetryRun, wire_value, Orrery publication types and default_spool_path rather than copies, and each hand-over failure code and limit the packages share is assigned at module level exactly once across both."
+rationale = "packages/microcosm-emitter-interface/README.md"
+scope = ["src/microcosm_emitter/**/*.py", "packages/microcosm-emitter-interface/src/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/interface/test_in_process_clients.py::test_in_process_clients_reuse_the_interface_definitions",
+  "tests/test_boundaries.py::test_hand_over_codes_and_limits_are_defined_once",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.boundaries.public-credential-lookup"
+category = "boundaries"
+statement = "Code reads the Hugging Face credential through core.auth.huggingface_token; no module imports the private _huggingface_token."
+rationale = "README.md#delivery-and-persistence"
+scope = ["src/microcosm_emitter/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_boundaries.py::test_the_credential_lookup_is_public",
+  "tests/test_boundaries.py::test_no_module_imports_the_private_credential_lookup",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# --- Databases and migrations --------------------------------------------------
+
+[[rule]]
+id = "emitter.persistence.sqlalchemy-and-alembic-only"
+category = "persistence"
+statement = "Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL, no direct-driver persistence, no create_all(), no schema repair and no adoption of databases made before Alembic."
+rationale = "README.md#delivery-and-persistence"
+scope = ["src/microcosm_emitter/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_boundaries.py::test_database_code_has_no_raw_sql_or_manual_schema_creation"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# The repository has no TypeScript, so the scope is the file that states the
+# rule until there is some.
+[[rule]]
+id = "emitter.persistence.typescript-uses-drizzle"
+category = "persistence"
+statement = "TypeScript database code, if any is added, uses Drizzle ORM and Drizzle Kit migrations."
+rationale = "AGENTS.md"
+scope = ["AGENTS.md"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
+
+# --- Distributions and releases ------------------------------------------------
+
+[[rule]]
+id = "emitter.distributions.exactly-two-at-one-version"
+category = "distributions"
+statement = "The repository publishes exactly two distributions, always together and at one version: microcosm-emitter, which installs the generic host and its required telemetry with no extras, and the dependency-free microcosm-emitter-interface, which microcosm-emitter==X requires at ==X; there are no standalone telemetry packages, optional telemetry installs or further distributions."
+rationale = "README.md"
+scope = ["pyproject.toml", "packages/*/pyproject.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_package_names.py::test_emitter_requires_telemetry_and_its_own_interface_release",
+  "tests/test_package_names.py::test_interface_is_the_only_other_distribution_and_has_no_dependencies",
+  "tests/test_package_names.py::test_installed_distribution_includes_host_telemetry_and_migrations",
+  "tests/test_package_names.py::test_installed_distribution_provides_the_emitter_command",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.distributions.version-from-fragments"
+category = "distributions"
+statement = "A release's version bump follows its changelog fragment types (breaking is a major bump, added or removed a minor bump, anything else a patch bump) and rewrites both distributions' versions and the interface pin together, and the release refuses diverged versions, a different pin, missing or untyped fragments, and a missing or repeated version line."
+rationale = "README.md#publication"
+scope = ["tools/bump-version.py", "pyproject.toml", "packages/microcosm-emitter-interface/pyproject.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_workflows.py::test_fragment_types_choose_the_bump",
+  "tests/test_workflows.py::test_release_rewrites_both_versions_and_the_interface_pin_only",
+  "tests/test_workflows.py::test_release_refuses_diverged_distribution_versions",
+  "tests/test_workflows.py::test_release_refuses_an_interface_pin_that_differs_from_the_version",
+  "tests/test_workflows.py::test_release_refuses_missing_or_untyped_fragments",
+  "tests/test_workflows.py::test_release_refuses_a_missing_or_duplicated_version_line",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# tools/check-artifacts.sh runs these checks, so discovery cannot see them.
+[[rule]]
+id = "emitter.distributions.artifacts-verified"
+category = "distributions"
+statement = "Every pull request builds both distributions, each wheel from its source archive, passes twine check --strict on them, and has tools/check-installed.py require one wheel and one source archive per distribution, refuse a source archive holding the rules tool, and run the installed smoke checks (tools/installed-smoke.py and tools/installed-interface-smoke.py) in clean environments outside the checkout."
+rationale = "README.md#publication"
+scope = ["tools/check-artifacts.sh", "tools/check-installed.py", "tools/installed-smoke.py", "tools/installed-interface-smoke.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "build-packages"
+invocation = "tools/check-artifacts.sh"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = "tools/check-artifacts.sh"
+
+[[rule]]
+id = "emitter.distributions.one-build-script"
+category = "distributions"
+statement = "Only tools/check-artifacts.sh builds the distributions, with one uv build --all-packages into a dist directory it removes beforehand and no --clear, no workflow runs uv build itself, and tools/check-installed.py checks the interface wheel apart from the emitter."
+rationale = "README.md#publication"
+scope = ["tools/check-artifacts.sh", "tools/check-installed.py", ".github/workflows/*.yml", ".github/workflows/*.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_workflows.py::test_build_verifies_both_distributions_from_one_script",
+  "tests/test_workflows.py::test_installed_check_keeps_the_interface_apart_from_the_emitter",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.distributions.source-archives-exclude-the-rules-tool"
+category = "distributions"
+statement = "The microcosm-emitter source archive leaves out the rules tool, the registry and their documents, and tools/check-installed.py refuses either source archive if it holds any of them, naming the same paths the build excludes."
+rationale = "docs/engineering/skills/rules-registry.md"
+scope = ["pyproject.toml", "tools/check-installed.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_source_archives.py::test_the_emitter_build_excludes_what_the_artifact_check_refuses",
+  "tests/test_source_archives.py::test_the_artifact_check_refuses_an_archive_holding_the_rules_tool",
+  "tests/test_source_archives.py::test_the_artifact_check_accepts_an_archive_without_it",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.distributions.release-order"
+category = "distributions"
+statement = "push.yaml releases a merge to main in order (the version commit, then ci.yml on that commit, then the tag, then publication) and publishes to PyPI only the artifacts ci.yml built, one per distribution, the interface first, skipping files PyPI already holds so a rerun completes a partial upload."
+rationale = "README.md#publication"
+scope = [".github/workflows/push.yaml", ".github/workflows/ci.yml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_workflows.py::test_release_commit_is_verified_then_tagged_then_published",
+  "tests/test_workflows.py::test_verification_uploads_each_distribution_as_its_own_artifact",
+  "tests/test_workflows.py::test_emitter_artifact_pattern_excludes_the_interface",
+  "tests/test_workflows.py::test_pypi_receives_only_verified_artifacts",
+  "tests/test_workflows.py::test_publication_uploads_the_interface_first_and_can_be_rerun",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.distributions.release-credentials"
+category = "distributions"
+statement = "In push.yaml only the publish job, in the pypi environment, may request an OpenID Connect token, and the workflow reads no secrets but APP_ID and APP_PRIVATE_KEY, once each, for the GitHub App token that commits the version."
+rationale = "README.md#publication"
+scope = [".github/workflows/push.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_workflows.py::test_only_publication_holds_oidc_and_only_versioning_holds_secrets"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# --- Collector protocol --------------------------------------------------------
+
+# tools/check-collector.sh runs these tests against the installed wheels, so
+# the tests job, which deselects the collector marker, does not.
+[[rule]]
+id = "emitter.protocol.collector-contract"
+category = "protocol"
+statement = "The installed wheels deliver telemetry to the collector at the commit tools/check-collector.sh pins, with a disposable PostgreSQL database: events become dashboard documents, rejected identities register nothing, a lost acknowledgement is retried without duplicates, and blocked outcomes and supplied failure codes survive."
+rationale = "README.md#development"
+scope = ["tools/check-collector.sh", "src/microcosm_emitter/telemetry/service/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_collector_contract.py::test_service_events_materialize_as_dashboard_documents",
+  "tests/test_collector_contract.py::test_rejected_identity_never_registers_or_uploads_run",
+  "tests/test_collector_contract.py::test_lost_ack_retries_same_event_after_restart_without_duplicates",
+  "tests/test_collector_contract.py::test_blocked_run_projects_check_metadata_without_failure",
+  "tests/test_collector_contract.py::test_supplied_failure_codes_survive_collector_storage_and_documents",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "collector"
+invocation = "tools/check-collector.sh"
+
+[[rule]]
+id = "emitter.protocol.no-hosted-events-api"
+category = "protocol"
+statement = "Preserve the existing collector protocol, and do not add a general hosted events API."
+rationale = "README.md#delivery-and-persistence"
+scope = ["src/microcosm_emitter/telemetry/service/*.py"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
+
+[[rule]]
+id = "emitter.protocol.released-fixtures-unchanged"
+category = "protocol"
+statement = "A released protocol fixture is never edited or removed, since each one's SHA-256 is pinned, and every fixture's protocol version is one this emitter accepts."
+rationale = "packages/microcosm-emitter-interface/README.md#compatibility"
+scope = ["packages/microcosm-emitter-interface/src/microcosm_emitter_interface/fixtures/protocol-v1/*.json"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/interface/test_protocol_fixtures.py::test_released_fixtures_are_unchanged",
+  "tests/interface/test_protocol_fixtures.py::test_every_fixture_uses_a_protocol_version_this_emitter_accepts",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.protocol.every-fixture-sent-and-answered"
+category = "protocol"
+statement = "Every protocol fixture has a test in which the interface sends it, and this emitter answers each one: the telemetry, Orrery and Hugging Face modules handle their message and query fixtures, the installed command starts from the launch fixture and answers hello with at least the recorded keys, and the host routes each envelope fixture to its module."
+rationale = "packages/microcosm-emitter-interface/README.md#compatibility"
+scope = ["packages/microcosm-emitter-interface/src/microcosm_emitter_interface/fixtures/protocol-v1/*.json"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/interface/test_host_protocol.py::test_every_host_fixture_has_a_test_that_sends_it",
+  "tests/interface/test_in_process_clients.py::test_every_telemetry_message_fixture_has_an_in_process_call",
+  "tests/interface/test_protocol_fixtures.py::test_telemetry_module_records_each_message_fixture",
+  "tests/interface/test_protocol_fixtures.py::test_orrery_module_answers_each_query_fixture_in_order",
+  "tests/interface/test_protocol_fixtures.py::test_hugging_face_module_answers_each_query_fixture_in_order",
+  "tests/interface/test_protocol_fixtures.py::test_installed_command_answers_the_hello_fixture",
+  "tests/interface/test_protocol_fixtures.py::test_installed_command_starts_from_the_launch_fixture",
+  "tests/interface/test_protocol_fixtures.py::test_host_answers_each_envelope_fixture",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.protocol.trusted-collector-origins"
+category = "protocol"
+statement = "Every trusted collector origin is a bare HTTPS origin that a module configuration selects as itself, with or without a trailing slash."
+rationale = "README.md#delivery-and-persistence"
+scope = ["src/microcosm_emitter/core/constants.py", "src/microcosm_emitter/core/collector_origin.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_collector_origin.py::test_every_trusted_origin_is_a_bare_https_origin"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# --- Test isolation ------------------------------------------------------------
+
+# conftest.py's autouse fixture applies to every test the tests job runs.
+[[rule]]
+id = "emitter.tests.no-ambient-credentials-or-hosted-collector"
+category = "tests"
+statement = "Tests never use ambient credentials or contact a hosted collector: an autouse fixture in conftest.py removes the Hugging Face credential variables, gives each test a temporary Hugging Face home, and fails a test whose telemetry or authentication request names a host other than loopback."
+rationale = "README.md#development"
+scope = ["conftest.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.tests.real-migrations-synthetic-credentials"
+category = "tests"
+statement = "Tests use temporary databases created through real migrations, synthetic credentials and loopback network services."
+rationale = "README.md#development"
+scope = ["tests/**/*.py"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
+
+# --- Code quality --------------------------------------------------------------
+
+# The guard requires a rule for every rule family ruff selects.
+[[rule]]
+id = "emitter.quality.ruff-lint"
+category = "quality"
+statement = "All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles."
+rationale = "AGENTS.md"
+scope = ["**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = true
+[rule.enforcer]
+kind = "ruff"
+mode = "lint"
+codes = ["B", "E", "F", "I", "N", "UP", "W"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+# tools/check-quality.sh runs ruff format --check, so discovery cannot see it.
+[[rule]]
+id = "emitter.quality.ruff-format"
+category = "quality"
+statement = "All Python is formatted with ruff format."
+rationale = "README.md#development"
+scope = ["**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = true
+[rule.enforcer]
+kind = "ruff"
+mode = "format"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+[[rule]]
+id = "emitter.quality.tests-pass"
+category = "quality"
+statement = "Every test except the collector contract test passes on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs."
+rationale = "README.md#development"
+scope = ["tests/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.quality.toolchain"
+category = "quality"
+statement = "Use uv, Python 3.13 or later, pytest and Ruff."
+rationale = "README.md#development"
+scope = ["pyproject.toml", "uv.lock"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
+
+# --- CI workflows and scripts --------------------------------------------------
+
+[[rule]]
+id = "emitter.ci.multiline-shell-in-scripts"
+category = "ci"
+statement = "No workflow run: step spans more than one line; shell logic of several lines lives in a Bash script under tools/, which the step calls with a single command."
+rationale = "README.md#development"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_workflows.py::test_shell_logic_lives_in_scripts"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+# tools/check-quality.sh runs bash -n, so discovery cannot see it.
+[[rule]]
+id = "emitter.ci.shell-scripts-parse"
+category = "ci"
+statement = "Every shell script under tools/ parses (bash -n)."
+rationale = "README.md#development"
+scope = ["tools/*.sh"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+[[rule]]
+id = "emitter.ci.workflows-pass-actionlint"
+category = "ci"
+statement = "Every workflow passes actionlint 1.7.12, which also runs shellcheck on each run: step."
+rationale = "README.md#development"
+scope = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "lint-workflows"
+invocation = "rhysd/actionlint"
+
+[[rule]]
+id = "emitter.ci.pull-request-workflow-structure"
+category = "ci"
+statement = "pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages."
+rationale = "README.md#publication"
+scope = [".github/workflows/pr.yaml", ".github/workflows/ci.yml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = [
+  "tests/test_workflows.py::test_pull_requests_require_every_check_and_a_changelog_fragment",
+  "tests/test_workflows.py::test_pull_requests_check_the_rules_registry",
+  "tests/test_workflows.py::test_verification_includes_real_collector_and_matrix",
+]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
+
+[[rule]]
+id = "emitter.ci.required-checks"
+category = "ci"
+statement = "Every pull request runs the verification workflow, ci.yml, and Required checks, the one status check main's ruleset requires, passes only when every other pull-request job succeeded."
+rationale = "README.md#publication"
+scope = [".github/workflows/pr.yaml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "workflow-job"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "verify"
+invocation = "./.github/workflows/ci.yml"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "required"
+invocation = 'test "$RESULTS"'
+
+# --- Process and repository hygiene --------------------------------------------
 
 [[rule]]
 id = "emitter.process.rules-registry"
@@ -114,21 +727,30 @@ workflow = ".github/workflows/pr.yaml"
 job = "rules"
 invocation = "unittest discover -s scripts/rules/tests"
 
-# The guard requires a rule for every rule family ruff selects.
 [[rule]]
-id = "emitter.quality.ruff-lint"
-category = "quality"
-statement = "All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles."
-rationale = "AGENTS.md"
-scope = ["**/*.py"]
+id = "emitter.process.changelog-fragment"
+category = "process"
+statement = "Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released."
+rationale = "README.md#publication"
+scope = ["changelog.d/.gitkeep", "tools/check-changelog.sh", "tools/bump-version.py"]
 tier = "mechanical"
 status = "enforced"
-autofix = true
+autofix = false
 [rule.enforcer]
-kind = "ruff"
-mode = "lint"
-codes = ["B", "E", "F", "I", "N", "UP", "W"]
+kind = "workflow-job"
 [[rule.ci]]
-workflow = ".github/workflows/ci.yml"
-job = "quality"
-invocation = "tools/check-quality.sh"
+workflow = ".github/workflows/pr.yaml"
+job = "changelog"
+invocation = "tools/check-changelog.sh"
+
+[[rule]]
+id = "emitter.process.feature-branches-and-pull-requests"
+category = "process"
+statement = "Push feature branches and open pull requests; never push to main directly, merge automatically or monitor queued checks."
+rationale = "AGENTS.md"
+scope = ["AGENTS.md"]
+tier = "mechanical"
+status = "doc-only"
+autofix = false
+[rule.enforcer]
+kind = "none"
