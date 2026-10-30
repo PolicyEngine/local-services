@@ -166,7 +166,7 @@ The collector's artifact intake (PolicyEngine/microcosm-collector, `docs/artifac
 
 ## Development
 
-Use Python 3.13 or 3.14 on Linux or macOS, and uv 0.13.6, the release `pyproject.toml`'s `[tool.uv] required-version` names: other uv releases refuse to run the project, and every CI job's `setup-uv` step reads the release from there (rule `emitter.dependencies.uv-version-pinned`).
+Use Python 3.13 or 3.14 on Linux or macOS, and uv 0.13.6 or later in the 0.13 series: CI installs exactly the release `.github/uv-version.txt` names, and the project's `required-version` refuses older ones (rule `emitter.dependencies.uv-version-pinned`).
 
 ```bash
 uv sync --locked
@@ -188,7 +188,7 @@ The collector compatibility job tests the installed wheel against a pinned dashb
 
 ## Publication
 
-Every merge to `main` releases both Python distributions, `microcosm-emitter` and `microcosm-emitter-interface`, to PyPI with one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one. The first line of each pull request's description is `Fixes #N`, naming the open issue it fixes (rule `emitter.process.pr-tracking-issue`); the PR description workflow checks it on pull requests whose base, or whose stack's final target, is `main`. A pull request that `gh stack submit --auto` opens starts with the tool's placeholder description, so the check fails until the description is replaced, and editing the description runs the check again.
+Every merge to `main` releases both Python distributions, `microcosm-emitter` and `microcosm-emitter-interface`, to PyPI with one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one, except a Dependabot pull request that changes only `uv.lock`: Dependabot (`.github/dependabot.yml`) proposes the week's lock updates as one such pull request, which changes no published package's requirements, and a merge without fragments releases nothing (rules `emitter.dependencies.dependabot-relock` and `emitter.distributions.lock-only-merges-release-nothing`). The first line of each pull request's description is `Fixes #N`, naming the open issue it fixes (rule `emitter.process.pr-tracking-issue`); the PR description workflow checks it on pull requests whose base, or whose stack's final target, is `main`, except those Dependabot opens. A pull request that `gh stack submit --auto` opens starts with the tool's placeholder description, so the check fails until the description is replaced, and editing the description runs the check again.
 
 `push.yaml` runs twice for each merge:
 

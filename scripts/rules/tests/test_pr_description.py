@@ -170,6 +170,34 @@ class MainTest(unittest.TestCase):
             "The first line is Fixes #42, and #42 is an open issue in example/repo.\n",
         )
 
+    def test_a_dependabot_pull_request_needs_no_tracking_issue(self) -> None:
+        """Dependabot writes its own descriptions and cannot name an issue."""
+        event = {
+            "pull_request": {
+                "body": "Bumps the locked-dependencies group with 3 updates.",
+                "user": {"login": "dependabot[bot]"},
+            }
+        }
+
+        status, output, lookup = self.run_main(None, event=event)
+
+        self.assertEqual(status, 0)
+        lookup.assert_not_called()
+        self.assertEqual(
+            output,
+            "Dependabot opened this pull request, so its description needs no "
+            "tracking issue.\n",
+        )
+
+    def test_another_author_is_checked(self) -> None:
+        for login in ("someone", "github-actions[bot]", "dependabot"):
+            event = {"pull_request": {"body": "Body.", "user": {"login": login}}}
+            with self.subTest(login=login):
+                status, output, _lookup = self.run_main(None, event=event)
+
+                self.assertEqual(status, 1)
+                self.assertIn('The first line is "Body."', output)
+
     def test_a_rejected_first_line_fails_without_asking_github(self) -> None:
         status, output, lookup = self.run_main("Body.\n")
 

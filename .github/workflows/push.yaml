@@ -34,10 +34,15 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
       - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
         with:
-          version-file: pyproject.toml
+          version-file: .github/uv-version.txt
           python-version: "3.13"
-      - run: bash tools/update-version.sh
-      - uses: EndBug/add-and-commit@290ea2c423ad77ca9c62ae0f5b224379612c0321 # v10
+      - id: version
+        run: bash tools/update-version.sh
+      # A merge without changelog fragments, such as Dependabot's lock-only
+      # update, releases nothing: no version commit, so the release jobs,
+      # which run on that commit, never start.
+      - if: steps.version.outputs.released == 'true'
+        uses: EndBug/add-and-commit@290ea2c423ad77ca9c62ae0f5b224379612c0321 # v10
         with:
           add: "."
           author_name: Github Actions[bot]

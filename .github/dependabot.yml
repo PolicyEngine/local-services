@@ -1,0 +1,17 @@
+# Dependabot relocks uv.lock every week (rule emitter.dependencies.dependabot-relock).
+# It runs on GitHub's side with its own, limited credentials: no secret of this
+# repository reaches the dependency code that resolving runs.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Only uv.lock changes, never pyproject.toml's ranges, so the merge needs
+    # no changelog fragment and releases nothing (tools/check-changelog.sh and
+    # tools/update-version.sh).
+    versioning-strategy: "lockfile-only"
+    groups:
+      locked-dependencies:
+        patterns:
+          - "*"

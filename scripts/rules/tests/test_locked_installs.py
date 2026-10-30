@@ -23,6 +23,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "locked_installs"
 # The example repository's rule ids, from its rule_prefix "ex".
 INSTALL_RULE = "ex.dependencies.install-from-lock"
 LOCK_RULE = "ex.dependencies.lock-committed"
+RELOCK_RULE = "ex.dependencies.scheduled-relock"
 # The layout of the proof fixtures: scripts under .github/scripts.
 FIXTURE_REPOSITORY = Repository(
     rule_prefix="ex",
@@ -373,7 +374,11 @@ class TestRepositoryLayout(unittest.TestCase):
 
     def test_rule_ids_start_with_the_registry_prefix(self) -> None:
         registry = load_text(
-            (REGISTRY_HEADER + RULE_TEMPLATE.format(rule_id=INSTALL_RULE))
+            (
+                REGISTRY_HEADER
+                + RULE_TEMPLATE.format(rule_id=INSTALL_RULE)
+                + RULE_TEMPLATE.format(rule_id=RELOCK_RULE)
+            )
             .replace('rule_prefix = "ex"', 'rule_prefix = "emitter"')
             .replace('id = "ex.', 'id = "emitter.')
         )[0]
@@ -387,6 +392,17 @@ class TestRepositoryLayout(unittest.TestCase):
                 "emitter.dependencies.scheduled-relock",
             ],
         )
+
+    def test_the_relock_check_runs_only_for_a_registered_relock_rule(self) -> None:
+        """A repository that relocks another way, such as with Dependabot,
+        registers no scheduled-relock rule."""
+        without = load_text(
+            REGISTRY_HEADER + RULE_TEMPLATE.format(rule_id=INSTALL_RULE)
+        )[0]
+
+        violations = find_violations(FIXTURES / "lock_bad", without)
+
+        self.assertNotIn(RELOCK_RULE, {violation.rule_id for violation in violations})
 
     def test_the_lock_check_must_run_in_the_named_pr_workflow(self) -> None:
         files = {

@@ -1,4 +1,4 @@
-"""A Modal image that installs the uv release in pyproject.toml."""
+"""A Modal image that installs the uv release in .github/uv-version.txt."""
 
 import modal
 

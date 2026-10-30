@@ -8,11 +8,11 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 40 | 1 | 0 | 7 | 48 |
+| mechanical | 41 | 1 | 0 | 7 | 49 |
 | metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 42 of 49 rules.
+**Blocking:** 43 of 50 rules.
 
 ## Gaps
 
@@ -39,7 +39,9 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 - `emitter.boundaries.shared-definitions-written-once`
 - `emitter.boundaries.telemetry-client-imports-no-service-code`
 - `emitter.ci.pull-request-workflow-structure`
+- `emitter.dependencies.dependabot-relock`
 - `emitter.distributions.exactly-two-at-one-version`
+- `emitter.distributions.lock-only-merges-release-nothing`
 - `emitter.distributions.one-build-script`
 - `emitter.distributions.release-credentials`
 - `emitter.distributions.release-order`
@@ -140,6 +142,7 @@ flowchart LR
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.distributions.artifacts-verified` | Every pull request builds both distributions, each wheel from its source archive, and checks them: twine check --strict passes; tools/check-installed.py finds one wheel and one source archive per distribution, refuses a source archive holding the rules tool, and installs the wheels into two clean environments outside the checkout without Hugging Face credentials; in the emitter's, Microcosm is absent, the project URL is the repository, importing the host and the Orrery client loads no database, Hugging Face, telemetry or service module, and telemetry-only, graph-only, combined and failing services start and record their events and graph jobs in an event queue database at Alembic revision 20261008_02; in a build's, which holds only the interface, the interface has no requirements and ships its protocol fixtures, and the installed emitter it starts reports the interface's version and the telemetry, Orrery and Hugging Face modules, accepts telemetry, an Orrery hand-over and a run-file staging request, and exits with status 0. | mechanical | enforced | yes | CI job `build-packages`, `tests` | `ci.yml:build-packages`, `ci.yml:tests` | — |
 | `emitter.distributions.exactly-two-at-one-version` | The repository publishes exactly two distributions, always together and at one version: microcosm-emitter, which installs the generic host and its required telemetry with no extras, and the dependency-free microcosm-emitter-interface, which microcosm-emitter==X requires at ==X; there are no standalone telemetry packages, optional telemetry installs or further distributions. | mechanical | enforced | yes | pytest `tests/test_package_names.py` | `ci.yml:tests` | **unproven** |
+| `emitter.distributions.lock-only-merges-release-nothing` | A Dependabot pull request that changes only uv.lock needs no changelog fragment, since it changes no published package's requirements, and a merge without fragments releases nothing: tools/update-version.sh changes no file and push.yaml makes no version commit, so nothing is tagged or published. | mechanical | enforced | yes | pytest `tests/test_dependabot.py` | `ci.yml:tests` | **unproven** |
 | `emitter.distributions.one-build-script` | Only tools/check-artifacts.sh builds the distributions, with one uv build --all-packages into a dist directory it removes beforehand and no --clear, no workflow runs uv build itself, and tools/check-installed.py checks the interface wheel apart from the emitter. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.distributions.release-credentials` | In push.yaml only the publish job, in the pypi environment, may request an OpenID Connect token, and the workflow reads no secrets but APP_ID and APP_PRIVATE_KEY, once each, for the GitHub App token that commits the version. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.distributions.release-order` | push.yaml releases a merge to main in order (the version commit, then ci.yml on that commit, then the tag, then publication) and publishes to PyPI only the artifacts ci.yml built, one per distribution, the interface first, skipping files PyPI already holds so a rerun completes a partial upload. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
@@ -154,6 +157,8 @@ flowchart LR
   j_CI_ci_yml_tests["CI ci.yml:tests"]
   r_emitter_distributions_exactly_two_at_one_version("emitter.distributions.exactly-two-at-one-version (enforced)")
   e_pytest_tests_test_package_names_py["pytest tests/test_package_names.py"]
+  r_emitter_distributions_lock_only_merges_release_nothing("emitter.distributions.lock-only-merges-release-nothing (enforced)")
+  e_pytest_tests_test_dependabot_py["pytest tests/test_dependabot.py"]
   r_emitter_distributions_one_build_script("emitter.distributions.one-build-script (enforced)")
   e_pytest_tests_test_workflows_py["pytest tests/test_workflows.py"]
   r_emitter_distributions_release_credentials("emitter.distributions.release-credentials (enforced)")
@@ -166,6 +171,8 @@ flowchart LR
   e_CI_job_build_packages__tests --> j_CI_ci_yml_tests
   r_emitter_distributions_exactly_two_at_one_version --> e_pytest_tests_test_package_names_py
   e_pytest_tests_test_package_names_py --> j_CI_ci_yml_tests
+  r_emitter_distributions_lock_only_merges_release_nothing --> e_pytest_tests_test_dependabot_py
+  e_pytest_tests_test_dependabot_py --> j_CI_ci_yml_tests
   r_emitter_distributions_one_build_script --> e_pytest_tests_test_workflows_py
   e_pytest_tests_test_workflows_py --> j_CI_ci_yml_tests
   r_emitter_distributions_release_credentials --> e_pytest_tests_test_workflows_py
@@ -284,28 +291,31 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `emitter.dependencies.dependabot-relock` | Dependabot proposes uv.lock updates every week, for the uv ecosystem at the repository root, as one grouped pull request that changes only uv.lock (versioning-strategy lockfile-only); it runs on GitHub's side with its own credentials, so no secret of this repository reaches the code resolving runs. | mechanical | enforced | yes | pytest `tests/test_dependabot.py` | `ci.yml:tests` | **unproven** |
 | `emitter.dependencies.install-from-lock` | Every install of the project's Python dependencies, in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start, installs exactly the locked versions (uv sync --locked, uv run --locked); any other install is a registered exception for that one site. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules` | yes |
 | `emitter.dependencies.lock-committed` | Every project directory with a pyproject.toml commits a uv.lock that matches it, or is a member of the uv workspace whose uv.lock locks it, and a pull-request job checks the lock with uv lock --check. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules`, `ci.yml:quality` | yes |
-| `emitter.dependencies.scheduled-relock` | A scheduled workflow relocks uv.lock with upgrades (uv lock --upgrade, or --upgrade-package for named packages) and opens or updates a pull request with the result; its jobs may share the work. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules` | yes |
 | `emitter.dependencies.test-from-lock` | Every test command (pytest, python -m unittest) in workflows, the shell scripts under tools/ they run and the commands the Python scripts under tools/ start runs through uv run --locked, in the locked environment; any other test run is a registered exception for that one site. | mechanical | enforced | yes | quality guard `locked-installs` | `pr.yaml:rules` | yes |
-| `emitter.dependencies.uv-version-pinned` | The one uv release is written once, as the root pyproject.toml's [tool.uv] required-version (==X.Y.Z), so a developer's uv refuses another; each astral-sh/setup-uv step reads it with version-file: pyproject.toml and writes no version:, and any uv container image, install script, release download or package install of uv names that release. | mechanical | enforced | yes | quality guard `uv-version` | `pr.yaml:rules` | yes |
+| `emitter.dependencies.uv-version-pinned` | The one uv release is written once, as the line uv==X.Y.Z in .github/uv-version.txt: each astral-sh/setup-uv step reads it with version-file and writes no version:, any uv container image, install script, release download or package install of uv names it, and the root pyproject.toml's [tool.uv] required-version is a lower bound (>=X.Y) it meets, so an older uv refuses the project while Dependabot's uv still runs. | mechanical | enforced | yes | quality guard `uv-version` | `pr.yaml:rules` | yes |
 
 ```mermaid
 flowchart LR
+  r_emitter_dependencies_dependabot_relock("emitter.dependencies.dependabot-relock (enforced)")
+  e_pytest_tests_test_dependabot_py["pytest tests/test_dependabot.py"]
+  j_CI_ci_yml_tests["CI ci.yml:tests"]
   r_emitter_dependencies_install_from_lock("emitter.dependencies.install-from-lock (enforced)")
   e_quality_guard_locked_installs["quality guard locked-installs"]
   j_CI_pr_yaml_rules["CI pr.yaml:rules"]
   r_emitter_dependencies_lock_committed("emitter.dependencies.lock-committed (enforced)")
   j_CI_ci_yml_quality["CI ci.yml:quality"]
-  r_emitter_dependencies_scheduled_relock("emitter.dependencies.scheduled-relock (enforced)")
   r_emitter_dependencies_test_from_lock("emitter.dependencies.test-from-lock (enforced)")
   r_emitter_dependencies_uv_version_pinned("emitter.dependencies.uv-version-pinned (enforced)")
   e_quality_guard_uv_version["quality guard uv-version"]
+  r_emitter_dependencies_dependabot_relock --> e_pytest_tests_test_dependabot_py
+  e_pytest_tests_test_dependabot_py --> j_CI_ci_yml_tests
   r_emitter_dependencies_install_from_lock --> e_quality_guard_locked_installs
   e_quality_guard_locked_installs --> j_CI_pr_yaml_rules
   r_emitter_dependencies_lock_committed --> e_quality_guard_locked_installs
   e_quality_guard_locked_installs --> j_CI_ci_yml_quality
-  r_emitter_dependencies_scheduled_relock --> e_quality_guard_locked_installs
   r_emitter_dependencies_test_from_lock --> e_quality_guard_locked_installs
   r_emitter_dependencies_uv_version_pinned --> e_quality_guard_uv_version
   e_quality_guard_uv_version --> j_CI_pr_yaml_rules
@@ -367,9 +377,9 @@ flowchart LR
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.agents.adapters-point-to-agents-md` | CLAUDE.md only points to AGENTS.md; guidance and rules are written in AGENTS.md alone. | mechanical | enforced | yes | quality guard `rules-registry` | `pr.yaml:rules` | yes |
-| `emitter.process.changelog-fragment` | Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released. | mechanical | enforced | yes | CI job `changelog` | `pr.yaml:changelog` | — |
+| `emitter.process.changelog-fragment` | Every pull request adds at least one changelog fragment, changelog.d/<name>.<type>.md with a type of breaking, added, changed, fixed or removed, and keeps both distributions' versions and the interface pin consistent, so its merge can be released; a Dependabot pull request that changes only uv.lock is the exception. | mechanical | enforced | yes | CI job `changelog` | `pr.yaml:changelog` | — |
 | `emitter.process.feature-branches-and-pull-requests` | Push feature branches and open pull requests; never push to main directly, merge automatically or monitor queued checks. | mechanical | doc-only | no | nothing | — | — |
-| `emitter.process.pr-tracking-issue` | The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository; automated pull requests open or reuse such an issue. | mechanical | enforced | yes | CI job `pr-description` | `pr-description.yaml:pr-description` | yes |
+| `emitter.process.pr-tracking-issue` | The first line of the description of every open pull request whose base, or whose stack's final target, is main is Fixes #ISSUE_NUMBER, naming an open issue, not a pull request, in this repository; a pull request Dependabot opens is the exception. | mechanical | enforced | yes | CI job `pr-description` | `pr-description.yaml:pr-description` | yes |
 | `emitter.process.rules-registry` | Every rule is registered in rules/registry.toml, is enforced where it claims to be, and its rendered views are current. | mechanical | enforced | yes | quality guard `rules-registry` | `pr.yaml:rules` | **unproven** |
 
 ```mermaid
