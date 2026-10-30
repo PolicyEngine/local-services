@@ -574,6 +574,25 @@ class TestRepositoryLayout(unittest.TestCase):
             [".github/workflows/relock.yml does not relock packages/other/uv.lock"],
         )
 
+    def test_a_scheduled_relock_may_open_its_pull_request_in_another_job(
+        self,
+    ) -> None:
+        """One job relocks without secrets; a later one holds the token."""
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        workflow = (
+            "on:\n  schedule:\n    - cron: '0 6 * * 1'\njobs:\n"
+            "  relock:\n    steps:\n      - run: uv lock --upgrade\n"
+            "  propose:\n    needs: relock\n    steps:\n"
+            "      - run: gh pr create --fill\n"
+        )
+        (root / ".github/workflows").mkdir(parents=True)
+        (root / ".github/workflows/relock.yml").write_text(workflow, encoding="utf-8")
+        (root / "pyproject.toml").write_text('[project]\nname = "root"\n')
+
+        self.assertEqual(
+            relock_violations(root, tracked_files(root), FIXTURE_REPOSITORY), []
+        )
+
     def test_a_script_is_no_lock_check_by_its_name(self) -> None:
         files = {
             ".github/workflows/pr.yml": (
