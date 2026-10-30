@@ -14,7 +14,6 @@ from scripts.rules import (  # noqa: E402
     ci_scripts,
     file_length,
     locked_installs,
-    ruff_ignores,
     uv_version,
 )
 from scripts.rules import guard as rules_guard  # noqa: E402
@@ -30,7 +29,6 @@ GUARDS: tuple[Guard, ...] = (
     ("locked-installs", locked_installs.check),
     ("uv-version", uv_version.check),
     ("ci-scripts", ci_scripts.check),
-    ("ruff-ignores", ruff_ignores.check),
 )
 
 

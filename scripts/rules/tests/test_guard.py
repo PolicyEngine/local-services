@@ -202,6 +202,14 @@ nodes = ["tests/unit/test_boundaries.py::test_routes_have_no_sql"]
                 repo, "baseline count is 3 but rules/baselines/ratcheted.txt lists 2"
             )
 
+    def test_a_ratcheted_rule_with_entries_needs_its_downgrade(self) -> None:
+        with Repo(with_rule(RATCHETED_RULE.format(count=1)), render=False) as repo:
+            repo.write("rules/baselines/ratcheted.txt", "pkg/routes.py\n")
+            self.assert_violation(
+                repo,
+                "a ratcheted rule that tolerates 1 entries has no [rule.downgrade]",
+            )
+
     def test_judgment_rules_need_review_enforcer(self) -> None:
         with Repo(render=False) as repo:
             repo.edit(

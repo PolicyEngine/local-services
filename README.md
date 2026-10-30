@@ -176,7 +176,7 @@ bash tools/check-artifacts.sh
 bash tools/check-changelog.sh
 ```
 
-Ruff selects every rule (`ALL`, rule `emitter.quality.ruff-lint`). The rule families whose findings are not fixed yet are ignored until a pull request fixes them, and listed in `rules/baselines/ruff-families-not-yet-fixed.txt`, which may only shrink (`emitter.quality.ruff-families-not-yet-fixed`); a few rules that conflict with `ruff format` or with each other stay off.
+Ruff selects every rule (`ALL`, rule `emitter.quality.ruff-lint`), as the simulation API and the Public API do, and ignores the same four everywhere: COM812 and ISC001, which conflict with `ruff format`, and D203 and D213, which conflict with D211 and D212. It also ignores the copyright-notice rules (CPY), which Ruff 0.16 checks but the Ruff 0.15 those services run does not. Tests, the command-line scripts under `scripts/` and `tools/`, and the rules tool's unittest tests have registered per-file ignores (rules `emitter.quality.*-ruff-exemptions`). Until the pull requests stacked on #55 fix them, the rule families `pyproject.toml` lists as not fixed yet are ignored too.
 
 A Python module has at most 800 lines, and a file under `tests/` at most 1,500 (rule `emitter.quality.python-file-length`); split a module that grows past its limit into modules with one responsibility each.
 

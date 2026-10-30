@@ -86,7 +86,6 @@ extra_guard_tests = [
   "tests/interface/test_in_process_clients.py::test_in_process_clients_reuse_the_interface_definitions",
   "tests/orrery/test_client.py::test_graph_adapter_never_imports_persistence_or_auth",
   "tests/test_collector_origin.py::test_every_trusted_origin_is_a_bare_https_origin",
-  "tests/test_ruff_families.py::test_every_ratcheted_ruff_family_still_has_findings",
 ]
 
 [agents]
@@ -562,7 +561,7 @@ kind = "none"
 [[rule]]
 id = "emitter.quality.ruff-lint"
 category = "quality"
-statement = "All Python passes ruff check with every Ruff rule selected (ALL), except the rules emitter.quality.ruff-families-not-yet-fixed lists: the families not fixed yet, and the rules that stay off (COM812 and ISC001, which conflict with ruff format, D203 and D213, which conflict with D211 and D212, and E501, which ruff format settles)."
+statement = "All Python passes ruff check with every Ruff rule selected (ALL), as in the simulation API and the Public API, except COM812 and ISC001, which conflict with ruff format, D203 and D213, which conflict with D211 and D212, CPY, which Ruff 0.16 makes stable but their Ruff 0.15 keeps in preview, the registered per-file ignores, and, until the pull requests stacked on #55 fix them, the families pyproject.toml lists as not fixed yet."
 rationale = "README.md#development"
 scope = ["**/*.py"]
 tier = "mechanical"
@@ -577,78 +576,100 @@ workflow = ".github/workflows/ci.yml"
 job = "quality"
 invocation = "tools/check-quality.sh"
 
-# tools/check-quality.sh runs ruff format --check, so discovery cannot see it.
 [[rule]]
-id = "emitter.quality.ruff-families-not-yet-fixed"
+id = "emitter.quality.tests-ruff-exemptions"
 category = "quality"
-statement = "Ruff ignores only the rules this rule lists: the rule families whose findings are not fixed yet, in its baseline, which may only shrink, and the rules that stay off, as its exceptions with their reasons."
-rationale = "docs/engineering/skills/rules-registry.md#baselines"
-scope = ["pyproject.toml"]
-tier = "mechanical"
-status = "ratcheted"
-autofix = false
-[rule.enforcer]
-kind = "quality-guard"
-name = "ruff-ignores"
-[[rule.ci]]
-workflow = ".github/workflows/pr.yaml"
-job = "rules"
-invocation = "run_quality_guards.py"
-[rule.baseline]
-file = "rules/baselines/ruff-families-not-yet-fixed.txt"
-count = 28
-[rule.downgrade]
-reason = "Selecting every Ruff rule found 7,991 findings in these 28 families on 2026-10-30, too many to fix in one change, so each is ignored until a pull request fixes it."
-issue = 54
-[rule.proof]
-bad_fixture = "scripts/rules/tests/fixtures/ruff_ignores/bad_pyproject.toml"
-good_fixture = "scripts/rules/tests/fixtures/ruff_ignores/good_pyproject.toml"
-test = "scripts/rules/tests/test_ruff_ignores.py::TestRuffIgnoresProof::test_rule_proof_ruff_ignores"
-workflow = ".github/workflows/pr.yaml"
-job = "rules"
-invocation = "unittest discover -s scripts/rules/tests"
-
-[[rule.exception]]
-path = "pyproject.toml"
-match = "COM812"
-reason = "It conflicts with ruff format, which places trailing commas."
-
-[[rule.exception]]
-path = "pyproject.toml"
-match = "ISC001"
-reason = "It conflicts with ruff format, which may join implicitly concatenated strings onto one line."
-
-[[rule.exception]]
-path = "pyproject.toml"
-match = "D203"
-reason = "It conflicts with D211 (no blank line before a class docstring), which stays on."
-
-[[rule.exception]]
-path = "pyproject.toml"
-match = "D213"
-reason = "It conflicts with D212 (a multi-line docstring's summary on its first line), which stays on."
-
-[[rule.exception]]
-path = "pyproject.toml"
-match = "E501"
-reason = "ruff format settles line length; the lines it leaves long are strings and comments it does not break."
-
-[[rule]]
-id = "emitter.quality.ruff-families-still-have-findings"
-category = "quality"
-statement = "Every family emitter.quality.ruff-families-not-yet-fixed lists still has findings with every other Ruff rule on, so the pull request that fixes a family's last finding also takes it off the list."
-rationale = "docs/engineering/skills/rules-registry.md#baselines"
-scope = ["rules/baselines/ruff-families-not-yet-fixed.txt"]
+statement = "Test files may use pytest's bare assert, need no docstrings, annotations or named constants for magic numbers, and may reach into private members, import inside a test, and use fake credentials, temporary paths, naive datetimes, string-built SQL, prints and subprocess calls to repository scripts (ANN, D1, S101, PLR2004, SLF001, PLC0415, TID253, S105, S106, S108, S608, DTZ001, DTZ011, T201, S603, S607, INP001), may name a fake's methods after the interface it replaces (N802), and may leave a stand-in's arguments unused (ARG001, ARG002, ARG005), as in the Public API and the simulation API; every other Ruff rule applies to tests."
+rationale = "docs/engineering/skills/rules-registry.md#file-level-exceptions"
+scope = ["tests/**/*.py", "scripts/rules/tests/**/*.py"]
 tier = "mechanical"
 status = "enforced"
 autofix = false
 [rule.enforcer]
-kind = "pytest"
-nodes = ["tests/test_ruff_families.py::test_every_ratcheted_ruff_family_still_has_findings"]
+kind = "ruff"
+mode = "per-file-ignore"
+pattern = "**/tests/**"
+codes = ["ANN", "ARG001", "ARG002", "ARG005", "D1", "DTZ001", "DTZ011", "INP001", "N802", "PLC0415", "PLR2004", "S101", "S105", "S106", "S108", "S603", "S607", "S608", "SLF001", "T201", "TID253"]
 [[rule.ci]]
 workflow = ".github/workflows/ci.yml"
-job = "tests"
-invocation = 'pytest -m "not collector"'
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+[[rule]]
+id = "emitter.quality.unittest-ruff-exemptions"
+category = "quality"
+statement = "The rules tool's tests use unittest, because the tool needs only the standard library, so Ruff's pytest-style rules (PT) don't apply to them."
+rationale = "docs/engineering/skills/rules-registry.md#file-level-exceptions"
+scope = ["scripts/rules/tests/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "ruff"
+mode = "per-file-ignore"
+pattern = "scripts/rules/tests/**"
+codes = ["PT"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+[[rule]]
+id = "emitter.quality.command-line-scripts-ruff-exemptions"
+category = "quality"
+statement = "Command-line scripts under scripts/ may print their output (T201), run other programs (S603, S607) and use today's date (DTZ011); every other Ruff rule applies to them."
+rationale = "docs/engineering/skills/rules-registry.md#file-level-exceptions"
+scope = ["scripts/**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "ruff"
+mode = "per-file-ignore"
+pattern = "scripts/**"
+codes = ["DTZ011", "S603", "S607", "T201"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+[[rule]]
+id = "emitter.quality.tools-ruff-exemptions"
+category = "quality"
+statement = "The Python scripts under tools/, which CI runs, may have hyphenated file names (N999), print their results (T201) and run other programs (S603); every other Ruff rule applies to them."
+rationale = "docs/engineering/skills/rules-registry.md#file-level-exceptions"
+scope = ["tools/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "ruff"
+mode = "per-file-ignore"
+pattern = "tools/**"
+codes = ["N999", "S603", "T201"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
+
+[[rule]]
+id = "emitter.quality.installed-checks-ruff-exemptions"
+category = "quality"
+statement = "The installed-artifact checks (tools/check-installed.py, tools/installed-smoke.py and tools/installed-interface-smoke.py) assert, as tests do (S101), and import inside each check to test what that import loads (PLC0415)."
+rationale = "docs/engineering/skills/rules-registry.md#file-level-exceptions"
+scope = ["tools/check-installed.py", "tools/installed-smoke.py", "tools/installed-interface-smoke.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "ruff"
+mode = "per-file-ignore"
+pattern = "tools/{check-installed,installed-smoke,installed-interface-smoke}.py"
+codes = ["PLC0415", "S101"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"
 
 [[rule]]
 id = "emitter.quality.ruff-format"
