@@ -5,9 +5,10 @@ name: PR description
 # repository.
 #
 # A workflow of its own, so that editing a description reruns only this
-# check, not the whole of CI. Like CI, it runs only for pull requests into
-# main; a stacked pull request runs it when its base becomes main, which
-# GitHub reports as an "edited" event.
+# check, not the whole of CI. It runs for pull requests whose base is main.
+# In a stack of pull requests that gh stack links on GitHub, GitHub gives
+# every pull request the stack's final target, main, as its base, so it runs
+# on each of them too, as CI does.
 on:
   pull_request:
     branches: [main]
