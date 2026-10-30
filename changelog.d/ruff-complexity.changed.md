@@ -1,0 +1,1 @@
+Complex functions are split into helpers, magic values in comparisons are named constants, and fifteen signatures that callers rely on keep a `# noqa` for too many arguments, with its reason. Ruff no longer ignores `C90` and `PLR`, so it now ignores only `COM812`, `ISC001`, `D203`, `D213` and `CPY`, plus the registered per-file ignores. Behaviour is unchanged.
