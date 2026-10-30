@@ -1,0 +1,28 @@
+# Proof fixture: a Pyright rule lists every package.
+schema_version = 1
+repo = "proof"
+
+[repository]
+rule_prefix = "proof"
+pr_workflow = ".github/workflows/pr.yml"
+script_directories = ["scripts"]
+test_directories = ["tests"]
+packages = ["libs/*", "projects/*"]
+file_exception_directories = ["tests"]
+
+[[category]]
+id = "quality"
+title = "Quality"
+
+[[rule]]
+id = "proof.quality.pyright"
+category = "quality"
+statement = "The packages have no Pyright errors."
+rationale = "README.md"
+scope = ["libs/*/pyproject.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pyright"
+projects = ["libs/alpha", "libs/beta", "projects/gamma"]

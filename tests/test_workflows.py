@@ -70,7 +70,26 @@ def test_pull_requests_require_every_check_and_a_changelog_fragment():
     required = jobs["required"]
     assert required["name"] == "Required checks"
     assert required["if"] == "always()"
-    assert set(required["needs"]) == {"lint-workflows", "changelog", "verify"}
+    assert set(required["needs"]) == {"lint-workflows", "changelog", "verify", "rules"}
+    every_need_succeeded = " ".join("success" for _ in required["needs"])
+    assert required["steps"][-1]["run"] == f'test "$RESULTS" = "{every_need_succeeded}"'
+
+
+def test_pull_requests_check_the_rules_registry():
+    rules = workflow("pr.yaml")["jobs"]["rules"]
+    assert rules["name"] == "Rules registry"
+    # The guard reads the base branch's registry from history, and looks up
+    # the tracking issue of each [rule.downgrade] with the job's token.
+    assert rules["permissions"] == {"contents": "read", "issues": "read"}
+    checkout = rules["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"]["fetch-depth"] == "0"
+    runs = [step["run"] for step in rules["steps"] if "run" in step]
+    assert runs[-2:] == [
+        "uv run --no-project python -m unittest discover -s scripts/rules/tests -t .",
+        "uv run --no-project python scripts/run_quality_guards.py",
+    ]
+    assert rules["steps"][-1]["env"] == {"GH_TOKEN": "${{ github.token }}"}
 
 
 def test_verification_includes_real_collector_and_matrix():

@@ -1,0 +1,134 @@
+# Rules registry for microcosm-emitter.
+#
+# Every rule that governs this repository is declared here: what it says, how
+# mechanically it is enforced, where it runs in CI, and whether a checker has
+# been proven to reject a bad example. `python -m scripts.rules guard` keeps this
+# file honest; `python -m scripts.rules render` regenerates
+# docs/generated/rules.md and the Rules section in AGENTS.md.
+#
+# How to add or change a rule: docs/engineering/skills/rules-registry.md
+
+schema_version = 1
+repo = "microcosm-emitter"
+# Each [rule.downgrade] names an open issue here that tracks restoring the rule.
+issue_repository = "PolicyEngine/microcosm-emitter"
+
+# Where this repository keeps what the checks read.
+[repository]
+rule_prefix = "emitter"
+pr_workflow = ".github/workflows/pr.yaml"
+script_directories = ["tools"]
+test_directories = ["tests"]
+# microcosm-emitter at the root, and microcosm-emitter-interface.
+packages = [".", "packages/*"]
+file_exception_directories = ["tests", ".github", "tools", "scripts"]
+
+[[category]]
+id = "boundaries"
+title = "Runtime and package boundaries"
+
+[[category]]
+id = "persistence"
+title = "Databases and migrations"
+
+[[category]]
+id = "distributions"
+title = "Distributions and releases"
+
+[[category]]
+id = "protocol"
+title = "Collector protocol"
+
+[[category]]
+id = "tests"
+title = "Test isolation"
+
+[[category]]
+id = "quality"
+title = "Code quality"
+
+[[category]]
+id = "dependencies"
+title = "Dependency locking"
+
+[[category]]
+id = "ci"
+title = "CI workflows and scripts"
+
+[[category]]
+id = "process"
+title = "Process and repository hygiene"
+
+[discovery]
+# These pull-request jobs run checks that are not registered yet. Registering
+# a job's checks removes its entry here.
+ignore_jobs = [
+  { job = "lint-workflows", reason = "Runs actionlint on the workflows; its rule is not registered yet." },
+  { job = "changelog", reason = "Checks the changelog fragment; its rule is not registered yet." },
+  { job = "verify", reason = "Calls ci.yml, whose jobs run the linters, tests, package builds and collector contract test; ruff check is registered, the rest is not yet." },
+  { job = "required", reason = "Reports every pull-request job as the one required check; its rule is not registered yet." },
+]
+
+[agents]
+instructions = "AGENTS.md"
+adapters = ["CLAUDE.md"]
+
+[[rule]]
+id = "emitter.process.rules-registry"
+category = "process"
+statement = "Every rule is registered in rules/registry.toml, is enforced where it claims to be, and its rendered views are current."
+rationale = "docs/engineering/skills/rules-registry.md"
+scope = ["rules/registry.toml"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "rules-registry"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+
+[[rule]]
+id = "emitter.agents.adapters-point-to-agents-md"
+category = "process"
+statement = "CLAUDE.md only points to AGENTS.md; guidance and rules are written in AGENTS.md alone."
+rationale = "AGENTS.md"
+scope = ["CLAUDE.md"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "rules-registry"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+bad_fixture = "scripts/rules/tests/fixtures/adapters/bad_CLAUDE.md"
+good_fixture = "scripts/rules/tests/fixtures/adapters/good_CLAUDE.md"
+test = "scripts/rules/tests/test_adapters.py::TestAdaptersProof::test_rule_proof_adapters"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
+# The guard requires a rule for every rule family ruff selects.
+[[rule]]
+id = "emitter.quality.ruff-lint"
+category = "quality"
+statement = "All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles."
+rationale = "AGENTS.md"
+scope = ["**/*.py"]
+tier = "mechanical"
+status = "enforced"
+autofix = true
+[rule.enforcer]
+kind = "ruff"
+mode = "lint"
+codes = ["B", "E", "F", "I", "N", "UP", "W"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "quality"
+invocation = "tools/check-quality.sh"

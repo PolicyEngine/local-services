@@ -2,18 +2,30 @@
 
 Two environments mirror production: the emitter's own, as
 `uv tool install microcosm-emitter` creates it, and a build's, which holds only
-the interface package and starts the emitter's command as its child.
+the interface package and starts the emitter's command as its child. Neither
+source archive may hold the repository's rules tool, its registry or their
+documents.
 """
 
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EMITTER_PREFIX = "microcosm_emitter-"
 INTERFACE_PREFIX = "microcosm_emitter_interface-"
+# Paths, relative to an archive's top directory, that no source archive may
+# hold; one ending in / is a directory. pyproject.toml excludes them.
+UNPUBLISHED_PATHS = (
+    "scripts/rules/",
+    "scripts/run_quality_guards.py",
+    "rules/",
+    "docs/generated/rules.md",
+    "docs/engineering/skills/rules-registry.md",
+)
 
 
 def run(*arguments, **kwargs):
@@ -24,6 +36,20 @@ def only(paths: list[Path], prefix: str) -> Path:
     matches = [path for path in paths if path.name.startswith(prefix)]
     assert len(matches) == 1, f"Expected one {prefix}* artifact, found {matches}"
     return matches[0]
+
+
+def unpublished_members(source: Path) -> list[str]:
+    """Return the files of a source archive that UNPUBLISHED_PATHS names."""
+    with tarfile.open(source) as archive:
+        names = [member.name.split("/", 1)[-1] for member in archive.getmembers()]
+    return sorted(
+        name
+        for name in names
+        if any(
+            name.startswith(path) if path.endswith("/") else name == path
+            for path in UNPUBLISHED_PATHS
+        )
+    )
 
 
 def create_environment(directory: Path, *wheels: Path) -> Path:
@@ -42,7 +68,9 @@ def main():
             "Expected an emitter and an interface wheel and source archive"
         )
         for prefix in (EMITTER_PREFIX, INTERFACE_PREFIX):
-            only(sources, prefix)
+            source = only(sources, prefix)
+            unpublished = unpublished_members(source)
+            assert not unpublished, f"{source.name} holds {unpublished}"
         emitter_wheel = only(wheels, EMITTER_PREFIX)
         interface_wheel = only(wheels, INTERFACE_PREFIX)
         emitter_interpreter = create_environment(

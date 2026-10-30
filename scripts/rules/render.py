@@ -1,0 +1,307 @@
+"""Render the registry into ``docs/generated/rules.md`` and the AGENTS.md block.
+
+Output is deterministic (fixed ordering, no timestamps, no dependence on today's
+date) so the guard can regenerate it and compare.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import date
+from pathlib import Path
+
+from scripts.rules.model import Kind, Registry, Rule, RuleException, Status, Tier
+
+RULES_MD = Path("docs/generated/rules.md")
+AGENTS_MD = Path("AGENTS.md")
+SKILL_DOC = "docs/engineering/skills/rules-registry.md"
+BEGIN = "<!-- BEGIN GENERATED: rules (python -m scripts.rules render) -->"
+END = "<!-- END GENERATED: rules -->"
+MERMAID_NODE_LIMIT = 40
+MERMAID_CHUNK = 15
+AGENTS_COLLAPSE_AT = 60
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _describe_exception(exception: RuleException) -> str:
+    """Say which site an exception covers, why, and when it ends."""
+    site = f"`{exception.path}`"
+    if exception.match:
+        site += f" (`{exception.match}`)"
+    if exception.category:
+        site += f" [{exception.category}]"
+    if exception.expires != date.max:
+        site += f" until {exception.expires}"
+    ends = []
+    if exception.issue is not None:
+        ends.append(f"tracked in #{exception.issue}")
+    if exception.removal:
+        ends.append(f"remove when {exception.removal}")
+    ending = f"; {'; '.join(ends)}" if ends else ""
+    return f"exception for {site}{ending} ({exception.reason})"
+
+
+def _ordered(registry: Registry) -> list[tuple[str, str, list[Rule]]]:
+    """Categories in declared order, each with its rules sorted by id."""
+    groups = []
+    for category in registry.categories:
+        rules = sorted(
+            (r for r in registry.rules if r.category == category.id), key=lambda r: r.id
+        )
+        if rules:
+            groups.append((category.id, category.title, rules))
+    return groups
+
+
+def _ci_label(rule: Rule) -> str:
+    return ", ".join(f"`{Path(ref.workflow).name}:{ref.job}`" for ref in rule.ci) or "—"
+
+
+def _unproven(rule: Rule) -> bool:
+    return rule.blocking and rule.proof is None and rule.enforcer.expects_proof
+
+
+def _proof_label(rule: Rule) -> str:
+    if rule.proof is not None:
+        return "yes"
+    return "**unproven**" if _unproven(rule) else "—"
+
+
+def _enforced_by(rule: Rule) -> str:
+    """Describe what enforces a rule, naming the CI job when the job is the check."""
+    if rule.enforcer.kind is Kind.WORKFLOW_JOB:
+        jobs = ", ".join(f"`{ref.job}`" for ref in rule.ci)
+        return f"CI job {jobs}"
+    return rule.enforcer.description
+
+
+def _mermaid_id(prefix: str, text: str) -> str:
+    return prefix + "_" + re.sub(r"[^A-Za-z0-9]", "_", text)
+
+
+# Mermaid node declarations by shape: a box, a rounded box, or a flag.
+_MERMAID_SHAPES = {
+    "box": '  {node_id}["{label}"]',
+    "round": '  {node_id}("{label}")',
+    "flag": '  {node_id}>"{label}"]',
+}
+
+
+class _MermaidGraph:
+    """A flowchart under construction: each node is declared once, in first use."""
+
+    def __init__(self) -> None:
+        self.nodes: list[str] = []
+        self.edges: list[str] = []
+        self._declared: set[str] = set()
+
+    def node(self, node_id: str, label: str, shape: str = "box") -> str:
+        """Declare the node the first time it is used, and return its id."""
+        if node_id not in self._declared:
+            self._declared.add(node_id)
+            template = _MERMAID_SHAPES.get(shape, _MERMAID_SHAPES["box"])
+            self.nodes.append(
+                template.format(node_id=node_id, label=label.replace('"', "'"))
+            )
+        return node_id
+
+    def edge_once(self, edge: str) -> None:
+        """Add an edge unless the graph already has it."""
+        if edge not in self.edges:
+            self.edges.append(edge)
+
+
+def _add_rule_to_graph(graph: _MermaidGraph, rule: Rule) -> None:
+    """Link a rule to its enforcer, and the enforcer to its CI jobs or a gap."""
+    rule_node = graph.node(
+        _mermaid_id("r", rule.id), f"{rule.id} ({rule.status})", "round"
+    )
+    if rule.enforcer.kind is Kind.NONE:
+        gap = graph.node("gap_unenforced", "not enforced", "flag")
+        graph.edges.append(f"  {rule_node} -.-> {gap}")
+        return
+    label = _enforced_by(rule).replace("`", "")
+    enforcer_node = graph.node(_mermaid_id("e", label), label)
+    graph.edges.append(f"  {rule_node} --> {enforcer_node}")
+    for ref in rule.ci:
+        job_label = f"CI {Path(ref.workflow).name}:{ref.job}"
+        job_node = graph.node(_mermaid_id("j", job_label), job_label)
+        graph.edge_once(f"  {enforcer_node} --> {job_node}")
+    if not rule.ci:
+        local = graph.node("local_only", "not run in CI", "flag")
+        graph.edge_once(f"  {enforcer_node} -.-> {local}")
+
+
+def _mermaid(rules: list[Rule]) -> list[str]:
+    graph = _MermaidGraph()
+    for rule in rules:
+        _add_rule_to_graph(graph, rule)
+    return ["```mermaid", "flowchart LR", *graph.nodes, *graph.edges, "```"]
+
+
+def _mermaid_chunks(rules: list[Rule]) -> list[list[str]]:
+    graph = _mermaid(rules)
+    node_count = sum(1 for line in graph if re.match(r"^  \w+[\[(>]", line))
+    if node_count <= MERMAID_NODE_LIMIT:
+        return [graph]
+    return [
+        _mermaid(rules[i : i + MERMAID_CHUNK])
+        for i in range(0, len(rules), MERMAID_CHUNK)
+    ]
+
+
+def _bullets(items: list[str]) -> list[str]:
+    return items or ["- None."]
+
+
+def render_rules_md(registry: Registry) -> str:
+    """Render rules.md: the tier summary, the gaps, then each category's rules."""
+    rules = sorted(registry.rules, key=lambda r: r.id)
+    out = [
+        "# Rules",
+        "",
+        "Generated by `python -m scripts.rules render` from `rules/registry.toml`. "
+        "Do not edit by hand.",
+        "",
+        f"Every rule registered for `{registry.repo}` in `rules/registry.toml` "
+        "is listed here with how it is enforced. Blocking rules fail CI. The "
+        "Gaps section lists what is "
+        "written down but not yet enforced or proven. To add or change a rule, "
+        f"see `{SKILL_DOC}`.",
+        "",
+        "## Summary",
+        "",
+        "| Tier | " + " | ".join(s.value for s in Status) + " | Total |",
+        "| --- | " + " | ".join("---:" for _ in Status) + " | ---: |",
+    ]
+    for tier in Tier:
+        counts = [
+            sum(1 for r in rules if r.tier is tier and r.status is s) for s in Status
+        ]
+        out.append(
+            f"| {tier.value} | "
+            + " | ".join(str(c) for c in counts)
+            + f" | {sum(counts)} |"
+        )
+    blocking = sum(1 for r in rules if r.blocking)
+    out += ["", f"**Blocking:** {blocking} of {len(rules)} rules.", "", "## Gaps", ""]
+
+    def section(title: str, items: list[str]) -> None:
+        out.extend([f"### {title}", "", *_bullets(items), ""])
+
+    section(
+        "Not enforced (doc-only)",
+        [f"- `{r.id}`: {r.statement}" for r in rules if r.status is Status.DOC_ONLY],
+    )
+    section(
+        "Advisory (checked but not blocking)",
+        [f"- `{r.id}`: {r.statement}" for r in rules if r.status is Status.ADVISORY],
+    )
+    section(
+        "Unproven (no proof that the checker rejects a bad example)",
+        [f"- `{r.id}`" for r in rules if _unproven(r)],
+    )
+    section(
+        "Ratcheted (existing violations still tolerated)",
+        [
+            f"- `{r.id}`: {r.baseline.count} remaining in `{r.baseline.file}`"
+            for r in rules
+            if r.baseline
+        ],
+    )
+    dated = [f"- `{r.id}`: review by {r.review_by}" for r in rules if r.review_by] + [
+        f"- `{r.id}`: {_describe_exception(e)}" for r in rules for e in r.exceptions
+    ]
+    section("Exceptions and review dates", sorted(dated))
+
+    for _, title, group in _ordered(registry):
+        out += [
+            f"## {title}",
+            "",
+            "| Rule | Statement | Tier | Status | Blocking "
+            "| Enforced by | CI | Proof |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for r in group:
+            out.append(
+                f"| `{r.id}` | {_cell(r.statement)} | {r.tier} | {r.status} | "
+                f"{'yes' if r.blocking else 'no'} | {_cell(_enforced_by(r))} | "
+                f"{_ci_label(r)} | {_proof_label(r)} |"
+            )
+        out.append("")
+        for chunk in _mermaid_chunks(group):
+            out += [*chunk, ""]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _agents_line(rule: Rule) -> str:
+    if rule.status is Status.DOC_ONLY:
+        how = "doc-only, not checked: follow it yourself"
+    elif rule.status is Status.ADVISORY:
+        how = f"advisory: {_enforced_by(rule)}, not blocking"
+    elif rule.blocking:
+        how = f"blocking: {_enforced_by(rule)}"
+    else:
+        how = f"{rule.status}: {_enforced_by(rule)}"
+    return f"- `{rule.id}`: {rule.statement} ({how})"
+
+
+def render_agents_block(registry: Registry) -> str:
+    """Render the AGENTS.md rules block, markers included.
+
+    Past ``AGENTS_COLLAPSE_AT`` rules, each category lists its checked rules on
+    one line and spells out only the doc-only ones.
+    """
+    out = [
+        BEGIN,
+        "",
+        "The rules registered in `rules/registry.toml` are listed below, and",
+        "rendered with their enforcement and gaps in `docs/generated/rules.md`.",
+        "Blocking rules fail CI. Doc-only rules are not checked automatically, so",
+        f"follow them yourself. To add or change a rule, read `{SKILL_DOC}`.",
+        "",
+    ]
+    collapse = len(registry.rules) > AGENTS_COLLAPSE_AT
+    for _, title, group in _ordered(registry):
+        out.append(f"### {title}")
+        out.append("")
+        if collapse:
+            enforced = [f"`{r.id}`" for r in group if r.status is not Status.DOC_ONLY]
+            if enforced:
+                out.append("- Checked: " + ", ".join(enforced))
+            out += [_agents_line(r) for r in group if r.status is Status.DOC_ONLY]
+        else:
+            out += [_agents_line(r) for r in group]
+        out.append("")
+    out.append(END)
+    return "\n".join(out)
+
+
+def splice_block(text: str, block: str) -> str:
+    """Replace the generated block in AGENTS.md, appending a Rules section if absent."""
+    start, end = text.find(BEGIN), text.find(END)
+    if start != -1 and end != -1 and end > start:
+        return text[:start] + block + text[end + len(END) :]
+    return text.rstrip() + "\n\n## Rules\n\n" + block + "\n"
+
+
+def extract_block(text: str) -> str | None:
+    """Return the generated rules block in ``text``, markers included, or None."""
+    start, end = text.find(BEGIN), text.find(END)
+    if start == -1 or end == -1 or end < start:
+        return None
+    return text[start : end + len(END)]
+
+
+def write_outputs(registry: Registry, root: Path) -> list[Path]:
+    """Write rules.md and splice the rules block into AGENTS.md; return both paths."""
+    rules_md = root / RULES_MD
+    rules_md.parent.mkdir(parents=True, exist_ok=True)
+    rules_md.write_text(render_rules_md(registry))
+    agents = root / AGENTS_MD
+    current = agents.read_text() if agents.exists() else "# Agent Instructions\n"
+    agents.write_text(splice_block(current, render_agents_block(registry)))
+    return [rules_md, agents]
