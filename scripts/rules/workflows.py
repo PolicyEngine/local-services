@@ -3,8 +3,9 @@
 The standard library has no YAML parser and the guard must run without
 dependencies, so this reads only the subset these repositories use: block-style
 ``jobs:`` mappings, ``name:``/``uses:``/``run:`` keys (including ``|`` and ``>``
-block scalars), and ``strategy.matrix`` lists. Anything outside that subset is
-reported as unsupported rather than guessed at.
+block scalars), and ``strategy.matrix`` lists, with ``include`` and ``exclude``
+written as block lists of mappings. Anything outside that subset is reported as
+unsupported rather than guessed at.
 
 It answers three questions: does job X exist, does its run text (or reusable
 workflow reference) contain a given invocation string, and does each step's
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from itertools import product
 from typing import NamedTuple
 
 from scripts.rules.model import normalized_package
@@ -26,6 +28,8 @@ _UNSUPPORTED = re.compile(r"(<<:|:\s*[&*][A-Za-z0-9_-]+\s*$)")
 _QUOTE_PAIR_LENGTH = 2
 # How a job calls a reusable workflow of the same repository.
 _LOCAL_WORKFLOW_PREFIX = "./"
+# Matrix keys that list combinations to drop or add, not values of a variable.
+_MATRIX_COMBINATION_KEYS = ("include", "exclude")
 
 
 def called_workflow(uses: str) -> str | None:
@@ -148,6 +152,50 @@ def _inline_list(value: str) -> tuple[str, ...]:
     return tuple(_unquote(item) for item in inner.split(",") if item.strip())
 
 
+def _matches(combination: dict[str, str], entry: dict[str, str]) -> bool:
+    """Whether a combination has every value an exclude entry names."""
+    return all(combination.get(key) == value for key, value in entry.items())
+
+
+def effective_matrix(
+    variables: dict[str, tuple[str, ...]],
+    exclude: list[dict[str, str]],
+    include: list[dict[str, str]],
+) -> dict[str, tuple[str, ...]]:
+    """Return the values each matrix variable takes in the jobs that run.
+
+    As in GitHub Actions, ``exclude`` drops the combinations whose values match
+    an entry, then each ``include`` entry adds its values, to existing
+    combinations or as a new one. A value stays only while some combination
+    uses it; include entries may add variables of their own.
+    """
+    values = {key: list(items) for key, items in variables.items()}
+    if exclude:
+        keys = list(variables)
+        remaining = [
+            combination
+            for combination in (
+                dict(zip(keys, chosen, strict=True))
+                for chosen in product(*(variables[key] for key in keys))
+            )
+            if not any(_matches(combination, entry) for entry in exclude)
+        ]
+        values = {
+            key: [
+                value
+                for value in variables[key]
+                if any(combination[key] == value for combination in remaining)
+            ]
+            for key in keys
+        }
+    for entry in include:
+        for key, value in entry.items():
+            added = values.setdefault(key, [])
+            if value not in added:
+                added.append(value)
+    return {key: tuple(items) for key, items in values.items()}
+
+
 class _KeyLine(NamedTuple):
     """One ``key: value`` line of a job, with the column its key starts at."""
 
@@ -171,6 +219,10 @@ class _JobReader:
         self.runs: list[str] = []
         self.steps: list[str] = []
         self.matrix: dict[str, tuple[str, ...]] = {}
+        self.matrix_combinations: dict[str, list[dict[str, str]]] = {
+            key: [] for key in _MATRIX_COMBINATION_KEYS
+        }
+        self.problems: list[str] = []
         self.body_indent: int | None = None
         # Step tracking, so each run: block can be attributed to its step.
         self.item_indent: int | None = None
@@ -199,7 +251,11 @@ class _JobReader:
             uses=self.uses,
             step_uses=tuple(self.step_uses),
             step_names=tuple(self.steps),
-            matrix=self.matrix,
+            matrix=effective_matrix(
+                self.matrix,
+                self.matrix_combinations["exclude"],
+                self.matrix_combinations["include"],
+            ),
             run_blocks=tuple(
                 RunBlock(
                     step=self.step_labels.get(number) or f"step {number}",
@@ -306,6 +362,9 @@ class _JobReader:
     def _read_matrix_entry(self, entry: re.Match[str]) -> None:
         """Read one matrix key's values, written inline or as a block list."""
         key, value = entry.group(3), entry.group(4)
+        if key in _MATRIX_COMBINATION_KEYS:
+            self._read_matrix_combinations(entry)
+            return
         self.index += 1
         if value.startswith("["):
             self.matrix[key] = _inline_list(value)
@@ -321,11 +380,47 @@ class _JobReader:
             self.index += 1
         self.matrix[key] = tuple(items)
 
+    def _read_matrix_combinations(self, entry: re.Match[str]) -> None:
+        """Read a matrix ``include`` or ``exclude``: a block list of mappings.
 
-def _parse_job(job_id: str, lines: list[str]) -> JobBlock:
+        Each ``- key: value`` item starts an entry, and the deeper ``key:
+        value`` lines under it add to it. Anything else is reported.
+        """
+        key, value = entry.group(3), entry.group(4).strip()
+        key_column = len(entry.group(1))
+        self.index += 1
+        unsupported = f"a matrix {key} written inline is not supported; write it "
+        unsupported += "as a block list"
+        if value:
+            self.problems.append(unsupported)
+            return
+        entries = self.matrix_combinations[key]
+        # Block list items may sit at the key's own column.
+        while self._still_inside(key_column - 1):
+            line = self.lines[self.index]
+            if not line.strip():
+                self.index += 1
+                continue
+            item = _KEY.match(line)
+            if item is None:
+                self.problems.append(unsupported)
+                return
+            if item.group(2):
+                entries.append({item.group(3): _unquote(item.group(4))})
+            elif len(item.group(1)) > key_column and entries:
+                entries[-1][item.group(3)] = _unquote(item.group(4))
+            else:
+                return
+            self.index += 1
+
+
+def _parse_job(job_id: str, lines: list[str]) -> tuple[JobBlock, list[str]]:
+    """Read one job, and describe what in it is outside the supported subset."""
     reader = _JobReader(lines)
     reader.read()
-    return reader.job_block(job_id)
+    return reader.job_block(job_id), [
+        f"job '{job_id}': {problem}" for problem in reader.problems
+    ]
 
 
 def _jobs_body(lines: list[str], start: int) -> list[str]:
@@ -349,14 +444,16 @@ def _split_jobs(body: list[str]) -> tuple[dict[str, JobBlock], list[str]]:
         match = re.match(rf"^ {{{job_indent}}}([A-Za-z0-9_-]+):\s*$", line)
         if match and _indent(line) == job_indent:
             if current:
-                jobs[current] = _parse_job(current, current_lines)
+                jobs[current], job_problems = _parse_job(current, current_lines)
+                problems.extend(job_problems)
             current, current_lines = match.group(1), []
         elif line.strip() and _indent(line) == job_indent:
             problems.append(f"unexpected line at job level: {line.strip()!r}")
         elif current:
             current_lines.append(line)
     if current:
-        jobs[current] = _parse_job(current, current_lines)
+        jobs[current], job_problems = _parse_job(current, current_lines)
+        problems.extend(job_problems)
     return jobs, problems
 
 
