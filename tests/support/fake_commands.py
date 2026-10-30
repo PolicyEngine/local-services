@@ -17,8 +17,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_DIRECTORY = REPOSITORY_ROOT / "tools"
 WORKFLOWS_DIRECTORY = REPOSITORY_ROOT / ".github" / "workflows"
 
-# Separates the recorded arguments of one call; arguments may contain spaces.
+# Separate the recorded arguments of one call, and the calls; arguments may
+# contain spaces and line breaks.
 _FIELD = "\x1f"
+_RECORD = "\x1e"
 
 
 @dataclass
@@ -41,7 +43,7 @@ class FakeCommands:
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             f'printf \'%s{_FIELD}\' {name} "$@" >> "$FAKE_CALLS_LOG"\n'
-            "printf '\\n' >> \"$FAKE_CALLS_LOG\"\n" + textwrap.dedent(body),
+            f"printf '{_RECORD}' >> \"$FAKE_CALLS_LOG\"\n" + textwrap.dedent(body),
             encoding="utf-8",
         )
         path.chmod(0o755)
@@ -54,8 +56,8 @@ class FakeCommands:
         if not self.log.exists():
             return []
         recorded = [
-            line.split(_FIELD)[:-1]
-            for line in self.log.read_text(encoding="utf-8").splitlines()
+            record.split(_FIELD)[:-1]
+            for record in self.log.read_text(encoding="utf-8").split(_RECORD)[:-1]
         ]
         return [call for call in recorded if name is None or call[0] == name]
 
