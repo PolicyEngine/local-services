@@ -146,10 +146,10 @@ fail the guard yet.
   file-level exceptions, a justified exception is an inline
   `# noqa: CODE  # reason`.
 - Other enforcers (mypy, Pyright, Import Linter, custom guards) may start
-  `ratcheted` with a baseline file of tolerated violations. A ratcheted rule
-  whose count is above 0 needs a `[rule.downgrade]` section, as a downgrade
-  does, for as long as its baseline lists entries. Baselines may only shrink:
-  the guard compares counts against the base branch.
+  `ratcheted` with a baseline file of tolerated violations. A new rule that
+  starts ratcheted with a count above 0 needs a `[rule.downgrade]` section,
+  as a downgrade does. Baselines may only shrink: the guard compares counts
+  against the base branch.
 - Moving a rule from enforced/ratcheted to advisory/doc-only, or from enforced
   to ratcheted, needs a `[rule.downgrade]` section with a `reason` and an
   `issue`.
