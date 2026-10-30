@@ -596,6 +596,35 @@ workflow = ".github/workflows/ci.yml"
 job = "tests"
 invocation = 'pytest -m "not collector"'
 
+# Test code is what [repository].test_directories lists, as paths from the
+# root, plus the rules tool's own tests and fixtures.
+[[rule]]
+id = "emitter.quality.python-file-length"
+category = "quality"
+statement = "No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under tests/ or under the rules tool's tests and fixtures, scripts/rules/tests/."
+rationale = "README.md#development"
+scope = ["**/*.py"]
+tier = "metric"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "quality-guard"
+name = "file-length"
+[[rule.ci]]
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "run_quality_guards.py"
+[rule.proof]
+# Files at their limit (below) pass, and files one line over it (above) fail.
+below_fixture = "scripts/rules/tests/fixtures/file_length/good_files.toml"
+above_fixture = "scripts/rules/tests/fixtures/file_length/bad_files.toml"
+# The source limit; both fixtures also cover the 1,500-line limit for test code.
+threshold = 800
+test = "scripts/rules/tests/test_file_length.py::TestFileLengthProof::test_rule_proof_python_file_length"
+workflow = ".github/workflows/pr.yaml"
+job = "rules"
+invocation = "unittest discover -s scripts/rules/tests"
+
 [[rule]]
 id = "emitter.quality.rules-tool-tests-pass"
 category = "quality"

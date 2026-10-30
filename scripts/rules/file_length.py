@@ -1,11 +1,16 @@
 """The file-length quality guard: no tracked Python file is too long.
 
 A tracked Python file may have at most 800 lines, or at most 1,500 when it is
-test code: a file under one of the registry's ``[repository].test_directories``
-or a ``fixtures`` directory, or a ``conftest.py``. While the rule is ratcheted, its baseline file lists the files
-that were already over their limit. The guard fails on a file over its limit
-that the baseline doesn't list, and on a listed file that is no longer over its
-limit or no longer tracked, so the baseline only shrinks.
+test code: a file under one of the registry's ``[repository].test_directories``,
+each a path from the repository root, or under the rules tool's own tests and
+their fixtures (``scripts/rules/tests``). Nothing else is test code: a
+``fixtures`` or ``tests`` directory inside a package ships in its wheel, and a
+``conftest.py`` elsewhere is source code too.
+
+While the rule is ratcheted, its baseline file lists the files that were
+already over their limit. The guard fails on a file over its limit that the
+baseline doesn't list, and on a listed file that is no longer over its limit or
+no longer tracked, so the baseline only shrinks.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from scripts.rules.load import load_registry
 from scripts.rules.locked_installs import tracked_files
-from scripts.rules.model import Kind, Registry, Rule, Violation
+from scripts.rules.model import Kind, Registry, Rule, Violation, normalized_package
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -25,10 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_NAME = "file-length"
 SOURCE_LINE_LIMIT = 800
 TEST_LINE_LIMIT = 1500
-# A file under a fixtures directory is test code, as is one under a directory
-# the registry lists in [repository].test_directories.
-FIXTURE_DIRECTORY = "fixtures"
-TEST_FILE_NAMES = frozenset({"conftest.py"})
+# The rules tool's own tests and their fixtures, as a path from the root.
+RULES_TOOL_TESTS = (
+    (Path(__file__).resolve().parent / "tests").relative_to(REPO_ROOT).as_posix()
+)
 SPLIT_FIX = (
     "split it into modules that each hold one responsibility and stay under the "
     "limit, keeping its public names importable from the original module"
@@ -53,11 +58,16 @@ class LongFile:
 
 
 def is_test_code(path: str, test_directories: Iterable[str]) -> bool:
-    """Whether the repository-relative ``path`` holds tests or test support."""
-    pure = PurePosixPath(path)
-    directories = {FIXTURE_DIRECTORY, *test_directories}
-    return pure.name in TEST_FILE_NAMES or any(
-        part in directories for part in pure.parts[:-1]
+    """Whether the repository-relative ``path`` holds tests or test support.
+
+    It does when it is under one of ``test_directories``, paths from the
+    repository root, or under the rules tool's own tests.
+    """
+    directories = (*test_directories, RULES_TOOL_TESTS)
+    parent = PurePosixPath(path).parent
+    return any(
+        parent.is_relative_to(normalized_package(directory))
+        for directory in directories
     )
 
 

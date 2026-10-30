@@ -9,10 +9,10 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | mechanical | 31 | 0 | 0 | 7 | 38 |
-| metric | 0 | 0 | 0 | 0 | 0 |
+| metric | 1 | 0 | 0 | 0 | 1 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 31 of 38 rules.
+**Blocking:** 32 of 39 rules.
 
 ## Gaps
 
@@ -216,6 +216,7 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `emitter.quality.python-file-length` | No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under tests/ or under the rules tool's tests and fixtures, scripts/rules/tests/. | metric | enforced | yes | quality guard `file-length` | `pr.yaml:rules` | yes |
 | `emitter.quality.ruff-format` | All Python is formatted with ruff format. | mechanical | enforced | yes | ruff format | `ci.yml:quality` | — |
 | `emitter.quality.ruff-lint` | All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles. | mechanical | enforced | yes | ruff check (B, E, F, I, N, UP, W) | `ci.yml:quality` | — |
 | `emitter.quality.rules-tool-tests-pass` | The rules tool's own tests, the unittest tests under scripts/rules/tests, pass in pr.yaml's rules job, on Ubuntu with Python 3.13 and only the standard library. | mechanical | enforced | yes | CI job `rules` | `pr.yaml:rules` | — |
@@ -224,6 +225,9 @@ flowchart LR
 
 ```mermaid
 flowchart LR
+  r_emitter_quality_python_file_length("emitter.quality.python-file-length (enforced)")
+  e_quality_guard_file_length["quality guard file-length"]
+  j_CI_pr_yaml_rules["CI pr.yaml:rules"]
   r_emitter_quality_ruff_format("emitter.quality.ruff-format (enforced)")
   e_ruff_format["ruff format"]
   j_CI_ci_yml_quality["CI ci.yml:quality"]
@@ -231,12 +235,13 @@ flowchart LR
   e_ruff_check__B__E__F__I__N__UP__W_["ruff check (B, E, F, I, N, UP, W)"]
   r_emitter_quality_rules_tool_tests_pass("emitter.quality.rules-tool-tests-pass (enforced)")
   e_CI_job_rules["CI job rules"]
-  j_CI_pr_yaml_rules["CI pr.yaml:rules"]
   r_emitter_quality_tests_pass("emitter.quality.tests-pass (enforced)")
   e_CI_job_tests["CI job tests"]
   j_CI_ci_yml_tests["CI ci.yml:tests"]
   r_emitter_quality_toolchain("emitter.quality.toolchain (doc-only)")
   gap_unenforced>"not enforced"]
+  r_emitter_quality_python_file_length --> e_quality_guard_file_length
+  e_quality_guard_file_length --> j_CI_pr_yaml_rules
   r_emitter_quality_ruff_format --> e_ruff_format
   e_ruff_format --> j_CI_ci_yml_quality
   r_emitter_quality_ruff_lint --> e_ruff_check__B__E__F__I__N__UP__W_
