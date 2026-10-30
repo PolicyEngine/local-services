@@ -37,6 +37,7 @@ from microcosm_emitter.core.constants import (
     UNREADABLE_LOGIN_WAITING_MESSAGE,
     UNSENDABLE_CREDENTIAL_MESSAGE,
 )
+from microcosm_emitter.core.http_status import is_permanent_client_error
 from microcosm_emitter.telemetry.constants import (
     LOCAL_ONLY_REJECTED_EVENTS,
     REJECTED_EVENTS_MESSAGE,
@@ -50,26 +51,12 @@ if TYPE_CHECKING:
 # Each print in this module that suppresses Ruff's T201 writes one of its
 # messages to standard error on purpose; none is leftover debugging output.
 
-_RETRYABLE_CLIENT_ERRORS = frozenset(
-    {HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS}
-)
-#: HTTP client errors (4xx) run from this status up to, but not including,
-#: ``_FIRST_SERVER_ERROR_STATUS``.
-_FIRST_CLIENT_ERROR_STATUS = HTTPStatus.BAD_REQUEST
-_FIRST_SERVER_ERROR_STATUS = HTTPStatus.INTERNAL_SERVER_ERROR
 #: Session answers for a given token that can no longer be used, and the
 #: reason each pending run records.
 _UNUSABLE_GIVEN_TOKEN_REASONS: dict[SessionResult, str] = {
     "token_expired": PENDING_GIVEN_TOKEN_EXPIRED,
     "token_rejected": PENDING_GIVEN_TOKEN_REJECTED,
 }
-
-
-def _permanent_client_error(status: int) -> bool:
-    return (
-        _FIRST_CLIENT_ERROR_STATUS <= int(status) < _FIRST_SERVER_ERROR_STATUS
-        and status not in _RETRYABLE_CLIENT_ERRORS
-    )
 
 
 def _registration_key(registration: Mapping[str, Any]) -> str:
@@ -170,7 +157,7 @@ class CollectorDelivery:
                 registration,
                 LOCAL_ONLY_REJECTED_COLLECTOR_AUTHORIZATION,
             )
-        elif _permanent_client_error(status):
+        elif is_permanent_client_error(status):
             self._make_local_only(
                 registration,
                 LOCAL_ONLY_REJECTED_EVENTS,
@@ -280,7 +267,7 @@ class CollectorDelivery:
         elif status in {
             HTTPStatus.FORBIDDEN,
             HTTPStatus.CONFLICT,
-        } or _permanent_client_error(status):
+        } or is_permanent_client_error(status):
             self._make_local_only(registration, LOCAL_ONLY_REJECTED_REGISTRATION)
         else:
             self._defer_retry()

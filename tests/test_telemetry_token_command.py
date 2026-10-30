@@ -170,7 +170,8 @@ def test_prints_a_telemetry_token_for_the_requested_lifetime(
         ("unexpected error", 7),
     ],
 )
-# pytest passes four fixtures and the two parametrized values as arguments.
+# A pytest test function: pytest passes its four fixtures and
+# two parametrized values by name, so the parameters stay.
 def test_each_failure_has_its_own_exit_code_and_prints_nothing(  # noqa: PLR0913, PLR0917
     collector, operator_login, monkeypatch, capsys, failure, expected_exit_code
 ) -> None:

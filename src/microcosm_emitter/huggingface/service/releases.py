@@ -404,11 +404,12 @@ class _HeadState:
 class _ReleaseOrder:
     """Where a change stands among the changes to ``current`` that landed.
 
-    ``newest_requests`` is each release's newest request time so far; it gains
-    this change's time once the change is to be committed.
+    ``newest_requests`` is each release's newest request time so far. The
+    order is never changed: the commit's message uses a copy that adds this
+    change's time.
     """
 
-    newest_requests: dict[str, float]
+    newest_requests: Mapping[str, float]
     record_committed_at: float | None
     changes_current: bool
     overtaken: bool
@@ -649,11 +650,14 @@ def _commit_release_record(
         return ReleaseOutcome("published", commit=state.head, current=current)
     operations = [add_operation(path, local) for path, local in write.new_files.items()]
     operations.append(add_operation(RELEASES_RECORD_PATH, after.serialize()))
-    if order.changes_current and not order.overtaken:
-        order.newest_requests[release] = write.requested
+    newest_requests = (
+        {**order.newest_requests, release: write.requested}
+        if order.changes_current and not order.overtaken
+        else order.newest_requests
+    )
     message = _commit_message(
         change,
-        _within_order_window(order.newest_requests, order.record_committed_at),
+        _within_order_window(newest_requests, order.record_committed_at),
         makes_current=order.makes_current,
     )
     try:

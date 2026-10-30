@@ -27,6 +27,10 @@ from urllib.parse import urlsplit
 import httpx
 
 from microcosm_emitter.core.constants import LOOPBACK_HOSTS
+from microcosm_emitter.core.http_status import (
+    RETRYABLE_CLIENT_ERRORS,
+    is_permanent_client_error,
+)
 from microcosm_emitter.huggingface.service.hub import (
     PRESERVED_BYTES_CHANGED,
     PRESERVED_FILES_MISSING,
@@ -60,11 +64,7 @@ UPLOAD_TIMEOUT: Final = httpx.Timeout(60.0)
 #: Small enough to keep that HTTPS minimum low; httpx reads files in pieces
 #: of the same size.
 UPLOAD_CHUNK_BYTES: Final = 64 * 1024
-RETRYABLE_STATUSES: Final = frozenset({408, 429})
-#: HTTP client errors (4xx) run from this status up to, but not including,
-#: ``FIRST_SERVER_ERROR_STATUS``.
-FIRST_CLIENT_ERROR_STATUS: Final = HTTPStatus.BAD_REQUEST
-FIRST_SERVER_ERROR_STATUS: Final = HTTPStatus.INTERNAL_SERVER_ERROR
+RETRYABLE_STATUSES: Final = RETRYABLE_CLIENT_ERRORS
 #: After the collector shows it has no intake, how long to wait before
 #: exchanging again; no submission request goes to it meanwhile.
 INTAKE_RETRY_SECONDS: Final = 3600.0
@@ -349,10 +349,7 @@ class CollectorSubmissionClient:
         if status == HTTPStatus.UNAUTHORIZED:
             self._invalidate_credential()
             return SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE)
-        if (
-            FIRST_CLIENT_ERROR_STATUS <= status < FIRST_SERVER_ERROR_STATUS
-            and status not in RETRYABLE_STATUSES
-        ):
+        if is_permanent_client_error(status):
             return SubmissionOutcome("failed", f"COLLECTOR_REFUSED_{status}")
         return SubmissionOutcome("pending", COLLECTOR_UNAVAILABLE)
 
@@ -449,7 +446,11 @@ class CollectorSubmissionClient:
                 SubmissionOutcome("pending", UPLOAD_FAILED)
             ) from None
         # 412: the object exists, and the bucket never replaces one.
-        if response.status_code not in {200, 201, 412}:
+        if response.status_code not in {
+            HTTPStatus.OK,
+            HTTPStatus.CREATED,
+            HTTPStatus.PRECONDITION_FAILED,
+        }:
             raise _StepFailedError(SubmissionOutcome("pending", UPLOAD_FAILED))
 
     def submit(self, planned: PlannedSubmission) -> SubmissionOutcome:
@@ -465,7 +466,7 @@ class CollectorSubmissionClient:
             created, token = self._send_in_scope(
                 "POST", SUBMISSIONS_PATH, token, planned.body
             )
-            if created.status_code not in {200, 201}:
+            if created.status_code not in {HTTPStatus.OK, HTTPStatus.CREATED}:
                 return self._settled_answer(created, names_submission=False)
             submission_id, uploads = self._uploads(created, planned)
             for upload in uploads:
@@ -487,7 +488,7 @@ class CollectorSubmissionClient:
         if completed.status_code == HTTPStatus.CONFLICT:
             # Something is not stored as declared: create again, upload again.
             return SubmissionOutcome("pending", FILES_INCOMPLETE, submission_id)
-        if completed.status_code not in {200, 202}:
+        if completed.status_code not in {HTTPStatus.OK, HTTPStatus.ACCEPTED}:
             answer = self._settled_answer(completed, names_submission=True)
             return SubmissionOutcome(
                 answer.status,
