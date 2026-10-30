@@ -176,6 +176,8 @@ bash tools/check-artifacts.sh
 bash tools/check-changelog.sh
 ```
 
+A Python module has at most 800 lines, and a file under `tests/` at most 1,500 (rule `emitter.quality.python-file-length`); split a module that grows past its limit into modules with one responsibility each.
+
 Tests isolate ambient credentials and use synthetic identities. The artifact check builds one source archive and wheel, installs that wheel into a clean environment away from the source checkout, verifies import boundaries, and exercises telemetry-only, graph-only and combined service startup with packaged migrations.
 
 The collector compatibility job tests the installed wheel against a pinned dashboard collector and disposable PostgreSQL. It covers the HTTP exchange, event ingestion, blocked outcomes and supplied failure codes in dashboard run documents, rejected identities, and duplicate delivery after a lost acknowledgement. Local execution requires that pinned collector checkout and a loopback test database; `tools/check-collector.sh` verifies these inputs. Never point this test at a deployed database. The pin verifies source compatibility, not which revision the hosted collector currently runs.

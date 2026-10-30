@@ -596,13 +596,13 @@ workflow = ".github/workflows/ci.yml"
 job = "tests"
 invocation = 'pytest -m "not collector"'
 
-# Test code is what [repository].test_directories lists, plus fixtures
-# directories and conftest.py files.
+# Test code is what [repository].test_directories lists, as paths from the
+# root, plus the rules tool's own tests and fixtures.
 [[rule]]
 id = "emitter.quality.python-file-length"
 category = "quality"
-statement = "No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under a tests or fixtures directory, or a conftest.py."
-rationale = "scripts/rules/file_length.py"
+statement = "No tracked Python file has more than 800 lines, or more than 1,500 if it is test code: a file under tests/ or under the rules tool's tests and fixtures, scripts/rules/tests/."
+rationale = "README.md#development"
 scope = ["**/*.py"]
 tier = "metric"
 status = "enforced"
