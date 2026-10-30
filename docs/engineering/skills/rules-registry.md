@@ -146,8 +146,13 @@ fail the guard yet.
   quality guard requires each ignored rule to be listed by
   `emitter.quality.ruff-families-not-yet-fixed`: a family whose findings are
   not fixed yet in its baseline, or a rule that stays off as one of its
-  `[[rule.exception]]` entries, with its reason. The pull request that fixes a
-  family removes it from `ignore` and the baseline, and lowers the count. When
+  `[[rule.exception]]` entries, with its reason. Compared with the base
+  branch, the baseline may lose families but gain none, and the rule may gain
+  no exception. The pull request that fixes a family's last finding removes it
+  from `ignore` and the baseline, and lowers the count, since
+  `emitter.quality.ruff-families-still-have-findings` runs Ruff and fails on a
+  listed family with no findings. A ratcheted rule that tolerates entries keeps
+  its `[rule.downgrade]` for as long as it does. When
   a ruff upgrade adds rules, the same PR fixes every new violation. Don't use
   `--add-noqa`. Outside the files that allow file-level exceptions, a
   justified exception is an inline `# noqa: CODE  # reason`.

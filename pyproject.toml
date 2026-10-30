@@ -78,7 +78,7 @@ ignore = [
     # They conflict with ruff format.
     "COM812",
     "ISC001",
-    # They conflict with D211 and D212, which stay on.
+    # They conflict with D211 and D212, which apply once the D family is fixed.
     "D203",
     "D213",
     # ruff format settles line length.

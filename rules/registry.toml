@@ -85,6 +85,7 @@ extra_guard_tests = [
   "tests/interface/test_in_process_clients.py::test_in_process_clients_reuse_the_interface_definitions",
   "tests/orrery/test_client.py::test_graph_adapter_never_imports_persistence_or_auth",
   "tests/test_collector_origin.py::test_every_trusted_origin_is_a_bare_https_origin",
+  "tests/test_ruff_families.py::test_every_ratcheted_ruff_family_still_has_findings",
 ]
 
 [agents]
@@ -630,6 +631,23 @@ reason = "It conflicts with D212 (a multi-line docstring's summary on its first 
 path = "pyproject.toml"
 match = "E501"
 reason = "ruff format settles line length; the lines it leaves long are strings and comments it does not break."
+
+[[rule]]
+id = "emitter.quality.ruff-families-still-have-findings"
+category = "quality"
+statement = "Every family emitter.quality.ruff-families-not-yet-fixed lists still has findings with every other Ruff rule on, so the pull request that fixes a family's last finding also takes it off the list."
+rationale = "docs/engineering/skills/rules-registry.md#baselines"
+scope = ["rules/baselines/ruff-families-not-yet-fixed.txt"]
+tier = "mechanical"
+status = "enforced"
+autofix = false
+[rule.enforcer]
+kind = "pytest"
+nodes = ["tests/test_ruff_families.py::test_every_ratcheted_ruff_family_still_has_findings"]
+[[rule.ci]]
+workflow = ".github/workflows/ci.yml"
+job = "tests"
+invocation = 'pytest -m "not collector"'
 
 [[rule]]
 id = "emitter.quality.ruff-format"
