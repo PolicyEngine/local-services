@@ -8,21 +8,23 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 
 | Tier | enforced | ratcheted | advisory | doc-only | Total |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| mechanical | 30 | 0 | 0 | 5 | 35 |
+| mechanical | 31 | 0 | 0 | 7 | 38 |
 | metric | 0 | 0 | 0 | 0 | 0 |
 | judgment | 0 | 0 | 0 | 0 | 0 |
 
-**Blocking:** 30 of 35 rules.
+**Blocking:** 31 of 38 rules.
 
 ## Gaps
 
 ### Not enforced (doc-only)
 
+- `emitter.ci.shell-logic-in-tools-scripts`: Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command.
+- `emitter.persistence.sqlalchemy-and-alembic-only`: Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL or direct-driver persistence in any form, no schema repair and no adoption of databases made before Alembic.
 - `emitter.persistence.typescript-uses-drizzle`: TypeScript database code, if any is added, uses Drizzle ORM and Drizzle Kit migrations.
 - `emitter.process.feature-branches-and-pull-requests`: Push feature branches and open pull requests; never push to main directly, merge automatically or monitor queued checks.
 - `emitter.protocol.no-hosted-events-api`: Preserve the existing collector protocol, and do not add a general hosted events API.
 - `emitter.quality.toolchain`: Use uv, Python 3.13 or later, pytest and Ruff.
-- `emitter.tests.real-migrations-synthetic-credentials`: Tests use temporary databases created through real migrations, synthetic credentials and loopback network services.
+- `emitter.tests.real-migrations-synthetic-credentials`: Tests use temporary databases created through real migrations, synthetic credentials and loopback network services, and contact no hosted collector through any client, including the HTTP clients of the submissions client and the Orrery queue, which conftest.py does not intercept.
 
 ### Advisory (checked but not blocking)
 
@@ -36,15 +38,15 @@ Every rule that governs `microcosm-emitter` is listed here with how it is enforc
 - `emitter.boundaries.public-credential-lookup`
 - `emitter.boundaries.shared-definitions-written-once`
 - `emitter.boundaries.telemetry-client-imports-no-service-code`
-- `emitter.ci.multiline-shell-in-scripts`
 - `emitter.ci.pull-request-workflow-structure`
+- `emitter.ci.run-steps-are-one-line`
 - `emitter.distributions.exactly-two-at-one-version`
 - `emitter.distributions.one-build-script`
 - `emitter.distributions.release-credentials`
 - `emitter.distributions.release-order`
 - `emitter.distributions.source-archives-exclude-the-rules-tool`
 - `emitter.distributions.version-from-fragments`
-- `emitter.persistence.sqlalchemy-and-alembic-only`
+- `emitter.persistence.no-raw-sql-or-schema-calls`
 - `emitter.process.rules-registry`
 - `emitter.protocol.collector-contract`
 - `emitter.protocol.every-fixture-sent-and-answered`
@@ -97,18 +99,21 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `emitter.persistence.sqlalchemy-and-alembic-only` | Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL, no direct-driver persistence, no create_all(), no schema repair and no adoption of databases made before Alembic. | mechanical | enforced | yes | pytest `tests/test_boundaries.py` | `ci.yml:tests` | **unproven** |
+| `emitter.persistence.no-raw-sql-or-schema-calls` | No module under src/microcosm_emitter calls a function or method named create_all, exec_driver_sql, executescript or text, or imports sqlite3, psycopg or psycopg2 in the form import <module>. | mechanical | enforced | yes | pytest `tests/test_boundaries.py` | `ci.yml:tests` | **unproven** |
+| `emitter.persistence.sqlalchemy-and-alembic-only` | Python databases use the SQLAlchemy declarative ORM and Alembic only: no handwritten SQL or direct-driver persistence in any form, no schema repair and no adoption of databases made before Alembic. | mechanical | doc-only | no | nothing | — | — |
 | `emitter.persistence.typescript-uses-drizzle` | TypeScript database code, if any is added, uses Drizzle ORM and Drizzle Kit migrations. | mechanical | doc-only | no | nothing | — | — |
 
 ```mermaid
 flowchart LR
-  r_emitter_persistence_sqlalchemy_and_alembic_only("emitter.persistence.sqlalchemy-and-alembic-only (enforced)")
+  r_emitter_persistence_no_raw_sql_or_schema_calls("emitter.persistence.no-raw-sql-or-schema-calls (enforced)")
   e_pytest_tests_test_boundaries_py["pytest tests/test_boundaries.py"]
   j_CI_ci_yml_tests["CI ci.yml:tests"]
-  r_emitter_persistence_typescript_uses_drizzle("emitter.persistence.typescript-uses-drizzle (doc-only)")
+  r_emitter_persistence_sqlalchemy_and_alembic_only("emitter.persistence.sqlalchemy-and-alembic-only (doc-only)")
   gap_unenforced>"not enforced"]
-  r_emitter_persistence_sqlalchemy_and_alembic_only --> e_pytest_tests_test_boundaries_py
+  r_emitter_persistence_typescript_uses_drizzle("emitter.persistence.typescript-uses-drizzle (doc-only)")
+  r_emitter_persistence_no_raw_sql_or_schema_calls --> e_pytest_tests_test_boundaries_py
   e_pytest_tests_test_boundaries_py --> j_CI_ci_yml_tests
+  r_emitter_persistence_sqlalchemy_and_alembic_only -.-> gap_unenforced
   r_emitter_persistence_typescript_uses_drizzle -.-> gap_unenforced
 ```
 
@@ -116,7 +121,7 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `emitter.distributions.artifacts-verified` | Every pull request builds both distributions, each wheel from its source archive, passes twine check --strict on them, and has tools/check-installed.py require one wheel and one source archive per distribution, refuse a source archive holding the rules tool, and run the installed smoke checks (tools/installed-smoke.py and tools/installed-interface-smoke.py) in clean environments outside the checkout. | mechanical | enforced | yes | CI job `build-packages`, `tests` | `ci.yml:build-packages`, `ci.yml:tests` | — |
+| `emitter.distributions.artifacts-verified` | Every pull request builds both distributions, each wheel from its source archive, and checks them: twine check --strict passes; tools/check-installed.py finds one wheel and one source archive per distribution, refuses a source archive holding the rules tool, and installs the wheels into two clean environments outside the checkout without Hugging Face credentials; in the emitter's, Microcosm is absent, the project URL is the repository, importing the host and the Orrery client loads no database, Hugging Face, telemetry or service module, and telemetry-only, graph-only, combined and failing services start and record their events and graph jobs in an event queue database at Alembic revision 20261008_02; in a build's, which holds only the interface, the interface has no requirements and ships its protocol fixtures, and the installed emitter it starts reports the interface's version and the telemetry, Orrery and Hugging Face modules, accepts telemetry, an Orrery hand-over and a run-file staging request, and exits with status 0. | mechanical | enforced | yes | CI job `build-packages`, `tests` | `ci.yml:build-packages`, `ci.yml:tests` | — |
 | `emitter.distributions.exactly-two-at-one-version` | The repository publishes exactly two distributions, always together and at one version: microcosm-emitter, which installs the generic host and its required telemetry with no extras, and the dependency-free microcosm-emitter-interface, which microcosm-emitter==X requires at ==X; there are no standalone telemetry packages, optional telemetry installs or further distributions. | mechanical | enforced | yes | pytest `tests/test_package_names.py` | `ci.yml:tests` | **unproven** |
 | `emitter.distributions.one-build-script` | Only tools/check-artifacts.sh builds the distributions, with one uv build --all-packages into a dist directory it removes beforehand and no --clear, no workflow runs uv build itself, and tools/check-installed.py checks the interface wheel apart from the emitter. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.distributions.release-credentials` | In push.yaml only the publish job, in the pypi environment, may request an OpenID Connect token, and the workflow reads no secrets but APP_ID and APP_PRIVATE_KEY, once each, for the GitHub App token that commits the version. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
@@ -158,7 +163,7 @@ flowchart LR
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.protocol.collector-contract` | The installed wheels deliver telemetry to the collector at the commit tools/check-collector.sh pins, with a disposable PostgreSQL database: events become dashboard documents, rejected identities register nothing, a lost acknowledgement is retried without duplicates, and blocked outcomes and supplied failure codes survive. | mechanical | enforced | yes | pytest `tests/test_collector_contract.py` | `ci.yml:collector` | **unproven** |
-| `emitter.protocol.every-fixture-sent-and-answered` | Every protocol fixture has a test in which the interface sends it, and this emitter answers each one: the telemetry, Orrery and Hugging Face modules handle their message and query fixtures, the installed command starts from the launch fixture and answers hello with at least the recorded keys, and the host routes each envelope fixture to its module. | mechanical | enforced | yes | pytest `tests/interface/test_host_protocol.py`, `tests/interface/test_in_process_clients.py`, `tests/interface/test_protocol_fixtures.py` | `ci.yml:tests` | **unproven** |
+| `emitter.protocol.every-fixture-sent-and-answered` | Every protocol fixture has an interface test that produces it, from a typed call, a module configuration or a host request, and this emitter answers each one: the telemetry, Orrery and Hugging Face modules handle their message and query fixtures, the installed command starts from the launch fixture and answers hello with at least the recorded keys, and the host routes each envelope fixture to its module. | mechanical | enforced | yes | pytest `tests/interface/test_client_messages.py`, `tests/interface/test_host_protocol.py`, `tests/interface/test_in_process_clients.py`, `tests/interface/test_protocol_fixtures.py` | `ci.yml:tests` | **unproven** |
 | `emitter.protocol.no-hosted-events-api` | Preserve the existing collector protocol, and do not add a general hosted events API. | mechanical | doc-only | no | nothing | — | — |
 | `emitter.protocol.released-fixtures-unchanged` | A released protocol fixture is never edited or removed, since each one's SHA-256 is pinned, and every fixture's protocol version is one this emitter accepts. | mechanical | enforced | yes | pytest `tests/interface/test_protocol_fixtures.py` | `ci.yml:tests` | **unproven** |
 | `emitter.protocol.trusted-collector-origins` | Every trusted collector origin is a bare HTTPS origin that a module configuration selects as itself, with or without a trailing slash. | mechanical | enforced | yes | pytest `tests/test_collector_origin.py` | `ci.yml:tests` | **unproven** |
@@ -169,7 +174,7 @@ flowchart LR
   e_pytest_tests_test_collector_contract_py["pytest tests/test_collector_contract.py"]
   j_CI_ci_yml_collector["CI ci.yml:collector"]
   r_emitter_protocol_every_fixture_sent_and_answered("emitter.protocol.every-fixture-sent-and-answered (enforced)")
-  e_pytest_tests_interface_test_host_protocol_py__tests_interface_test_in_process_clients_py__tests_interface_test_protocol_fixtures_py["pytest tests/interface/test_host_protocol.py, tests/interface/test_in_process_clients.py, tests/interface/test_protocol_fixtures.py"]
+  e_pytest_tests_interface_test_client_messages_py__tests_interface_test_host_protocol_py__tests_interface_test_in_process_clients_py__tests_interface_test_protocol_fixtures_py["pytest tests/interface/test_client_messages.py, tests/interface/test_host_protocol.py, tests/interface/test_in_process_clients.py, tests/interface/test_protocol_fixtures.py"]
   j_CI_ci_yml_tests["CI ci.yml:tests"]
   r_emitter_protocol_no_hosted_events_api("emitter.protocol.no-hosted-events-api (doc-only)")
   gap_unenforced>"not enforced"]
@@ -179,8 +184,8 @@ flowchart LR
   e_pytest_tests_test_collector_origin_py["pytest tests/test_collector_origin.py"]
   r_emitter_protocol_collector_contract --> e_pytest_tests_test_collector_contract_py
   e_pytest_tests_test_collector_contract_py --> j_CI_ci_yml_collector
-  r_emitter_protocol_every_fixture_sent_and_answered --> e_pytest_tests_interface_test_host_protocol_py__tests_interface_test_in_process_clients_py__tests_interface_test_protocol_fixtures_py
-  e_pytest_tests_interface_test_host_protocol_py__tests_interface_test_in_process_clients_py__tests_interface_test_protocol_fixtures_py --> j_CI_ci_yml_tests
+  r_emitter_protocol_every_fixture_sent_and_answered --> e_pytest_tests_interface_test_client_messages_py__tests_interface_test_host_protocol_py__tests_interface_test_in_process_clients_py__tests_interface_test_protocol_fixtures_py
+  e_pytest_tests_interface_test_client_messages_py__tests_interface_test_host_protocol_py__tests_interface_test_in_process_clients_py__tests_interface_test_protocol_fixtures_py --> j_CI_ci_yml_tests
   r_emitter_protocol_no_hosted_events_api -.-> gap_unenforced
   r_emitter_protocol_released_fixtures_unchanged --> e_pytest_tests_interface_test_protocol_fixtures_py
   e_pytest_tests_interface_test_protocol_fixtures_py --> j_CI_ci_yml_tests
@@ -192,8 +197,8 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `emitter.tests.no-ambient-credentials-or-hosted-collector` | Tests never use ambient credentials or contact a hosted collector: an autouse fixture in conftest.py removes the Hugging Face credential variables, gives each test a temporary Hugging Face home, and fails a test whose telemetry or authentication request names a host other than loopback. | mechanical | enforced | yes | CI job `tests` | `ci.yml:tests` | — |
-| `emitter.tests.real-migrations-synthetic-credentials` | Tests use temporary databases created through real migrations, synthetic credentials and loopback network services. | mechanical | doc-only | no | nothing | — | — |
+| `emitter.tests.no-ambient-credentials-or-hosted-collector` | Tests never use ambient Hugging Face credentials, and never send a telemetry or authentication request to a hosted collector: an autouse fixture in conftest.py removes the Hugging Face credential variables, gives each test a temporary Hugging Face home, and fails a test whose telemetry or authentication request names a host other than loopback. | mechanical | enforced | yes | CI job `tests` | `ci.yml:tests` | — |
+| `emitter.tests.real-migrations-synthetic-credentials` | Tests use temporary databases created through real migrations, synthetic credentials and loopback network services, and contact no hosted collector through any client, including the HTTP clients of the submissions client and the Orrery queue, which conftest.py does not intercept. | mechanical | doc-only | no | nothing | — | — |
 
 ```mermaid
 flowchart LR
@@ -213,7 +218,8 @@ flowchart LR
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `emitter.quality.ruff-format` | All Python is formatted with ruff format. | mechanical | enforced | yes | ruff format | `ci.yml:quality` | — |
 | `emitter.quality.ruff-lint` | All Python passes ruff check with the rule families E, F, I, N, W, UP and B selected, except E501 (line length), which ruff format settles. | mechanical | enforced | yes | ruff check (B, E, F, I, N, UP, W) | `ci.yml:quality` | — |
-| `emitter.quality.tests-pass` | Every test except the collector contract test passes on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs. | mechanical | enforced | yes | CI job `tests` | `ci.yml:tests` | — |
+| `emitter.quality.rules-tool-tests-pass` | The rules tool's own tests, the unittest tests under scripts/rules/tests, pass in pr.yaml's rules job, on Ubuntu with Python 3.13 and only the standard library. | mechanical | enforced | yes | CI job `rules` | `pr.yaml:rules` | — |
+| `emitter.quality.tests-pass` | Every pytest test under tests/ except the collector contract test passes in ci.yml's tests job, on Ubuntu and macOS with Python 3.13 and 3.14, in the environment uv sync --locked installs. | mechanical | enforced | yes | CI job `tests` | `ci.yml:tests` | — |
 | `emitter.quality.toolchain` | Use uv, Python 3.13 or later, pytest and Ruff. | mechanical | doc-only | no | nothing | — | — |
 
 ```mermaid
@@ -223,6 +229,9 @@ flowchart LR
   j_CI_ci_yml_quality["CI ci.yml:quality"]
   r_emitter_quality_ruff_lint("emitter.quality.ruff-lint (enforced)")
   e_ruff_check__B__E__F__I__N__UP__W_["ruff check (B, E, F, I, N, UP, W)"]
+  r_emitter_quality_rules_tool_tests_pass("emitter.quality.rules-tool-tests-pass (enforced)")
+  e_CI_job_rules["CI job rules"]
+  j_CI_pr_yaml_rules["CI pr.yaml:rules"]
   r_emitter_quality_tests_pass("emitter.quality.tests-pass (enforced)")
   e_CI_job_tests["CI job tests"]
   j_CI_ci_yml_tests["CI ci.yml:tests"]
@@ -232,6 +241,8 @@ flowchart LR
   e_ruff_format --> j_CI_ci_yml_quality
   r_emitter_quality_ruff_lint --> e_ruff_check__B__E__F__I__N__UP__W_
   e_ruff_check__B__E__F__I__N__UP__W_ --> j_CI_ci_yml_quality
+  r_emitter_quality_rules_tool_tests_pass --> e_CI_job_rules
+  e_CI_job_rules --> j_CI_pr_yaml_rules
   r_emitter_quality_tests_pass --> e_CI_job_tests
   e_CI_job_tests --> j_CI_ci_yml_tests
   r_emitter_quality_toolchain -.-> gap_unenforced
@@ -241,34 +252,38 @@ flowchart LR
 
 | Rule | Statement | Tier | Status | Blocking | Enforced by | CI | Proof |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `emitter.ci.multiline-shell-in-scripts` | No workflow run: step spans more than one line; shell logic of several lines lives in a Bash script under tools/, which the step calls with a single command. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.pull-request-workflow-structure` | pr.yaml runs on pull requests and calls ci.yml, the changelog check and the rules registry, and its Required checks job runs always and needs each other job; ci.yml is called only by other workflows and has exactly the quality, tests, build-packages and collector jobs, testing on Ubuntu and macOS with Python 3.13 and 3.14, with the collector job after build-packages. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
 | `emitter.ci.required-checks` | Every pull request runs the verification workflow, ci.yml, and Required checks, the one status check main's ruleset requires, passes only when every other pull-request job succeeded. | mechanical | enforced | yes | CI job `verify`, `required` | `pr.yaml:verify`, `pr.yaml:required` | — |
+| `emitter.ci.run-steps-are-one-line` | No workflow run: step spans more than one line of text. | mechanical | enforced | yes | pytest `tests/test_workflows.py` | `ci.yml:tests` | **unproven** |
+| `emitter.ci.shell-logic-in-tools-scripts` | Shell logic of several commands lives in a Bash script under tools/, which a workflow step calls with a single command. | mechanical | doc-only | no | nothing | — | — |
 | `emitter.ci.shell-scripts-parse` | Every shell script under tools/ parses (bash -n). | mechanical | enforced | yes | CI job `quality` | `ci.yml:quality` | — |
 | `emitter.ci.workflows-pass-actionlint` | Every workflow passes actionlint 1.7.12, which also runs shellcheck on each run: step. | mechanical | enforced | yes | CI job `lint-workflows` | `pr.yaml:lint-workflows` | — |
 
 ```mermaid
 flowchart LR
-  r_emitter_ci_multiline_shell_in_scripts("emitter.ci.multiline-shell-in-scripts (enforced)")
+  r_emitter_ci_pull_request_workflow_structure("emitter.ci.pull-request-workflow-structure (enforced)")
   e_pytest_tests_test_workflows_py["pytest tests/test_workflows.py"]
   j_CI_ci_yml_tests["CI ci.yml:tests"]
-  r_emitter_ci_pull_request_workflow_structure("emitter.ci.pull-request-workflow-structure (enforced)")
   r_emitter_ci_required_checks("emitter.ci.required-checks (enforced)")
   e_CI_job_verify__required["CI job verify, required"]
   j_CI_pr_yaml_verify["CI pr.yaml:verify"]
   j_CI_pr_yaml_required["CI pr.yaml:required"]
+  r_emitter_ci_run_steps_are_one_line("emitter.ci.run-steps-are-one-line (enforced)")
+  r_emitter_ci_shell_logic_in_tools_scripts("emitter.ci.shell-logic-in-tools-scripts (doc-only)")
+  gap_unenforced>"not enforced"]
   r_emitter_ci_shell_scripts_parse("emitter.ci.shell-scripts-parse (enforced)")
   e_CI_job_quality["CI job quality"]
   j_CI_ci_yml_quality["CI ci.yml:quality"]
   r_emitter_ci_workflows_pass_actionlint("emitter.ci.workflows-pass-actionlint (enforced)")
   e_CI_job_lint_workflows["CI job lint-workflows"]
   j_CI_pr_yaml_lint_workflows["CI pr.yaml:lint-workflows"]
-  r_emitter_ci_multiline_shell_in_scripts --> e_pytest_tests_test_workflows_py
-  e_pytest_tests_test_workflows_py --> j_CI_ci_yml_tests
   r_emitter_ci_pull_request_workflow_structure --> e_pytest_tests_test_workflows_py
+  e_pytest_tests_test_workflows_py --> j_CI_ci_yml_tests
   r_emitter_ci_required_checks --> e_CI_job_verify__required
   e_CI_job_verify__required --> j_CI_pr_yaml_verify
   e_CI_job_verify__required --> j_CI_pr_yaml_required
+  r_emitter_ci_run_steps_are_one_line --> e_pytest_tests_test_workflows_py
+  r_emitter_ci_shell_logic_in_tools_scripts -.-> gap_unenforced
   r_emitter_ci_shell_scripts_parse --> e_CI_job_quality
   e_CI_job_quality --> j_CI_ci_yml_quality
   r_emitter_ci_workflows_pass_actionlint --> e_CI_job_lint_workflows
