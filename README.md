@@ -184,7 +184,7 @@ The collector compatibility job tests the installed wheel against a pinned dashb
 
 ## Publication
 
-Every merge to `main` releases both Python distributions, `microcosm-emitter` and `microcosm-emitter-interface`, to PyPI with one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one.
+Every merge to `main` releases both Python distributions, `microcosm-emitter` and `microcosm-emitter-interface`, to PyPI with one shared version. Each pull request adds a changelog fragment named `changelog.d/<name>.<type>.md`, where the type is `breaking`, `added`, `changed`, `fixed` or `removed`; `tools/check-changelog.sh` refuses a pull request without one. The first line of each pull request's description is `Fixes #N`, naming the open issue it fixes (rule `emitter.process.pr-tracking-issue`); the PR description workflow checks it on pull requests into `main`.
 
 `push.yaml` runs twice for each merge:
 
