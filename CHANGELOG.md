@@ -1,3 +1,10 @@
+## [0.11.4] - 2026-10-30
+
+### Changed
+
+- Pull requests now refuse a Python file longer than 800 lines, or 1,500 for test code (files under `tests/` and the rules tool's own tests): the rules registry's file-length check runs in the "Rules registry" job. The Hugging Face hand-over queue's job records moved from `huggingface/service/queue.py` to `huggingface/service/queue_jobs.py`, which brings `queue.py` under the limit; every name it offered is still importable from it, and nothing else changes.
+
+
 ## [0.11.3] - 2026-10-30
 
 ### Changed
