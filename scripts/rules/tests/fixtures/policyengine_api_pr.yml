@@ -1,3 +1,5 @@
+# A copy of the Public API's pull-request workflow, for the workflow reader's
+# tests. Infrastructure values in it are placeholders.
 name: Pull request
 
 on: pull_request
@@ -113,7 +115,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build container
-        run: docker build -t ghcr.io/policyengine/policyengine docker
+        run: docker build -t ghcr.io/example/example-image docker
   test_cloud_run_container_builds:
     name: Cloud Run container
     runs-on: ubuntu-latest
@@ -124,7 +126,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
       - name: Build Cloud Run container
-        run: docker build -f gcp/cloud_run/Dockerfile -t policyengine-api-cloud-run:test .
+        run: docker build -f gcp/cloud_run/Dockerfile -t example-cloud-run:test .
   test_env_vars:
     name: Test environment variables
     runs-on: ubuntu-latest
@@ -184,7 +186,7 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: policyengine-api
+          project_id: example-project
       - name: Install dependencies
         run: make install
       - name: Test the API
